@@ -15,6 +15,7 @@ build_frame :: proc(alpha: f32) {
 	prop_begin_frame()
 	submit_bots(alpha)
 	submit_viewmodel()
+	build_hud()
 }
 
 record_frame :: proc(cmd: vk.CommandBuffer, image_index, frame: u32) {
@@ -118,7 +119,7 @@ record_main_pass :: proc(cmd: vk.CommandBuffer, image_index, frame: u32) {
 	record_prop_pass(cmd, frame)
 	record_decal_pass(cmd, frame)
 	record_viewmodel_pass(cmd, frame)
-	record_hud_pass(cmd)
+	record_hud_pass(cmd, frame)
 
 	vk.CmdEndRendering(cmd)
 }
@@ -159,6 +160,7 @@ draw_frame :: proc() {
 	update_light_buffer(frame)
 	upload_prop_instances(frame)
 	upload_decals(frame)
+	upload_hud_quads(frame)
 
 	cmd := g.command_buffers[frame]
 	vk_check(vk.ResetCommandBuffer(cmd, {}))

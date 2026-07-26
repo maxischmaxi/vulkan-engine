@@ -21,3 +21,6 @@ DECAL_FRAG_CODE :: #load("../shaders/decal.frag.spv")
 
 CROSSHAIR_VERT_CODE :: #load("../shaders/crosshair.vert.spv")
 CROSSHAIR_FRAG_CODE :: #load("../shaders/crosshair.frag.spv")
+
+HUD_QUAD_VERT_CODE :: #load("../shaders/hud_quad.vert.spv")
+HUD_QUAD_FRAG_CODE :: #load("../shaders/hud_quad.frag.spv")

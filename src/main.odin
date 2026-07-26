@@ -152,6 +152,12 @@ main :: proc() {
 	create_prop_renderer()
 	create_decal_renderer()
 
+	// The glyph atlas is what the HUD set points at, so it has to exist first.
+	create_hud_font()
+	defer destroy_hud_font()
+
+	create_hud_quad_renderer()
+
 	create_descriptor_sets()
 
 	create_world_pipeline()
@@ -167,6 +173,7 @@ main :: proc() {
 	defer destroy_decal_renderer()
 
 	create_hud_pipeline()
+	create_hud_quad_pipeline()
 	defer destroy_hud_renderer()
 
 	create_command_buffers()
@@ -179,6 +186,11 @@ main :: proc() {
 	init_player()
 	init_bots(brushes)
 	init_weapons()
+
+	init_minimap(brushes)
+	defer destroy_minimap()
+
+	init_debug()
 
 	init_input()
 	defer destroy_input()
@@ -206,6 +218,7 @@ update :: proc() {
 
 	poll_keys()
 	handle_hotkeys()
+	update_debug()
 
 	// Aiming is never tick-quantised -- a frame of latency between the mouse
 	// moving and the view following is the one thing a shooter cannot have.
@@ -233,27 +246,14 @@ update :: proc() {
 	log_frame_stats(clock.frame_dt)
 }
 
+// Only the one key that belongs to the window rather than to a feature.
+// Everything else -- view modes, debug tools, weapon slots, reloading -- is read
+// by the module that owns it.
 @(private = "file")
 handle_hotkeys :: proc() {
 	if key_pressed(glfw.KEY_ESCAPE) && input.cursor_grabbed {
 		grab_cursor(false)
 	}
-
-	if key_pressed(glfw.KEY_F1) do set_debug_mode(.None)
-	if key_pressed(glfw.KEY_F2) do set_debug_mode(.Cascades)
-	if key_pressed(glfw.KEY_F3) do set_debug_mode(.Albedo)
-	if key_pressed(glfw.KEY_F4) do set_debug_mode(.Normals)
-	if key_pressed(glfw.KEY_F5) do set_debug_mode(.Lighting)
-
-	if key_pressed(glfw.KEY_F6) {
-		clear_decals()
-		log.info("Decals cleared")
-	}
-}
-
-set_debug_mode :: proc(mode: Debug_Mode) {
-	debug_mode = mode
-	log.infof("Debug view: {}", mode)
 }
 
 // One line a second, so the frame time is visible without a profiler.
@@ -265,22 +265,20 @@ log_frame_stats :: proc(dt: f32) {
 	frames += 1
 	if accum < 1 do return
 
-	alive := 0
-	for bot in bots {
-		if bot.alive do alive += 1
-	}
-
 	log.infof(
-		"{:.1f} fps ({:.2f} ms)  pos {:.1f} {:.1f} {:.1f}  {} {}/{} hits  {} bots  {} decals{}",
+		"{:.1f} fps ({:.2f} ms)  pos {:.1f} {:.1f} {:.1f}  {} hp  {} {}/{} ammo  {}/{} hits  {} bots  {} decals{}",
 		f32(frames) / accum,
 		accum / f32(frames) * 1000,
 		player.body.position.x,
 		player.body.position.y,
 		player.body.position.z,
+		player.health,
 		current_weapon().name,
+		current_ammo().mag,
+		current_ammo().reserve,
 		weapon_state.hits,
 		weapon_state.shots,
-		alive,
+		bots_alive(),
 		decal_renderer.count,
 		player.noclip ? "  [noclip]" : "",
 	)

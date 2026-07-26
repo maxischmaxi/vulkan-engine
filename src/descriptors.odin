@@ -10,15 +10,20 @@ import vk "vendor:vulkan"
 //   set 1  static      material table and the three texture arrays
 //
 // A pipeline declares only the sets it reads. The shadow pass wants nothing but
-// the cascade matrices, and props and HUD want nothing textured at all, so
-// putting everything in one set would force them to declare bindings they never
-// touch.
+// the cascade matrices, and props want nothing textured at all, so putting
+// everything in one set would force them to declare bindings they never touch.
+//
+// The HUD is the exception to the numbering: it reads nothing per frame and no
+// material, so its glyph atlas is its own set 0. Binding the frame set to a pass
+// that never looks at it is a lie about what the pipeline needs.
 Descriptors :: struct {
 	frame_layout:    vk.DescriptorSetLayout,
 	material_layout: vk.DescriptorSetLayout,
+	hud_layout:      vk.DescriptorSetLayout,
 	pool:            vk.DescriptorPool,
 	frame_sets:      [MAX_FRAMES_IN_FLIGHT]vk.DescriptorSet,
 	material_set:    vk.DescriptorSet,
+	hud_set:         vk.DescriptorSet,
 }
 
 descriptors: Descriptors
@@ -74,6 +79,15 @@ create_descriptor_layouts :: proc() {
 		},
 	}
 
+	hud_bindings := []vk.DescriptorSetLayoutBinding {
+		{
+			binding = 0,
+			descriptorType = .COMBINED_IMAGE_SAMPLER,
+			descriptorCount = 1,
+			stageFlags = {.FRAGMENT},
+		},
+	}
+
 	frame_ci := vk.DescriptorSetLayoutCreateInfo {
 		sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 		bindingCount = u32(len(frame_bindings)),
@@ -89,6 +103,13 @@ create_descriptor_layouts :: proc() {
 	vk_check(
 		vk.CreateDescriptorSetLayout(g.device, &material_ci, nil, &descriptors.material_layout),
 	)
+
+	hud_ci := vk.DescriptorSetLayoutCreateInfo {
+		sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		bindingCount = u32(len(hud_bindings)),
+		pBindings    = raw_data(hud_bindings),
+	}
+	vk_check(vk.CreateDescriptorSetLayout(g.device, &hud_ci, nil, &descriptors.hud_layout))
 }
 
 create_descriptor_pool :: proc() {
@@ -96,13 +117,14 @@ create_descriptor_pool :: proc() {
 		{type = .UNIFORM_BUFFER, descriptorCount = MAX_FRAMES_IN_FLIGHT},
 		// per-frame lights, plus the one material table
 		{type = .STORAGE_BUFFER, descriptorCount = MAX_FRAMES_IN_FLIGHT + 1},
-		// per-frame shadow array, plus the three texture arrays
-		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = MAX_FRAMES_IN_FLIGHT + 3},
+		// per-frame shadow array, the three texture arrays, the glyph atlas
+		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = MAX_FRAMES_IN_FLIGHT + 4},
 	}
 
 	pool_ci := vk.DescriptorPoolCreateInfo {
 		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
-		maxSets       = MAX_FRAMES_IN_FLIGHT + 1,
+		// the per-frame sets, plus material and HUD
+		maxSets       = MAX_FRAMES_IN_FLIGHT + 2,
 		poolSizeCount = u32(len(pool_sizes)),
 		pPoolSizes    = raw_data(pool_sizes),
 	}
@@ -133,10 +155,19 @@ create_descriptor_sets :: proc() {
 	}
 	vk_check(vk.AllocateDescriptorSets(g.device, &material_alloc, &descriptors.material_set))
 
+	hud_alloc := vk.DescriptorSetAllocateInfo {
+		sType              = .DESCRIPTOR_SET_ALLOCATE_INFO,
+		descriptorPool     = descriptors.pool,
+		descriptorSetCount = 1,
+		pSetLayouts        = &descriptors.hud_layout,
+	}
+	vk_check(vk.AllocateDescriptorSets(g.device, &hud_alloc, &descriptors.hud_set))
+
 	write_frame_sets()
 	write_material_set()
+	write_hud_set()
 
-	log.info("Descriptors: set 0 per frame, set 1 static materials")
+	log.info("Descriptors: set 0 per frame, set 1 static materials, HUD glyph atlas")
 }
 
 @(private = "file")
@@ -240,8 +271,28 @@ write_material_set :: proc() {
 	vk.UpdateDescriptorSets(g.device, u32(len(writes)), raw_data(writes), 0, nil)
 }
 
+@(private = "file")
+write_hud_set :: proc() {
+	atlas_info := vk.DescriptorImageInfo {
+		sampler     = hud_font.sampler,
+		imageView   = hud_font.view,
+		imageLayout = .SHADER_READ_ONLY_OPTIMAL,
+	}
+
+	write := vk.WriteDescriptorSet {
+		sType           = .WRITE_DESCRIPTOR_SET,
+		dstSet          = descriptors.hud_set,
+		dstBinding      = 0,
+		descriptorCount = 1,
+		descriptorType  = .COMBINED_IMAGE_SAMPLER,
+		pImageInfo      = &atlas_info,
+	}
+	vk.UpdateDescriptorSets(g.device, 1, &write, 0, nil)
+}
+
 destroy_descriptors :: proc() {
 	vk.DestroyDescriptorPool(g.device, descriptors.pool, nil)
+	vk.DestroyDescriptorSetLayout(g.device, descriptors.hud_layout, nil)
 	vk.DestroyDescriptorSetLayout(g.device, descriptors.material_layout, nil)
 	vk.DestroyDescriptorSetLayout(g.device, descriptors.frame_layout, nil)
 }
@@ -253,4 +304,9 @@ bind_frame_set :: proc(cmd: vk.CommandBuffer, layout: vk.PipelineLayout, frame: 
 
 bind_material_set :: proc(cmd: vk.CommandBuffer, layout: vk.PipelineLayout) {
 	vk.CmdBindDescriptorSets(cmd, .GRAPHICS, layout, 1, 1, &descriptors.material_set, 0, nil)
+}
+
+// Set 0 of the HUD pipeline, which declares no others.
+bind_hud_set :: proc(cmd: vk.CommandBuffer, layout: vk.PipelineLayout) {
+	vk.CmdBindDescriptorSets(cmd, .GRAPHICS, layout, 0, 1, &descriptors.hud_set, 0, nil)
 }

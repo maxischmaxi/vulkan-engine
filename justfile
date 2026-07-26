@@ -13,13 +13,19 @@ shaders:
 textures:
     ./tools/extract_textures.sh
 
-# -debug sets ODIN_DEBUG, which is what enables the validation layer
+# -debug sets ODIN_DEBUG, which enables the validation layer and the HUD's debug
+# tools (DEBUG_TOOLS defaults to it)
 run: shaders
     odin run src -debug
 
-# no ODIN_DEBUG, so no validation layer and no debug symbols
+# no ODIN_DEBUG, so no validation layer, no debug symbols and no debug tools
 release: shaders
     odin build src -out:vulkan -o:speed
+
+# Optimised, but with the debug overlay and its shortcuts compiled in. The only
+# way to look at something that misbehaves at full speed and not at -o:none.
+release-tools: shaders
+    odin build src -out:vulkan -o:speed -define:DEBUG_TOOLS=true
 
 # src/physics has no Vulkan dependency, which is what makes it testable at all
 test:

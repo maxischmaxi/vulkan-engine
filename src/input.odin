@@ -45,12 +45,20 @@ WATCHED_KEYS := []i32 {
 	glfw.KEY_2,
 	glfw.KEY_3,
 	glfw.KEY_4,
+	glfw.KEY_5,
 	glfw.KEY_F1,
 	glfw.KEY_F2,
 	glfw.KEY_F3,
 	glfw.KEY_F4,
 	glfw.KEY_F5,
 	glfw.KEY_F6,
+	glfw.KEY_F7,
+	glfw.KEY_F8,
+	glfw.KEY_F9,
+	glfw.KEY_F10,
+	glfw.KEY_F11,
+	glfw.KEY_F12,
+	glfw.KEY_GRAVE_ACCENT,
 }
 
 // Mouse deltas arrive through a callback rather than polling because several

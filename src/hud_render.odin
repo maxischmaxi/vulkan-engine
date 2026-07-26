@@ -1,10 +1,13 @@
 package main
 
+import "core:log"
 import "core:math"
+import "core:mem"
 import vk "vendor:vulkan"
 
-// Screen-space overlay. Currently just the crosshair, but it is the pass every
-// future HUD element belongs in.
+// Screen-space overlay: the crosshair, and the batched rectangles every other
+// HUD element is built from. What those rectangles say lives in hud.odin and
+// minimap.odin -- this file only knows how to put one on screen.
 
 // A full-screen pass with a procedural crosshair would be fewer lines, but it
 // would rasterise two million fragments to light up a few hundred. Five
@@ -35,8 +38,48 @@ Crosshair_Push :: struct {
 #assert(offset_of(Crosshair_Push, color) == 80)
 #assert(offset_of(Crosshair_Push, screen) == 96)
 
+// Every rectangle the HUD draws in one buffer. The crosshair keeps its own
+// pipeline because it is generated from nothing at all; everything else -- the
+// minimap, the panels, every glyph -- is an instance here.
+MAX_HUD_QUADS :: 2048
+
+// std430-compatible, and the layout the vertex attributes below describe.
+Hud_Quad :: struct {
+	rect:   [4]f32, // x, y, width, height in pixels, origin top left
+	uv:     [4]f32, // u0, v0, u1, v1 in the glyph atlas
+	color:  [4]f32,
+	params: [4]f32, // rotation (radians), mode (0 solid, 1 glyph), corner radius (px), unused
+}
+
+#assert(size_of(Hud_Quad) == 64)
+#assert(offset_of(Hud_Quad, uv) == 16)
+#assert(offset_of(Hud_Quad, color) == 32)
+#assert(offset_of(Hud_Quad, params) == 48)
+
+// A run of quads sharing a scissor rectangle. Clipping the minimap to its box
+// this way keeps the quads themselves ignorant of where they are allowed to
+// land, which is what lets the minimap submit geometry that runs off the edge.
+Hud_Range :: struct {
+	first, count: u32,
+	scissor:      vk.Rect2D,
+}
+
+Hud_Push :: struct {
+	screen: [4]f32, // 1/width, 1/height, unused, unused
+}
+
 Hud_Renderer :: struct {
-	pipeline: Pipeline,
+	pipeline:          Pipeline,
+	quad_pipeline:     Pipeline,
+	instance_buffers:  [MAX_FRAMES_IN_FLIGHT]vk.Buffer,
+	instance_memories: [MAX_FRAMES_IN_FLIGHT]vk.DeviceMemory,
+	instance_mapped:   [MAX_FRAMES_IN_FLIGHT]rawptr,
+	quads:             [dynamic]Hud_Quad,
+	ranges:            [dynamic]Hud_Range,
+	// Start of the range still being filled, and the scissor it will carry.
+	range_start:       u32,
+	scissor:           vk.Rect2D,
+	overflowed:        bool,
 }
 
 hud_renderer: Hud_Renderer
@@ -88,8 +131,209 @@ create_hud_pipeline :: proc() {
 	)
 }
 
+hud_quad_binding_descriptions :: proc() -> [1]vk.VertexInputBindingDescription {
+	// No per-vertex buffer at all: the six corners come from gl_VertexIndex.
+	return {{binding = 0, stride = size_of(Hud_Quad), inputRate = .INSTANCE}}
+}
+
+hud_quad_attribute_descriptions :: proc() -> [4]vk.VertexInputAttributeDescription {
+	return {
+		{location = 0, binding = 0, format = .R32G32B32A32_SFLOAT, offset = 0},
+		{
+			location = 1,
+			binding = 0,
+			format = .R32G32B32A32_SFLOAT,
+			offset = u32(offset_of(Hud_Quad, uv)),
+		},
+		{
+			location = 2,
+			binding = 0,
+			format = .R32G32B32A32_SFLOAT,
+			offset = u32(offset_of(Hud_Quad, color)),
+		},
+		{
+			location = 3,
+			binding = 0,
+			format = .R32G32B32A32_SFLOAT,
+			offset = u32(offset_of(Hud_Quad, params)),
+		},
+	}
+}
+
+create_hud_quad_renderer :: proc() {
+	// rewritten every frame, so host-visible and permanently mapped
+	size := vk.DeviceSize(MAX_HUD_QUADS * size_of(Hud_Quad))
+	for i in 0 ..< MAX_FRAMES_IN_FLIGHT {
+		hud_renderer.instance_buffers[i], hud_renderer.instance_memories[i] = create_buffer(
+			size,
+			{.VERTEX_BUFFER},
+			{.HOST_VISIBLE, .HOST_COHERENT},
+		)
+		vk_check(
+			vk.MapMemory(
+				g.device,
+				hud_renderer.instance_memories[i],
+				0,
+				size,
+				{},
+				&hud_renderer.instance_mapped[i],
+			),
+		)
+	}
+
+	hud_renderer.quads = make([dynamic]Hud_Quad, 0, 512)
+	hud_renderer.ranges = make([dynamic]Hud_Range, 0, 8)
+}
+
+create_hud_quad_pipeline :: proc() {
+	bindings := hud_quad_binding_descriptions()
+	attributes := hud_quad_attribute_descriptions()
+
+	push := []vk.PushConstantRange{{stageFlags = {.VERTEX}, offset = 0, size = size_of(Hud_Push)}}
+
+	hud_renderer.quad_pipeline = build_pipeline(
+		{
+			name           = "hud/quads",
+			vert_spv       = HUD_QUAD_VERT_CODE,
+			frag_spv       = HUD_QUAD_FRAG_CODE,
+			bindings       = bindings[:],
+			attributes     = attributes[:],
+			set_layouts    = {descriptors.hud_layout},
+			push_constants = push,
+			color_formats  = {g.swapchain_format},
+			depth_format   = g.depth_format,
+			samples        = g.msaa_samples,
+			depth_test     = .Disabled,
+			no_depth_write = true,
+			blend          = .Alpha,
+			// A rotated marker winds either way depending on its angle.
+			cull           = .None,
+		},
+	)
+}
+
 destroy_hud_renderer :: proc() {
+	destroy_pipeline(hud_renderer.quad_pipeline)
 	destroy_pipeline(hud_renderer.pipeline)
+
+	for i in 0 ..< MAX_FRAMES_IN_FLIGHT {
+		vk.UnmapMemory(g.device, hud_renderer.instance_memories[i])
+		destroy_buffer(hud_renderer.instance_buffers[i], hud_renderer.instance_memories[i])
+	}
+
+	delete(hud_renderer.quads)
+	delete(hud_renderer.ranges)
+}
+
+// -------------------------------------------------------------- quad building
+
+full_screen_scissor :: proc() -> vk.Rect2D {
+	return {extent = g.swapchain_extent}
+}
+
+hud_begin_frame :: proc() {
+	clear(&hud_renderer.quads)
+	clear(&hud_renderer.ranges)
+	hud_renderer.range_start = 0
+	hud_renderer.scissor = full_screen_scissor()
+	hud_renderer.overflowed = false
+}
+
+@(private = "file")
+flush_range :: proc() {
+	count := u32(len(hud_renderer.quads)) - hud_renderer.range_start
+	if count == 0 do return
+
+	append(
+		&hud_renderer.ranges,
+		Hud_Range{first = hud_renderer.range_start, count = count, scissor = hud_renderer.scissor},
+	)
+	hud_renderer.range_start += count
+}
+
+// Closes the frame's last range. Nothing may be submitted after this until the
+// next hud_begin_frame.
+hud_end_frame :: proc() {
+	flush_range()
+}
+
+hud_quad :: proc(quad: Hud_Quad) {
+	// Dropping the overflow rather than panicking: a HUD that loses its last few
+	// glyphs is a bug worth a log line, not worth taking the game down for.
+	if len(hud_renderer.quads) >= MAX_HUD_QUADS {
+		if !hud_renderer.overflowed {
+			hud_renderer.overflowed = true
+			log.warnf("HUD exceeded {} quads, dropping the rest of the frame", MAX_HUD_QUADS)
+		}
+		return
+	}
+	append(&hud_renderer.quads, quad)
+}
+
+// Pixel-snapped: a bitmap glyph or a one-pixel rule landing on a half pixel is
+// blurred by the MSAA resolve, and the whole HUD reads as slightly out of focus.
+hud_rect :: proc(x, y, w, h: f32, color: [4]f32, radius: f32 = 0) {
+	if w <= 0 || h <= 0 || color.a <= 0 do return
+
+	x0 := math.round(x)
+	y0 := math.round(y)
+	hud_quad(
+		{
+			rect = {x0, y0, max(1, math.round(x + w) - x0), max(1, math.round(y + h) - y0)},
+			color = color,
+			params = {0, 0, radius, 0},
+		},
+	)
+}
+
+// Centred on cx/cy and turned about that point. Not snapped: a rotated edge
+// lands between pixels whatever we do, and MSAA already covers it.
+hud_rect_rotated :: proc(cx, cy, w, h, rotation: f32, color: [4]f32) {
+	if w <= 0 || h <= 0 || color.a <= 0 do return
+	hud_quad(
+		{rect = {cx - w * 0.5, cy - h * 0.5, w, h}, color = color, params = {rotation, 0, 0, 0}},
+	)
+}
+
+// A hollow rectangle, drawn as four rules so the middle stays transparent.
+hud_frame :: proc(x, y, w, h, thickness: f32, color: [4]f32) {
+	t := max(1, math.round(thickness))
+	hud_rect(x, y, w, t, color)
+	hud_rect(x, y + h - t, w, t, color)
+	hud_rect(x, y + t, t, h - 2 * t, color)
+	hud_rect(x + w - t, y + t, t, h - 2 * t, color)
+}
+
+// Everything submitted until hud_clip_end is clipped to this box.
+hud_clip_begin :: proc(x, y, w, h: f32) {
+	flush_range()
+
+	width := i32(g.swapchain_extent.width)
+	height := i32(g.swapchain_extent.height)
+
+	x0 := clamp(i32(math.floor(x)), 0, width)
+	y0 := clamp(i32(math.floor(y)), 0, height)
+	x1 := clamp(i32(math.ceil(x + w)), x0, width)
+	y1 := clamp(i32(math.ceil(y + h)), y0, height)
+
+	hud_renderer.scissor = {
+		offset = {x0, y0},
+		extent = {u32(x1 - x0), u32(y1 - y0)},
+	}
+}
+
+hud_clip_end :: proc() {
+	flush_range()
+	hud_renderer.scissor = full_screen_scissor()
+}
+
+// Called once the frame's quads are complete and before any pass reads them.
+upload_hud_quads :: proc(frame: u32) {
+	count := len(hud_renderer.quads)
+	if count == 0 do return
+
+	dst := ([^]Hud_Quad)(hud_renderer.instance_mapped[frame])
+	mem.copy(&dst[0], raw_data(hud_renderer.quads), count * size_of(Hud_Quad))
 }
 
 @(private = "file")
@@ -147,7 +391,56 @@ draw_crosshair :: proc(cmd: vk.CommandBuffer, push: Crosshair_Push) {
 	vk.CmdDraw(cmd, CROSSHAIR_VERTS, 1, 0, 0)
 }
 
-record_hud_pass :: proc(cmd: vk.CommandBuffer) {
+record_hud_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
+	record_hud_quads(cmd, frame)
+
+	// The crosshair belongs to the weapon, not the overlay: hiding the HUD for a
+	// screenshot should not take away what you are aiming with. Dying should.
+	if player.alive {
+		record_crosshair(cmd)
+	}
+}
+
+@(private = "file")
+record_hud_quads :: proc(cmd: vk.CommandBuffer, frame: u32) {
+	if len(hud_renderer.ranges) == 0 do return
+
+	vk.CmdBindPipeline(cmd, .GRAPHICS, hud_renderer.quad_pipeline.pipeline)
+	bind_hud_set(cmd, hud_renderer.quad_pipeline.layout)
+
+	offset := vk.DeviceSize(0)
+	vk.CmdBindVertexBuffers(cmd, 0, 1, &hud_renderer.instance_buffers[frame], &offset)
+
+	push := Hud_Push {
+		screen = {1.0 / f32(g.swapchain_extent.width), 1.0 / f32(g.swapchain_extent.height), 0, 0},
+	}
+	vk.CmdPushConstants(
+		cmd,
+		hud_renderer.quad_pipeline.layout,
+		{.VERTEX},
+		0,
+		size_of(Hud_Push),
+		&push,
+	)
+
+	for range in hud_renderer.ranges {
+		if range.scissor.extent.width == 0 || range.scissor.extent.height == 0 do continue
+
+		scissor := range.scissor
+		vk.CmdSetScissor(cmd, 0, 1, &scissor)
+		// firstInstance also offsets the instance attribute fetch, so a range is
+		// a draw with no buffer rebinding.
+		vk.CmdDraw(cmd, 6, range.count, 0, range.first)
+	}
+
+	// The pass set this once at the top; leaving it on the last minimap box
+	// would clip every pass added after this one.
+	full := full_screen_scissor()
+	vk.CmdSetScissor(cmd, 0, 1, &full)
+}
+
+@(private = "file")
+record_crosshair :: proc(cmd: vk.CommandBuffer) {
 	vk.CmdBindPipeline(cmd, .GRAPHICS, hud_renderer.pipeline.pipeline)
 
 	screen := [4]f32 {
@@ -205,14 +498,12 @@ record_hud_pass :: proc(cmd: vk.CommandBuffer) {
 				},
 			)
 		}
-		draw_crosshair(
-			cmd,
-			{
-				rects = crosshair_rects(marker, 0),
-				color = {1.0, 0.95, 0.9, alpha},
-				screen = rotated,
-			},
-		)
+		// Red when the hit was fatal. A kill and a graze feel identical without
+		// sound, and the count in the corner is too far from the centre to read
+		// mid-fight.
+		tint :=
+			weapon_state.hit_killed ? [4]f32{1.0, 0.32, 0.28, alpha} : [4]f32{1.0, 0.95, 0.9, alpha}
+		draw_crosshair(cmd, {rects = crosshair_rects(marker, 0), color = tint, screen = rotated})
 	}
 }
 
