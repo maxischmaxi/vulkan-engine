@@ -3,3 +3,8 @@ shaders/*.spv
 
 # odin build output (`odin build src` defaults to src.bin)
 *.bin
+/vulkan
+
+# ambientCG archives and the textures extracted from them by `just textures`
+*.zip
+textures/*/

@@ -33,28 +33,45 @@ Globals :: struct {
 	current_frame:              u32,
 	pipeline_layout:            vk.PipelineLayout,
 	graphics_pipeline:          vk.Pipeline,
-	vertex_buffer:              vk.Buffer,
-	vertex_memory:              vk.DeviceMemory,
-	index_buffer:               vk.Buffer,
-	index_memory:               vk.DeviceMemory,
+	shadow_layout:              vk.PipelineLayout,
+	shadow_pipeline:            vk.Pipeline,
+
+	// the entire static map: one vertex buffer, one index buffer, one draw
+	world_vertex_buffer:        vk.Buffer,
+	world_vertex_memory:        vk.DeviceMemory,
+	world_index_buffer:         vk.Buffer,
+	world_index_memory:         vk.DeviceMemory,
+	world_index_count:          u32,
+	material_buffer:            vk.Buffer,
+	material_memory:            vk.DeviceMemory,
 	descriptor_set_layout:      vk.DescriptorSetLayout,
 	descriptor_pool:            vk.DescriptorPool,
 	descriptor_sets:            [MAX_FRAMES_IN_FLIGHT]vk.DescriptorSet,
 	uniform_buffers:            [MAX_FRAMES_IN_FLIGHT]vk.Buffer,
 	uniform_memories:           [MAX_FRAMES_IN_FLIGHT]vk.DeviceMemory,
 	uniform_mapped:             [MAX_FRAMES_IN_FLIGHT]rawptr,
-	texture_image:              vk.Image,
-	texture_memory:             vk.DeviceMemory,
-	texture_view:               vk.ImageView,
+	light_buffers:              [MAX_FRAMES_IN_FLIGHT]vk.Buffer,
+	light_memories:             [MAX_FRAMES_IN_FLIGHT]vk.DeviceMemory,
+	light_mapped:               [MAX_FRAMES_IN_FLIGHT]rawptr,
+	albedo_array:               Texture_Array,
+	normal_array:               Texture_Array,
+	orm_array:                  Texture_Array,
 	texture_sampler:            vk.Sampler,
 	texture_mip_levels:         u32,
 	anisotropy_enabled:         bool,
 	max_anisotropy:             f32,
+	shadow:                     Shadow_Map,
+	msaa_samples:               vk.SampleCountFlags,
+	color_image:                vk.Image, // multisampled, resolved into the swapchain
+	color_memory:               vk.DeviceMemory,
+	color_view:                 vk.ImageView,
 	depth_image:                vk.Image,
 	depth_memory:               vk.DeviceMemory,
 	depth_view:                 vk.ImageView,
 	depth_format:               vk.Format,
 	validation_enabled:         bool,
+	last_time:                  f64,
+	delta_time:                 f32,
 }
 
 g: Globals
@@ -77,7 +94,7 @@ main :: proc() {
 	defer glfw.Terminate()
 
 	glfw.WindowHint(glfw.CLIENT_API, glfw.NO_API)
-	g.window = glfw.CreateWindow(1024, 786, "Hello Vulkan", nil, nil)
+	g.window = glfw.CreateWindow(1600, 900, "dust2", nil, nil)
 	if g.window == nil do return
 	defer glfw.DestroyWindow(g.window)
 
@@ -95,61 +112,141 @@ main :: proc() {
 	create_logical_device()
 	defer vk.DestroyDevice(g.device, nil)
 
-	// the pipeline bakes this format in, so pick it before anything uses it
+	// the pipelines bake both of these in, so they are picked before anything uses them
 	g.depth_format = find_depth_format()
-	log.infof("Depth format: {}", g.depth_format)
+	g.msaa_samples = pick_msaa_samples()
+	log.infof("Depth format: {}, MSAA: {}", g.depth_format, g.msaa_samples)
 
 	create_swapchain()
 	get_swapchain_images()
 	create_image_views()
 	defer destroy_swapchain()
 
-	create_depth_resources()
-	defer destroy_depth_resources()
-
-	// the pipeline layout needs this, so it comes first
-	create_descriptor_set_layout()
-	defer vk.DestroyDescriptorSetLayout(g.device, g.descriptor_set_layout, nil)
-
-	create_graphics_pipeline()
-	defer destroy_graphics_pipeline()
+	create_render_targets()
+	defer destroy_render_targets()
 
 	// the pool must exist before any buffer upload, which uses a one-off command buffer
 	create_command_pool()
 	defer vk.DestroyCommandPool(g.device, g.command_pool, nil)
 
-	// image, view and sampler must exist before the descriptor sets reference them
-	create_texture_image()
-	create_texture_image_view()
+	// --------------------------------------------------------------- scene
+	brushes := build_dust2()
+	defer delete(brushes)
+
+	bake_world(brushes)
+	create_world_buffers()
+	defer destroy_world_buffers()
+
+	create_material_buffer()
+	defer destroy_material_buffer()
+
+	create_texture_arrays()
 	create_texture_sampler()
-	defer destroy_texture()
+	defer destroy_texture_arrays()
 
-	create_vertex_buffer()
-	defer destroy_buffer(g.vertex_buffer, g.vertex_memory)
+	init_lights()
+	create_light_buffer()
+	defer destroy_light_buffer()
 
-	create_index_buffer()
-	defer destroy_buffer(g.index_buffer, g.index_memory)
+	create_shadow_map()
+	defer destroy_shadow_map()
 
+	// --------------------------------------------------------------- render
 	create_uniform_buffers()
 	defer destroy_uniform_buffers()
+
+	// every resource the sets point at has to exist by now
+	create_descriptor_set_layout()
+	defer vk.DestroyDescriptorSetLayout(g.device, g.descriptor_set_layout, nil)
 
 	create_descriptor_pool()
 	defer vk.DestroyDescriptorPool(g.device, g.descriptor_pool, nil)
 
 	create_descriptor_sets()
 
+	create_graphics_pipeline()
+	create_shadow_pipeline()
+	defer destroy_graphics_pipeline()
+
 	create_command_buffers()
 
 	create_sync_objects()
 	defer destroy_sync_objects()
 
+	// ---------------------------------------------------------------- input
+	init_camera()
+	init_player(brushes)
+	init_input()
+	defer destroy_input()
+	log_input_support()
+
+	g.last_time = glfw.GetTime()
+
 	for !glfw.WindowShouldClose(g.window) {
 		free_all(context.temp_allocator)
 		glfw.PollEvents()
+		update(&g.delta_time)
 		draw_frame()
 	}
 
 	vk_check(vk.DeviceWaitIdle(g.device))
+}
+
+// Everything that happens between two frames: timing, input, movement.
+update :: proc(dt_out: ^f32) {
+	now := glfw.GetTime()
+	// A long stall (debugger, compositor hiccup) must not teleport the player
+	// through a wall on the next step.
+	dt := f32(min(now - g.last_time, 0.1))
+	g.last_time = now
+	dt_out^ = dt
+
+	if key_pressed(glfw.KEY_ESCAPE) && input.cursor_grabbed {
+		grab_cursor(false)
+	}
+
+	if input.cursor_grabbed {
+		dx, dy := consume_mouse_delta()
+		camera_apply_mouse(dx, dy)
+		update_player(dt)
+	}
+	sync_camera_to_player()
+
+	if key_pressed(glfw.KEY_F1) do set_debug_mode(.None)
+	if key_pressed(glfw.KEY_F2) do set_debug_mode(.Cascades)
+	if key_pressed(glfw.KEY_F3) do set_debug_mode(.Albedo)
+	if key_pressed(glfw.KEY_F4) do set_debug_mode(.Normals)
+	if key_pressed(glfw.KEY_F5) do set_debug_mode(.Lighting)
+
+	update_cascades()
+	log_frame_stats(dt)
+}
+
+set_debug_mode :: proc(mode: Debug_Mode) {
+	debug_mode = mode
+	log.infof("Debug view: {}", mode)
+}
+
+// One line a second, so the frame time is visible without a profiler.
+log_frame_stats :: proc(dt: f32) {
+	@(static) accum: f32
+	@(static) frames: int
+
+	accum += dt
+	frames += 1
+	if accum < 1 do return
+
+	log.infof(
+		"{:.1f} fps ({:.2f} ms)  pos {:.1f} {:.1f} {:.1f}{}",
+		f32(frames) / accum,
+		accum / f32(frames) * 1000,
+		player.position.x,
+		player.position.y,
+		player.position.z,
+		player.noclip ? "  [noclip]" : "",
+	)
+	accum = 0
+	frames = 0
 }
 
 VALIDATION_LAYER :: "VK_LAYER_KHRONOS_validation"
@@ -630,47 +727,17 @@ create_sync_objects :: proc() {
 	}
 }
 
-transition_image :: proc(
-	cmd: vk.CommandBuffer,
-	image: vk.Image,
-	old_layout, new_layout: vk.ImageLayout,
-	src_stage, dst_stage: vk.PipelineStageFlags2,
-	src_access, dst_access: vk.AccessFlags2,
-	base_mip: u32 = 0,
-	mip_count: u32 = 1,
-	aspect: vk.ImageAspectFlags = {.COLOR},
-) {
-	barrier := vk.ImageMemoryBarrier2 {
-		sType = .IMAGE_MEMORY_BARRIER_2,
-		srcStageMask = src_stage,
-		srcAccessMask = src_access,
-		dstStageMask = dst_stage,
-		dstAccessMask = dst_access,
-		oldLayout = old_layout,
-		newLayout = new_layout,
-		image = image,
-		subresourceRange = {
-			aspectMask = aspect,
-			baseMipLevel = base_mip,
-			levelCount = mip_count,
-			baseArrayLayer = 0,
-			layerCount = 1,
-		},
-	}
-
-	dependency_info := vk.DependencyInfo {
-		sType                   = .DEPENDENCY_INFO,
-		imageMemoryBarrierCount = 1,
-		pImageMemoryBarriers    = &barrier,
-	}
-	vk.CmdPipelineBarrier2(cmd, &dependency_info)
-}
-
 record_command_buffer :: proc(cmd: vk.CommandBuffer, image_index: u32, frame: u32) {
 	begin_info := vk.CommandBufferBeginInfo {
 		sType = .COMMAND_BUFFER_BEGIN_INFO,
 	}
 	vk_check(vk.BeginCommandBuffer(cmd, &begin_info))
+
+	// Fills the cascades and leaves them in SHADER_READ_ONLY. There is one
+	// shadow image shared by both frames in flight, so its barrier also
+	// serialises this pass against the previous frame's sampling -- cheap
+	// enough here, and the alternative is another 100 MB of VRAM.
+	record_shadow_pass(cmd)
 
 	transition_image(
 		cmd,
@@ -683,15 +750,24 @@ record_command_buffer :: proc(cmd: vk.CommandBuffer, image_index: u32, frame: u3
 		{.COLOR_ATTACHMENT_WRITE},
 	)
 
+	transition_color_for_rendering(cmd)
 	transition_depth_for_rendering(cmd)
 
+	// With MSAA the pass renders into the multisampled image and the hardware
+	// resolves into the swapchain on the way out, so the multisampled contents
+	// themselves never need storing.
 	color_attachment := vk.RenderingAttachmentInfo {
 		sType = .RENDERING_ATTACHMENT_INFO,
-		imageView = g.swapchain_views[image_index],
+		imageView = msaa_enabled() ? g.color_view : g.swapchain_views[image_index],
 		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
 		loadOp = .CLEAR,
-		storeOp = .STORE,
-		clearValue = {color = {float32 = {0.1, 0.1, 0.15, 1.0}}},
+		storeOp = msaa_enabled() ? .DONT_CARE : .STORE,
+		clearValue = {color = {float32 = {0.42, 0.55, 0.75, 1.0}}}, // sky
+	}
+	if msaa_enabled() {
+		color_attachment.resolveMode = {.AVERAGE}
+		color_attachment.resolveImageView = g.swapchain_views[image_index]
+		color_attachment.resolveImageLayout = .COLOR_ATTACHMENT_OPTIMAL
 	}
 
 	// DONT_CARE on store: nothing reads the depth values after the frame
@@ -733,10 +809,9 @@ record_command_buffer :: proc(cmd: vk.CommandBuffer, image_index: u32, frame: u3
 	}
 	vk.CmdSetScissor(cmd, 0, 1, &scissor)
 
-	vertex_buffers := []vk.Buffer{g.vertex_buffer}
 	offsets := []vk.DeviceSize{0}
-	vk.CmdBindVertexBuffers(cmd, 0, 1, raw_data(vertex_buffers), raw_data(offsets))
-	vk.CmdBindIndexBuffer(cmd, g.index_buffer, 0, .UINT16)
+	vk.CmdBindVertexBuffers(cmd, 0, 1, &g.world_vertex_buffer, raw_data(offsets))
+	vk.CmdBindIndexBuffer(cmd, g.world_index_buffer, 0, .UINT32)
 
 	vk.CmdBindDescriptorSets(
 		cmd,
@@ -749,12 +824,8 @@ record_command_buffer :: proc(cmd: vk.CommandBuffer, image_index: u32, frame: u3
 		nil,
 	)
 
-	// one draw per object, each with its own model matrix pushed inline
-	for i in 0 ..< OBJECT_COUNT {
-		pc := object_push_constants(i)
-		vk.CmdPushConstants(cmd, g.pipeline_layout, {.VERTEX}, 0, size_of(pc), &pc)
-		vk.CmdDrawIndexed(cmd, u32(len(INDICES)), 1, 0, 0, 0)
-	}
+	// the entire map in one call -- world-space baked geometry needs no per-object state
+	vk.CmdDrawIndexed(cmd, g.world_index_count, 1, 0, 0, 0)
 
 	vk.CmdEndRendering(cmd)
 
@@ -796,8 +867,9 @@ draw_frame :: proc() {
 	// only reset once we know we will submit, otherwise the fence stays unsignaled
 	vk_check(vk.ResetFences(g.device, 1, &g.in_flight_fences[frame]))
 
-	// safe to overwrite: the fence above guarantees this frame's buffer is free
+	// safe to overwrite: the fence above guarantees this frame's buffers are free
 	update_uniform_buffer(frame)
+	update_light_buffer(frame)
 
 	cmd := g.command_buffers[frame]
 	vk_check(vk.ResetCommandBuffer(cmd, {}))
@@ -857,14 +929,14 @@ recreate_swapchain :: proc() {
 
 	vk_check(vk.DeviceWaitIdle(g.device))
 
-	// the depth image is sized to the swapchain, so it goes along
-	destroy_depth_resources()
+	// colour and depth targets are sized to the swapchain, so they go along
+	destroy_render_targets()
 	destroy_swapchain()
 
 	create_swapchain()
 	get_swapchain_images()
 	create_image_views()
-	create_depth_resources()
+	create_render_targets()
 	recreate_render_finished_semaphores()
 }
 

@@ -130,13 +130,3 @@ create_device_local_buffer :: proc(
 
 	return
 }
-
-create_vertex_buffer :: proc() {
-	g.vertex_buffer, g.vertex_memory = create_device_local_buffer(VERTICES, {.VERTEX_BUFFER})
-	log.infof("Vertex buffer: {} vertices, {} bytes", len(VERTICES), len(VERTICES) * size_of(Vertex))
-}
-
-create_index_buffer :: proc() {
-	g.index_buffer, g.index_memory = create_device_local_buffer(INDICES, {.INDEX_BUFFER})
-	log.infof("Index buffer: {} indices", len(INDICES))
-}
