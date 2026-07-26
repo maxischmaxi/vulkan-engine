@@ -54,6 +54,7 @@ Globals :: struct {
 	depth_memory:               vk.DeviceMemory,
 	depth_view:                 vk.ImageView,
 	depth_format:               vk.Format,
+	validation_enabled:         bool,
 }
 
 g: Globals
@@ -151,13 +152,58 @@ main :: proc() {
 	vk_check(vk.DeviceWaitIdle(g.device))
 }
 
+VALIDATION_LAYER :: "VK_LAYER_KHRONOS_validation"
+
+is_layer_available :: proc(name: string) -> bool {
+	count: u32
+	vk.EnumerateInstanceLayerProperties(&count, nil)
+	props := make([]vk.LayerProperties, count, context.temp_allocator)
+	vk.EnumerateInstanceLayerProperties(&count, raw_data(props))
+
+	for &p in props {
+		if string(cstring(&p.layerName[0])) == name do return true
+	}
+	return false
+}
+
+is_instance_extension_available :: proc(name: string) -> bool {
+	count: u32
+	vk.EnumerateInstanceExtensionProperties(nil, &count, nil)
+	props := make([]vk.ExtensionProperties, count, context.temp_allocator)
+	vk.EnumerateInstanceExtensionProperties(nil, &count, raw_data(props))
+
+	for &p in props {
+		if string(cstring(&p.extensionName[0])) == name do return true
+	}
+	return false
+}
+
 create_instance :: proc() {
-	layers := []cstring{"VK_LAYER_KHRONOS_validation"}
+	layers := make([dynamic]cstring, 0, 1, context.temp_allocator)
 	extensions := slice.clone_to_dynamic(
 		glfw.GetRequiredInstanceExtensions(),
 		context.temp_allocator,
 	)
-	append(&extensions, vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
+
+	// Validation costs performance, so it is a debug-build feature. Even then the
+	// layer package may not be installed, which used to abort with LAYER_NOT_PRESENT.
+	when ODIN_DEBUG {
+		layer_ok := is_layer_available(VALIDATION_LAYER)
+		debug_utils_ok := is_instance_extension_available(vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
+
+		if layer_ok && debug_utils_ok {
+			g.validation_enabled = true
+			append(&layers, cstring(VALIDATION_LAYER))
+			append(&extensions, vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
+		} else if !layer_ok {
+			log.warnf(
+				"{} not installed, continuing without validation (Arch: pacman -S vulkan-validation-layers)",
+				VALIDATION_LAYER,
+			)
+		} else {
+			log.warnf("{} unavailable, continuing without validation", vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
+		}
+	}
 
 	debug_messenger_ci := vk.DebugUtilsMessengerCreateInfoEXT {
 		sType = .DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
@@ -181,8 +227,12 @@ create_instance :: proc() {
 		},
 	}
 
+	// only chained in when the messenger can actually be created, so that
+	// instance creation itself is covered by validation
 	next: rawptr
-	next = &debug_messenger_ci
+	if g.validation_enabled {
+		next = &debug_messenger_ci
+	}
 
 	instance_ci := vk.InstanceCreateInfo {
 		sType                   = .INSTANCE_CREATE_INFO,
@@ -194,15 +244,22 @@ create_instance :: proc() {
 		pNext                   = next,
 	}
 
-
 	vk_check(vk.CreateInstance(&instance_ci, nil, &g.instance))
 
 	vk.load_proc_addresses_instance(g.instance)
 	log.assert(vk.DestroyInstance != nil, "Failed to load Vulkan instance")
 
-	vk_check(
-		vk.CreateDebugUtilsMessengerEXT(g.instance, &debug_messenger_ci, nil, &g.debug_messenger),
-	)
+	if g.validation_enabled {
+		vk_check(
+			vk.CreateDebugUtilsMessengerEXT(
+				g.instance,
+				&debug_messenger_ci,
+				nil,
+				&g.debug_messenger,
+			),
+		)
+		log.infof("Validation enabled via {}", VALIDATION_LAYER)
+	}
 }
 
 vk_check :: proc(result: vk.Result, location := #caller_location) {
@@ -210,7 +267,9 @@ vk_check :: proc(result: vk.Result, location := #caller_location) {
 }
 
 destroy_instance :: proc() {
-	vk.DestroyDebugUtilsMessengerEXT(g.instance, g.debug_messenger, nil)
+	if g.validation_enabled {
+		vk.DestroyDebugUtilsMessengerEXT(g.instance, g.debug_messenger, nil)
+	}
 	vk.DestroyInstance(g.instance, nil)
 }
 
