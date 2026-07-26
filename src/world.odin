@@ -2,6 +2,8 @@ package main
 
 import "core:log"
 import "core:math/linalg"
+import "physics"
+import vk "vendor:vulkan"
 
 // World convention: Z-up, right-handed, X=east, Y=north, Z=up, one unit = one
 // metre. Same axes as Source/Hammer, so counter-strike intuitions carry over.
@@ -78,8 +80,25 @@ face_extent :: proc(b: Brush, face: Face) -> (u_len, v_len: f32) {
 	return 0, 0
 }
 
+// The whole static map: one vertex buffer, one index buffer, one draw.
+World_Renderer :: struct {
+	vertex_buffer: vk.Buffer,
+	vertex_memory: vk.DeviceMemory,
+	index_buffer:  vk.Buffer,
+	index_memory:  vk.DeviceMemory,
+	index_count:   u32,
+	pipeline:      Pipeline,
+}
+
+world_renderer: World_Renderer
+
 world_vertices: [dynamic]Vertex
 world_indices: [dynamic]u32
+
+// Collision and raycast targets. Stripped of material and face information,
+// because neither matters for hitting something -- and keeping them separate is
+// what lets a broadphase slot in here later without touching gameplay code.
+world_collision: []physics.Aabb
 
 // Turns every brush face into two triangles in world space. UVs are a planar
 // world-space projection measured in metres -- the shader divides by the
@@ -119,12 +138,7 @@ bake_world :: proc(brushes: []Brush) {
 					Vertex {
 						pos = p,
 						normal = basis.normal,
-						tangent = {
-							basis.u_dir.x,
-							basis.u_dir.y,
-							basis.u_dir.z,
-							handedness,
-						},
+						tangent = {basis.u_dir.x, basis.u_dir.y, basis.u_dir.z, handedness},
 						uv = {linalg.dot(p, basis.u_dir), linalg.dot(p, basis.v_dir)},
 						material = b.material,
 					},
@@ -132,6 +146,14 @@ bake_world :: proc(brushes: []Brush) {
 			}
 
 			append(&world_indices, base, base + 1, base + 2, base, base + 2, base + 3)
+		}
+	}
+
+	world_collision = make([]physics.Aabb, len(brushes))
+	for b, i in brushes {
+		world_collision[i] = {
+			min = b.min,
+			max = b.max,
 		}
 	}
 
@@ -164,25 +186,63 @@ verify_winding :: proc() {
 }
 
 create_world_buffers :: proc() {
-	g.world_vertex_buffer, g.world_vertex_memory = create_device_local_buffer(
+	world_renderer.vertex_buffer, world_renderer.vertex_memory = create_device_local_buffer(
 		world_vertices[:],
 		{.VERTEX_BUFFER},
 	)
-	g.world_index_buffer, g.world_index_memory = create_device_local_buffer(
+	world_renderer.index_buffer, world_renderer.index_memory = create_device_local_buffer(
 		world_indices[:],
 		{.INDEX_BUFFER},
 	)
-	g.world_index_count = u32(len(world_indices))
+	world_renderer.index_count = u32(len(world_indices))
 }
 
-destroy_world_buffers :: proc() {
-	destroy_buffer(g.world_vertex_buffer, g.world_vertex_memory)
-	destroy_buffer(g.world_index_buffer, g.world_index_memory)
+create_world_pipeline :: proc() {
+	bindings := []vk.VertexInputBindingDescription{vertex_binding_description()}
+	attributes := vertex_attribute_descriptions()
+
+	world_renderer.pipeline = build_pipeline(
+		{
+			name = "world",
+			vert_spv = WORLD_VERT_CODE,
+			frag_spv = WORLD_FRAG_CODE,
+			bindings = bindings,
+			attributes = attributes[:],
+			set_layouts = {descriptors.frame_layout, descriptors.material_layout},
+			color_formats = {g.swapchain_format},
+			depth_format = g.depth_format,
+			samples = g.msaa_samples,
+		},
+	)
+}
+
+destroy_world :: proc() {
+	destroy_pipeline(world_renderer.pipeline)
+	destroy_buffer(world_renderer.vertex_buffer, world_renderer.vertex_memory)
+	destroy_buffer(world_renderer.index_buffer, world_renderer.index_memory)
 	delete(world_vertices)
 	delete(world_indices)
+	delete(world_collision)
 }
 
-// Bounds of everything, used to size the sun's shadow volume.
+bind_world_geometry :: proc(cmd: vk.CommandBuffer) {
+	offsets := []vk.DeviceSize{0}
+	vk.CmdBindVertexBuffers(cmd, 0, 1, &world_renderer.vertex_buffer, raw_data(offsets))
+	vk.CmdBindIndexBuffer(cmd, world_renderer.index_buffer, 0, .UINT32)
+}
+
+// The entire map in one call -- world-space baked geometry needs no per-object
+// state, so there is nothing to iterate over.
+record_world_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
+	vk.CmdBindPipeline(cmd, .GRAPHICS, world_renderer.pipeline.pipeline)
+	bind_frame_set(cmd, world_renderer.pipeline.layout, frame)
+	bind_material_set(cmd, world_renderer.pipeline.layout)
+	bind_world_geometry(cmd)
+	vk.CmdDrawIndexed(cmd, world_renderer.index_count, 1, 0, 0, 0)
+}
+
+// Bounds of everything, used to size the sun's shadow volume and to pick bot
+// spawn points.
 world_bounds :: proc(brushes: []Brush) -> (mn, mx: [3]f32) {
 	mn = {max(f32), max(f32), max(f32)}
 	mx = {min(f32), min(f32), min(f32)}

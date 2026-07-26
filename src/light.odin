@@ -2,7 +2,6 @@ package main
 
 import "core:log"
 import "core:math/linalg"
-import vk "vendor:vulkan"
 
 // std430 gives vec3 a 16-byte alignment, which this field order satisfies
 // exactly -- position and colour both land on a multiple of 16.
@@ -54,9 +53,9 @@ init_lights :: proc() {
 
 	lamp :: proc(x, y, z: f32, radius: f32 = 12, intensity: f32 = 8) -> Point_Light {
 		return {
-			position = {x, y, z},
-			radius = radius,
-			color = {1.0, 0.78, 0.52}, // tungsten
+			position  = {x, y, z},
+			radius    = radius,
+			color     = {1.0, 0.78, 0.52}, // tungsten
 			intensity = intensity,
 		}
 	}
@@ -89,38 +88,56 @@ init_lights :: proc() {
 	if len(point_lights) > MAX_POINT_LIGHTS {
 		log.panicf("{} point lights exceeds the buffer's {}", len(point_lights), MAX_POINT_LIGHTS)
 	}
+
+	// everything appended past this point is transient and gets rebuilt per frame
+	static_light_count = len(point_lights)
+	transient_lights = make([dynamic]Transient_Light, 0, 8)
+
 	log.infof("Lights: 1 directional (shadowed), {} point", len(point_lights))
 }
 
-// Sized for the maximum so lights can be added at runtime without reallocating
-// and rewriting descriptors.
-create_light_buffer :: proc() {
-	size := vk.DeviceSize(MAX_POINT_LIGHTS * size_of(Point_Light))
-
-	for i in 0 ..< MAX_FRAMES_IN_FLIGHT {
-		g.light_buffers[i], g.light_memories[i] = create_buffer(
-			size,
-			{.STORAGE_BUFFER},
-			{.HOST_VISIBLE, .HOST_COHERENT},
-		)
-		vk_check(vk.MapMemory(g.device, g.light_memories[i], 0, size, {}, &g.light_mapped[i]))
-	}
-}
-
-destroy_light_buffer :: proc() {
-	for i in 0 ..< MAX_FRAMES_IN_FLIGHT {
-		vk.UnmapMemory(g.device, g.light_memories[i])
-		destroy_buffer(g.light_buffers[i], g.light_memories[i])
-	}
+destroy_lights :: proc() {
+	delete(transient_lights)
 	delete(point_lights)
-}
-
-update_light_buffer :: proc(frame: u32) {
-	if len(point_lights) == 0 do return
-	dst := ([^]Point_Light)(g.light_mapped[frame])
-	copy(dst[:len(point_lights)], point_lights[:])
 }
 
 sun_direction_normalized :: proc() -> [3]f32 {
 	return linalg.normalize(sun.direction)
+}
+
+// Lights that live for a moment and then vanish -- a muzzle flash is the only
+// user so far. They ride on the end of the point light array, so they cost
+// nothing when none are active and need no separate buffer.
+Transient_Light :: struct {
+	light:     Point_Light,
+	remaining: f32,
+}
+
+transient_lights: [dynamic]Transient_Light
+static_light_count: int
+
+add_transient_light :: proc(position: [3]f32, color: [3]f32, intensity, radius, duration: f32) {
+	append(
+		&transient_lights,
+		Transient_Light {
+			light = {position = position, radius = radius, color = color, intensity = intensity},
+			remaining = duration,
+		},
+	)
+}
+
+// Rebuilds the tail of the point light array from whatever is still alive.
+update_transient_lights :: proc(dt: f32) {
+	resize(&point_lights, static_light_count)
+
+	for i := len(transient_lights) - 1; i >= 0; i -= 1 {
+		transient_lights[i].remaining -= dt
+		if transient_lights[i].remaining <= 0 {
+			unordered_remove(&transient_lights, i)
+			continue
+		}
+		if len(point_lights) < MAX_POINT_LIGHTS {
+			append(&point_lights, transient_lights[i].light)
+		}
+	}
 }

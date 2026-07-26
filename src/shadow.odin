@@ -26,7 +26,11 @@ Shadow_Map :: struct {
 	cascade_vp:   [SHADOW_CASCADES]linalg.Matrix4f32,
 	split_depths: [SHADOW_CASCADES]f32, // view-space distance where each cascade ends
 	texel_world:  [SHADOW_CASCADES]f32, // metres covered by one shadow texel
+	world_pipe:   Pipeline, // baked map geometry
+	prop_pipe:    Pipeline, // instanced boxes
 }
+
+shadow: Shadow_Map
 
 // Right-handed orthographic projection into Vulkan clip space: z from 0 to 1
 // and y flipped, matching perspective_vulkan so that rendering and sampling
@@ -44,7 +48,7 @@ ortho_vulkan :: proc(left, right, bottom, top, near, far: f32) -> linalg.Matrix4
 }
 
 create_shadow_map :: proc() {
-	g.shadow.image, g.shadow.memory = create_image(
+	shadow.image, shadow.memory = create_image(
 		SHADOW_RESOLUTION,
 		SHADOW_RESOLUTION,
 		1,
@@ -57,7 +61,7 @@ create_shadow_map :: proc() {
 
 	array_ci := vk.ImageViewCreateInfo {
 		sType = .IMAGE_VIEW_CREATE_INFO,
-		image = g.shadow.image,
+		image = shadow.image,
 		viewType = .D2_ARRAY,
 		format = SHADOW_FORMAT,
 		subresourceRange = {
@@ -68,13 +72,13 @@ create_shadow_map :: proc() {
 			layerCount = SHADOW_CASCADES,
 		},
 	}
-	vk_check(vk.CreateImageView(g.device, &array_ci, nil, &g.shadow.array_view))
+	vk_check(vk.CreateImageView(g.device, &array_ci, nil, &shadow.array_view))
 
 	// dynamic rendering targets a single layer at a time, so each needs its own view
 	for i in 0 ..< SHADOW_CASCADES {
 		layer_ci := vk.ImageViewCreateInfo {
 			sType = .IMAGE_VIEW_CREATE_INFO,
-			image = g.shadow.image,
+			image = shadow.image,
 			viewType = .D2,
 			format = SHADOW_FORMAT,
 			subresourceRange = {
@@ -85,7 +89,7 @@ create_shadow_map :: proc() {
 				layerCount = 1,
 			},
 		}
-		vk_check(vk.CreateImageView(g.device, &layer_ci, nil, &g.shadow.layer_views[i]))
+		vk_check(vk.CreateImageView(g.device, &layer_ci, nil, &shadow.layer_views[i]))
 	}
 
 	// A comparison sampler makes the hardware do the depth test and the bilinear
@@ -105,7 +109,7 @@ create_shadow_map :: proc() {
 		minLod        = 0,
 		maxLod        = 1,
 	}
-	vk_check(vk.CreateSampler(g.device, &sampler_ci, nil, &g.shadow.sampler))
+	vk_check(vk.CreateSampler(g.device, &sampler_ci, nil, &shadow.sampler))
 
 	log.infof(
 		"Shadows: {} cascades at {}x{}, {} m range",
@@ -116,14 +120,64 @@ create_shadow_map :: proc() {
 	)
 }
 
+// Two depth-only pipelines: one for the baked map, one for instanced boxes.
+// Neither has a fragment shader, which halves the work per triangle compared to
+// running an empty one.
+//
+// No culling. The orthographic light matrix flips y as well, so the winding
+// would need its own reasoning -- and with a slope-scaled bias handling acne,
+// culling buys nothing here but a way to get it wrong.
+create_shadow_pipelines :: proc() {
+	cascade_push := []vk.PushConstantRange {
+		{stageFlags = {.VERTEX}, offset = 0, size = size_of(u32)},
+	}
+
+	world_bindings := []vk.VertexInputBindingDescription{vertex_binding_description()}
+	world_attributes := position_attribute_description()
+
+	shadow.world_pipe = build_pipeline(
+		{
+			name = "shadow/world",
+			vert_spv = SHADOW_VERT_CODE,
+			bindings = world_bindings,
+			attributes = world_attributes[:],
+			set_layouts = {descriptors.frame_layout},
+			push_constants = cascade_push,
+			depth_format = SHADOW_FORMAT,
+			cull = .None,
+			depth_bias = true,
+		},
+	)
+
+	prop_bindings := prop_binding_descriptions()
+	prop_attributes := prop_shadow_attribute_descriptions()
+
+	shadow.prop_pipe = build_pipeline(
+		{
+			name = "shadow/props",
+			vert_spv = SHADOW_PROP_VERT_CODE,
+			bindings = prop_bindings[:],
+			attributes = prop_attributes[:],
+			set_layouts = {descriptors.frame_layout},
+			push_constants = cascade_push,
+			depth_format = SHADOW_FORMAT,
+			cull = .None,
+			depth_bias = true,
+		},
+	)
+}
+
 destroy_shadow_map :: proc() {
-	vk.DestroySampler(g.device, g.shadow.sampler, nil)
-	for view in g.shadow.layer_views {
+	destroy_pipeline(shadow.prop_pipe)
+	destroy_pipeline(shadow.world_pipe)
+
+	vk.DestroySampler(g.device, shadow.sampler, nil)
+	for view in shadow.layer_views {
 		vk.DestroyImageView(g.device, view, nil)
 	}
-	vk.DestroyImageView(g.device, g.shadow.array_view, nil)
-	vk.DestroyImage(g.device, g.shadow.image, nil)
-	vk.FreeMemory(g.device, g.shadow.memory, nil)
+	vk.DestroyImageView(g.device, shadow.array_view, nil)
+	vk.DestroyImage(g.device, shadow.image, nil)
+	vk.FreeMemory(g.device, shadow.memory, nil)
 }
 
 // Splits the view distance so each cascade covers a slice of the frustum. The
@@ -146,7 +200,7 @@ cascade_split_distances :: proc() -> [SHADOW_CASCADES]f32 {
 // Rebuilt every frame from the current view. Each cascade gets a light-space
 // matrix that covers exactly its slice of the camera frustum.
 update_cascades :: proc() {
-	g.shadow.split_depths = cascade_split_distances()
+	shadow.split_depths = cascade_split_distances()
 
 	light_dir := sun_direction_normalized()
 
@@ -156,11 +210,10 @@ update_cascades :: proc() {
 		up = {0, 1, 0}
 	}
 
-	aspect := f32(g.swapchain_extent.width) / f32(g.swapchain_extent.height)
-	// tangent of the half angles: horizontal comes from the quoted FOV,
-	// vertical follows from the aspect ratio
-	half_w := math.tan(math.to_radians(camera.fov_horizontal) * 0.5)
-	half_h := half_w / aspect
+	// Straight from the camera rather than recomputed here. Working it out a
+	// second time is how a cascade ends up covering a frustum the camera no
+	// longer has, and the shadows fall off the edge of the screen.
+	half_w, half_h := camera_half_tangents(camera.fov_horizontal)
 
 	forward := camera_forward()
 	right := camera_right()
@@ -168,7 +221,7 @@ update_cascades :: proc() {
 
 	near_dist := camera.near
 	for i in 0 ..< SHADOW_CASCADES {
-		far_dist := g.shadow.split_depths[i]
+		far_dist := shadow.split_depths[i]
 
 		// eight corners of this slice of the frustum, in world space
 		corners: [8][3]f32
@@ -222,8 +275,8 @@ update_cascades :: proc() {
 		vp[0, 3] += offset.x
 		vp[1, 3] += offset.y
 
-		g.shadow.cascade_vp[i] = vp
-		g.shadow.texel_world[i] = extent / SHADOW_RESOLUTION
+		shadow.cascade_vp[i] = vp
+		shadow.texel_world[i] = extent / SHADOW_RESOLUTION
 		near_dist = far_dist
 	}
 }
@@ -231,10 +284,10 @@ update_cascades :: proc() {
 // Depth-only pass, one cascade per rendering block. Multiview could collapse
 // these into a single pass, but at this triangle count the difference is noise
 // and separate passes are far easier to inspect in a capture.
-record_shadow_pass :: proc(cmd: vk.CommandBuffer) {
+record_shadow_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
 	transition_image(
 		cmd,
-		g.shadow.image,
+		shadow.image,
 		.UNDEFINED,
 		.DEPTH_ATTACHMENT_OPTIMAL,
 		{.FRAGMENT_SHADER},
@@ -248,33 +301,20 @@ record_shadow_pass :: proc(cmd: vk.CommandBuffer) {
 		SHADOW_CASCADES,
 	)
 
-	vk.CmdBindPipeline(cmd, .GRAPHICS, g.shadow_pipeline)
-
 	viewport := vk.Viewport {
 		width    = SHADOW_RESOLUTION,
 		height   = SHADOW_RESOLUTION,
 		minDepth = 0,
 		maxDepth = 1,
 	}
-	vk.CmdSetViewport(cmd, 0, 1, &viewport)
-
 	scissor := vk.Rect2D {
 		extent = {SHADOW_RESOLUTION, SHADOW_RESOLUTION},
 	}
-	vk.CmdSetScissor(cmd, 0, 1, &scissor)
-
-	// Constant bias lifts everything off the surface, slope bias adds more where
-	// the surface is nearly edge-on to the light and one texel spans a lot of depth.
-	vk.CmdSetDepthBias(cmd, 1.5, 0, 3.0)
-
-	offsets := []vk.DeviceSize{0}
-	vk.CmdBindVertexBuffers(cmd, 0, 1, &g.world_vertex_buffer, raw_data(offsets))
-	vk.CmdBindIndexBuffer(cmd, g.world_index_buffer, 0, .UINT32)
 
 	for i in 0 ..< SHADOW_CASCADES {
 		depth_attachment := vk.RenderingAttachmentInfo {
 			sType = .RENDERING_ATTACHMENT_INFO,
-			imageView = g.shadow.layer_views[i],
+			imageView = shadow.layer_views[i],
 			imageLayout = .DEPTH_ATTACHMENT_OPTIMAL,
 			loadOp = .CLEAR,
 			storeOp = .STORE,
@@ -282,34 +322,41 @@ record_shadow_pass :: proc(cmd: vk.CommandBuffer) {
 		}
 
 		rendering_info := vk.RenderingInfo {
-			sType            = .RENDERING_INFO,
-			renderArea       = {extent = {SHADOW_RESOLUTION, SHADOW_RESOLUTION}},
-			layerCount       = 1,
+			sType = .RENDERING_INFO,
+			renderArea = {extent = {SHADOW_RESOLUTION, SHADOW_RESOLUTION}},
+			layerCount = 1,
 			pDepthAttachment = &depth_attachment,
 		}
 
 		vk.CmdBeginRendering(cmd, &rendering_info)
+		vk.CmdSetViewport(cmd, 0, 1, &viewport)
+		vk.CmdSetScissor(cmd, 0, 1, &scissor)
+		// Constant bias lifts everything off the surface, slope bias adds more
+		// where the surface is nearly edge-on to the light and one texel spans a
+		// lot of depth.
+		vk.CmdSetDepthBias(cmd, 1.5, 0, 3.0)
 
 		cascade := u32(i)
-		vk.CmdPushConstants(cmd, g.shadow_layout, {.VERTEX}, 0, size_of(u32), &cascade)
-		vk.CmdBindDescriptorSets(
-			cmd,
-			.GRAPHICS,
-			g.shadow_layout,
-			0,
-			1,
-			&g.descriptor_sets[g.current_frame],
-			0,
-			nil,
-		)
-		vk.CmdDrawIndexed(cmd, g.world_index_count, 1, 0, 0, 0)
+
+		vk.CmdBindPipeline(cmd, .GRAPHICS, shadow.world_pipe.pipeline)
+		vk.CmdPushConstants(cmd, shadow.world_pipe.layout, {.VERTEX}, 0, size_of(u32), &cascade)
+		bind_frame_set(cmd, shadow.world_pipe.layout, frame)
+		bind_world_geometry(cmd)
+		vk.CmdDrawIndexed(cmd, world_renderer.index_count, 1, 0, 0, 0)
+
+		if prop_world_instance_count() > 0 {
+			vk.CmdBindPipeline(cmd, .GRAPHICS, shadow.prop_pipe.pipeline)
+			vk.CmdPushConstants(cmd, shadow.prop_pipe.layout, {.VERTEX}, 0, size_of(u32), &cascade)
+			bind_frame_set(cmd, shadow.prop_pipe.layout, frame)
+			record_prop_shadow_draw(cmd, frame)
+		}
 
 		vk.CmdEndRendering(cmd)
 	}
 
 	transition_image(
 		cmd,
-		g.shadow.image,
+		shadow.image,
 		.DEPTH_ATTACHMENT_OPTIMAL,
 		.SHADER_READ_ONLY_OPTIMAL,
 		{.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},

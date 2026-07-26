@@ -38,7 +38,8 @@ pick_msaa_samples :: proc() -> vk.SampleCountFlags {
 	props: vk.PhysicalDeviceProperties
 	vk.GetPhysicalDeviceProperties(g.physical_device, &props)
 
-	supported := props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts
+	supported :=
+		props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts
 
 	for candidate in ([]vk.SampleCountFlag{._4, ._2}) {
 		if candidate > MAX_MSAA do continue

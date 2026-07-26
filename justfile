@@ -1,8 +1,13 @@
 default: run
 
+# -e matters: without it a shader that fails to compile leaves the previous .spv
+# in place, and the build happily bakes in stale bytecode.
 shaders:
     #!/usr/bin/env sh
-    for f in shaders/*.vert shaders/*.frag; do glslc "$f" -o "$f.spv"; done
+    set -e
+    for f in shaders/*.vert shaders/*.frag; do
+        glslc -O -I shaders/include "$f" -o "$f.spv"
+    done
 
 # unpacks the ambientCG zips in the project root into textures/<Name>/
 textures:
@@ -16,5 +21,17 @@ run: shaders
 release: shaders
     odin build src -out:vulkan -o:speed
 
+# src/physics has no Vulkan dependency, which is what makes it testable at all
+test:
+    odin test src/physics
+
+check:
+    odin check src -vet-unused -vet-shadowing
+    odin check src/physics -vet-unused -vet-shadowing -no-entry-point
+
+# One formatting to argue about instead of one per contributor.
+fmt:
+    odinfmt -w src
+
 clean:
-    rm -f shaders/*.spv vulkan
+    rm -f shaders/*.spv vulkan src.bin

@@ -1,21 +1,6 @@
 #version 450
 
-#define SHADOW_CASCADES 3
-
-layout(binding = 0) uniform FrameUniforms {
-    mat4 view;
-    mat4 proj;
-    mat4 view_proj;
-    mat4 cascade_vp[SHADOW_CASCADES];
-    vec4 cascade_splits;
-    vec4 cascade_texel;
-    vec4 camera_pos;
-    vec4 sun_direction;
-    vec4 sun_color;
-    vec4 ambient_sky;
-    vec4 ambient_ground;
-    vec4 params;
-} frame;
+#include "frame.glsl"
 
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;

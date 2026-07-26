@@ -25,7 +25,12 @@ vertex_binding_description :: proc() -> vk.VertexInputBindingDescription {
 // vertex that would go straight into the bin.
 position_attribute_description :: proc() -> [1]vk.VertexInputAttributeDescription {
 	return {
-		{location = 0, binding = 0, format = .R32G32B32_SFLOAT, offset = u32(offset_of(Vertex, pos))},
+		{
+			location = 0,
+			binding = 0,
+			format = .R32G32B32_SFLOAT,
+			offset = u32(offset_of(Vertex, pos)),
+		},
 	}
 }
 
@@ -49,17 +54,7 @@ vertex_attribute_descriptions :: proc() -> [5]vk.VertexInputAttributeDescription
 			format = .R32G32B32A32_SFLOAT,
 			offset = u32(offset_of(Vertex, tangent)),
 		},
-		{
-			location = 3,
-			binding = 0,
-			format = .R32G32_SFLOAT,
-			offset = u32(offset_of(Vertex, uv)),
-		},
-		{
-			location = 4,
-			binding = 0,
-			format = .R32_UINT,
-			offset = u32(offset_of(Vertex, material)),
-		},
+		{location = 3, binding = 0, format = .R32G32_SFLOAT, offset = u32(offset_of(Vertex, uv))},
+		{location = 4, binding = 0, format = .R32_UINT, offset = u32(offset_of(Vertex, material))},
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import "core:log"
 import "core:math/linalg"
+import "physics"
 import "vendor:glfw"
 
 // Roughly the counter-strike player: 32x32x72 units at 0.0254 m per unit.
@@ -9,8 +10,15 @@ PLAYER_RADIUS :: 0.3
 PLAYER_HEIGHT :: 1.8
 EYE_HEIGHT :: 1.65
 
+// The ducked player: half the standing hull, eyes just under its top. Both
+// numbers are the counter-strike ratios (36 and 28 of 72 units) applied to the
+// height above.
+CROUCH_HEIGHT :: 0.9
+CROUCH_EYE_HEIGHT :: 0.75
+
 WALK_SPEED :: 6.4 // 250 units/s
 SLOW_FACTOR :: 0.45
+CROUCH_FACTOR :: 0.34 // ducked speed, as in counter-strike
 NOCLIP_SPEED :: 22.0
 
 GRAVITY :: 18.0
@@ -21,132 +29,78 @@ JUMP_SPEED :: 5.0 // clears about 0.7 m
 STEP_HEIGHT :: 0.45
 
 Player :: struct {
-	position: [3]f32, // at the feet, centred horizontally
-	velocity: [3]f32,
-	on_ground: bool,
-	noclip:   bool,
+	body:          physics.Body,
+	prev_position: [3]f32, // start of the current tick, for render interpolation
+	crouching:     bool,
+	noclip:        bool,
+}
+
+// Edge-triggered input, buffered between ticks. A key pressed and released
+// inside one frame still has to reach the simulation, which polling at tick time
+// would miss.
+Player_Intent :: struct {
+	jump:          bool,
+	toggle_noclip: bool,
 }
 
 player: Player
-world_brushes: []Brush
+player_intent: Player_Intent
 
-init_player :: proc(brushes: []Brush) {
-	world_brushes = brushes
-	player.position = SPAWN_POSITION
-	player.velocity = {}
-	player.on_ground = false
+init_player :: proc() {
+	player.body = physics.Body {
+		position = SPAWN_POSITION,
+		radius   = PLAYER_RADIUS,
+		height   = PLAYER_HEIGHT,
+		step     = STEP_HEIGHT,
+	}
+	player.prev_position = SPAWN_POSITION
+	player.crouching = false
 	player.noclip = false
+
+	// after the stance is settled, so the eye starts where it belongs instead of
+	// sliding into place on the first frame
+	init_view()
 }
 
-player_min :: proc(p: [3]f32) -> [3]f32 {
-	return {p.x - PLAYER_RADIUS, p.y - PLAYER_RADIUS, p.z}
+// What the camera should be sitting at, before any smoothing.
+player_eye_height_target :: proc() -> f32 {
+	return player.crouching ? CROUCH_EYE_HEIGHT : EYE_HEIGHT
 }
 
-player_max :: proc(p: [3]f32) -> [3]f32 {
-	return {p.x + PLAYER_RADIUS, p.y + PLAYER_RADIUS, p.z + PLAYER_HEIGHT}
-}
-
-// Strict inequality so that resting exactly on a surface does not count as
-// penetrating it -- otherwise standing still would trigger a push-out forever.
-overlaps :: proc(p: [3]f32, b: Brush) -> bool {
-	mn := player_min(p)
-	mx := player_max(p)
-	return(
-		mn.x < b.max.x &&
-		mx.x > b.min.x &&
-		mn.y < b.max.y &&
-		mx.y > b.min.y &&
-		mn.z < b.max.z &&
-		mx.z > b.min.z \
-	)
-}
-
-overlaps_any :: proc(p: [3]f32) -> bool {
-	for b in world_brushes {
-		if overlaps(p, b) do return true
-	}
-	return false
-}
-
-// Moves along one axis and resolves whatever it ends up inside. Because the
-// other two axes were already free before the step, only this axis can be
-// responsible for a new overlap.
-move_axis :: proc(axis: int, delta: f32) -> (blocked: bool) {
-	if delta == 0 do return false
-
-	old := player.position[axis]
-	player.position[axis] += delta
-
-	for b in world_brushes {
-		if !overlaps(player.position, b) do continue
-
-		target: f32
-		if delta > 0 {
-			// leading edge is the player's max on this axis
-			extent: f32 = axis == 2 ? PLAYER_HEIGHT : PLAYER_RADIUS
-			target = b.min[axis] - extent
-		} else {
-			// the feet are the origin, so the downward extent is zero
-			extent: f32 = axis == 2 ? 0 : PLAYER_RADIUS
-			target = b.max[axis] + extent
-		}
-
-		// Only snap to a face this step could actually have crossed. Standing
-		// on a thin floor slab means permanently overlapping it by its
-		// thickness, and without this check the tiniest sideways drift -- the
-		// 1e-12 that cos(90 degrees) is not -- would snap the player out across
-		// the slab's full width instead of leaving them where they are.
-		if abs(target - old) > abs(delta) + 1e-4 {
-			player.position[axis] = old
-		} else {
-			player.position[axis] = target
-		}
-		blocked = true
-	}
-	return
-}
-
-// Horizontal move that tries again from a raised position when something is in
-// the way, then settles back down. That single retry is the whole of stair
-// climbing.
-step_move :: proc(dx, dy: f32) {
-	start := player.position
-
-	move_axis(0, dx)
-	move_axis(1, dy)
-	flat := player.position
-
-	if !player.on_ground do return
-
-	// close enough to the requested move means nothing worth stepping over
-	wanted := linalg.length([2]f32{dx, dy})
-	got := linalg.length([2]f32{flat.x - start.x, flat.y - start.y})
-	if got >= wanted - 0.001 do return
-
-	// retry elevated, but only if there is headroom up there
-	player.position = start
-	player.position.z += STEP_HEIGHT
-	if overlaps_any(player.position) {
-		player.position = flat
+// Ducking shrinks the hull from the top, which costs nothing because the body
+// origin is at the feet. Standing back up does: it needs the headroom, and
+// without the test you rise straight through a ceiling.
+resolve_crouch :: proc() {
+	if key_down(glfw.KEY_LEFT_CONTROL) {
+		player.crouching = true
+		player.body.height = CROUCH_HEIGHT
 		return
 	}
+	if !player.crouching do return
 
-	move_axis(0, dx)
-	move_axis(1, dy)
-	move_axis(2, -STEP_HEIGHT)
+	standing := player.body
+	standing.height = PLAYER_HEIGHT
+	if physics.overlaps_any(physics.body_aabb(standing), world_collision) do return
 
-	stepped := linalg.length(
-		[2]f32{player.position.x - start.x, player.position.y - start.y},
-	)
-	if stepped <= got {
-		player.position = flat
-	}
+	player.crouching = false
+	player.body.height = PLAYER_HEIGHT
 }
 
-update_player :: proc(dt: f32) {
-	if key_pressed(glfw.KEY_V) {
+// Called once per frame, before the tick loop.
+gather_player_intent :: proc() {
+	if key_pressed(glfw.KEY_V) do player_intent.toggle_noclip = true
+	if key_pressed(glfw.KEY_SPACE) do player_intent.jump = true
+}
+
+// One simulation step. Runs at a fixed rate, so the result does not depend on
+// how fast the machine renders.
+tick_player :: proc(dt: f32) {
+	player.prev_position = player.body.position
+
+	if player_intent.toggle_noclip {
+		player_intent.toggle_noclip = false
 		player.noclip = !player.noclip
-		player.velocity = {}
+		player.body.velocity = {}
 		log.infof("Noclip {}", player.noclip ? "on" : "off")
 	}
 
@@ -166,44 +120,71 @@ update_player :: proc(dt: f32) {
 	}
 
 	if player.noclip {
+		// nothing to duck under while passing through walls
+		player.crouching = false
+		player.body.height = PLAYER_HEIGHT
+
 		speed: f32 = NOCLIP_SPEED
 		if key_down(glfw.KEY_LEFT_SHIFT) do speed *= SLOW_FACTOR
 		if key_down(glfw.KEY_SPACE) do wish.z += 1
 		if key_down(glfw.KEY_C) do wish.z -= 1
 
-		player.position += wish * speed * dt
-		player.on_ground = false
+		player.body.position += wish * speed * dt
+		player.body.on_ground = false
+		player_intent.jump = false
 		return
 	}
 
-	speed: f32 = WALK_SPEED
-	if key_down(glfw.KEY_LEFT_SHIFT) do speed *= SLOW_FACTOR
+	resolve_crouch()
 
-	if player.on_ground && key_down(glfw.KEY_SPACE) {
-		player.velocity.z = JUMP_SPEED
-		player.on_ground = false
+	speed: f32 = WALK_SPEED
+	if player.crouching {
+		speed *= CROUCH_FACTOR
+	} else if key_down(glfw.KEY_LEFT_SHIFT) {
+		speed *= SLOW_FACTOR
 	}
 
-	step_move(wish.x * speed * dt, wish.y * speed * dt)
+	if player.body.on_ground && player_intent.jump {
+		player.body.velocity.z = JUMP_SPEED
+		player.body.on_ground = false
+		view_note_airborne()
+	}
+	player_intent.jump = false
 
-	player.velocity.z -= GRAVITY * dt
-	hit := move_axis(2, player.velocity.z * dt)
-	if hit {
-		// landing clears downward speed, hitting a ceiling clears upward speed
-		player.on_ground = player.velocity.z < 0
-		player.velocity.z = 0
-	} else {
-		player.on_ground = false
+	// The stair retry inside step_move is a teleport: the whole climb happens
+	// between these two reads, which is exactly what the eye has to be spared.
+	before_z := player.body.position.z
+	physics.step_move(&player.body, world_collision, wish.x * speed * dt, wish.y * speed * dt)
+	view_note_step(player.body.position.z - before_z)
+
+	// Read before gravity runs, because landing is what clears the speed that
+	// says how hard the landing was.
+	was_airborne := !player.body.on_ground
+	impact := -player.body.velocity.z
+	physics.apply_gravity(&player.body, world_collision, GRAVITY, dt)
+	if was_airborne && player.body.on_ground {
+		view_note_landing(impact)
 	}
 
 	// A fall through the world is unrecoverable, so treat it as a respawn.
-	if player.position.z < -50 {
+	if player.body.position.z < -50 {
 		log.warn("Fell out of the world, respawning")
-		init_player(world_brushes)
+		init_player()
 	}
 }
 
+// Where the player is drawn this frame: between the last two simulation states.
 // The camera rides at eye height above the feet.
-sync_camera_to_player :: proc() {
-	camera.position = player.position + {0, 0, EYE_HEIGHT}
+sync_camera_to_player :: proc(alpha: f32) {
+	// Advanced with the frame rather than the tick. Smoothing that only moved
+	// 64 times a second would be as coarse as the steps it is smoothing out.
+	view_update(clock.frame_dt)
+
+	position := linalg.lerp(player.prev_position, player.body.position, alpha)
+	camera.position = position + {0, 0, view_eye_offset()}
+}
+
+// The eye, which is where shots start from.
+player_eye :: proc() -> [3]f32 {
+	return camera.position
 }

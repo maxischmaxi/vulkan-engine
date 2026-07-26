@@ -52,47 +52,139 @@ Material_ID :: enum u32 {
 // luminance and the ~0.25 albedo dry stone should land on.
 MATERIALS := []Material {
 	// PaintedPlaster009 -- main walls
-	{tint = {1.30, 1.20, 1.02, 1}, layer = 0, uv_scale = 4.0, roughness_mul = 1.0, metallic = 0, normal_scale = 1.0, saturation = 0.75},
+	{
+		tint = {1.30, 1.20, 1.02, 1},
+		layer = 0,
+		uv_scale = 4.0,
+		roughness_mul = 1.0,
+		metallic = 0,
+		normal_scale = 1.0,
+		saturation = 0.75,
+	},
 	// PaintedPlaster014 -- second wall variant
-	{tint = {1.05, 0.96, 0.80, 1}, layer = 1, uv_scale = 3.5, roughness_mul = 1.0, metallic = 0, normal_scale = 1.0, saturation = 0.80},
+	{
+		tint = {1.05, 0.96, 0.80, 1},
+		layer = 1,
+		uv_scale = 3.5,
+		roughness_mul = 1.0,
+		metallic = 0,
+		normal_scale = 1.0,
+		saturation = 0.80,
+	},
 	// PaintedPlaster016 -- trim and lips
-	{tint = {1.10, 1.01, 0.86, 1}, layer = 2, uv_scale = 3.0, roughness_mul = 1.0, metallic = 0, normal_scale = 1.0, saturation = 0.80},
+	{
+		tint = {1.10, 1.01, 0.86, 1},
+		layer = 2,
+		uv_scale = 3.0,
+		roughness_mul = 1.0,
+		metallic = 0,
+		normal_scale = 1.0,
+		saturation = 0.80,
+	},
 	// PavingStones141 -- outdoor ground, the worst colour cast of the set
-	{tint = {1.05, 0.96, 0.78, 1}, layer = 3, uv_scale = 2.5, roughness_mul = 1.0, metallic = 0, normal_scale = 1.0, saturation = 0.35},
+	{
+		tint = {1.05, 0.96, 0.78, 1},
+		layer = 3,
+		uv_scale = 2.5,
+		roughness_mul = 1.0,
+		metallic = 0,
+		normal_scale = 1.0,
+		saturation = 0.35,
+	},
 	// Tiles130 -- indoor flooring
-	{tint = {0.95, 0.88, 0.74, 1}, layer = 4, uv_scale = 2.0, roughness_mul = 1.0, metallic = 0, normal_scale = 1.0, saturation = 0.50},
+	{
+		tint = {0.95, 0.88, 0.74, 1},
+		layer = 4,
+		uv_scale = 2.0,
+		roughness_mul = 1.0,
+		metallic = 0,
+		normal_scale = 1.0,
+		saturation = 0.50,
+	},
 	// Bricks099 -- doorway jambs
-	{tint = {1.05, 0.92, 0.74, 1}, layer = 5, uv_scale = 2.0, roughness_mul = 1.0, metallic = 0, normal_scale = 1.0, saturation = 0.60},
+	{
+		tint = {1.05, 0.92, 0.74, 1},
+		layer = 5,
+		uv_scale = 2.0,
+		roughness_mul = 1.0,
+		metallic = 0,
+		normal_scale = 1.0,
+		saturation = 0.60,
+	},
 	// Bricks102 -- steps and platforms
-	{tint = {1.15, 1.03, 0.84, 1}, layer = 6, uv_scale = 2.0, roughness_mul = 1.0, metallic = 0, normal_scale = 1.0, saturation = 0.65},
+	{
+		tint = {1.15, 1.03, 0.84, 1},
+		layer = 6,
+		uv_scale = 2.0,
+		roughness_mul = 1.0,
+		metallic = 0,
+		normal_scale = 1.0,
+		saturation = 0.65,
+	},
 	// Rock030 -- outer shell, by far the darkest source texture
-	{tint = {2.10, 1.95, 1.65, 1}, layer = 7, uv_scale = 6.0, roughness_mul = 1.0, metallic = 0, normal_scale = 1.0, saturation = 0.70},
+	{
+		tint = {2.10, 1.95, 1.65, 1},
+		layer = 7,
+		uv_scale = 6.0,
+		roughness_mul = 1.0,
+		metallic = 0,
+		normal_scale = 1.0,
+		saturation = 0.70,
+	},
 	// Rock051 -- scenery masses
-	{tint = {1.25, 1.15, 0.98, 1}, layer = 8, uv_scale = 6.0, roughness_mul = 1.0, metallic = 0, normal_scale = 1.0, saturation = 0.70},
+	{
+		tint = {1.25, 1.15, 0.98, 1},
+		layer = 8,
+		uv_scale = 6.0,
+		roughness_mul = 1.0,
+		metallic = 0,
+		normal_scale = 1.0,
+		saturation = 0.70,
+	},
 	// Bamboo001B -- crates, pulled back to a wood brown
-	{tint = {0.62, 0.50, 0.34, 1}, layer = 9, uv_scale = 0.8, roughness_mul = 0.9, metallic = 0, normal_scale = 1.0, saturation = 0.55},
+	{
+		tint = {0.62, 0.50, 0.34, 1},
+		layer = 9,
+		uv_scale = 0.8,
+		roughness_mul = 0.9,
+		metallic = 0,
+		normal_scale = 1.0,
+		saturation = 0.55,
+	},
 }
 
+// Everything behind descriptor set 1: the material table and the texture arrays
+// it indexes into. None of it changes after load.
+Material_System :: struct {
+	buffer:     vk.Buffer,
+	memory:     vk.DeviceMemory,
+	albedo:     Texture_Array,
+	normal:     Texture_Array,
+	orm:        Texture_Array,
+	sampler:    vk.Sampler,
+	mip_levels: u32,
+}
+
+material_system: Material_System
+
 create_material_buffer :: proc() {
-	if len(MATERIALS) > len(TEXTURE_SETS) {
-		log.panicf(
-			"{} materials reference only {} texture sets",
-			len(MATERIALS),
-			len(TEXTURE_SETS),
-		)
-	}
+	// Several materials may share a texture set, so the only thing worth
+	// checking is that every layer index actually exists.
 	for m, i in MATERIALS {
 		if int(m.layer) >= len(TEXTURE_SETS) {
 			log.panicf("Material {} points at layer {}, which does not exist", i, m.layer)
 		}
 	}
 
-	g.material_buffer, g.material_memory = create_device_local_buffer(MATERIALS, {.STORAGE_BUFFER})
+	material_system.buffer, material_system.memory = create_device_local_buffer(
+		MATERIALS,
+		{.STORAGE_BUFFER},
+	)
 	log.infof("Materials: {}", len(MATERIALS))
 }
 
 destroy_material_buffer :: proc() {
-	destroy_buffer(g.material_buffer, g.material_memory)
+	destroy_buffer(material_system.buffer, material_system.memory)
 }
 
 // Vulkan needs a plain u32 in the vertex stream, not the enum type.

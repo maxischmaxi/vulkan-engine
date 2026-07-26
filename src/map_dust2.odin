@@ -77,12 +77,15 @@ build_dust2 :: proc() -> []Brush {
 	b := make([dynamic]Brush, 0, 160)
 
 	// ---------------------------------------------------------------- ground
-	append(&b, Brush{
-		min = {-52, -52, -2},
-		max = {52, 52, GROUND_Z},
-		material = u32(Material_ID.Ground),
-		faces = {.PosZ}, // buried on all other sides
-	})
+	append(
+		&b,
+		Brush {
+			min      = {-52, -52, -2},
+			max      = {52, 52, GROUND_Z},
+			material = u32(Material_ID.Ground),
+			faces    = {.PosZ}, // buried on all other sides
+		},
+	)
 
 	// Indoor flooring laid on top of the ground rather than cut into it: a
 	// 6 cm slab is real geometry, so there is no z-fighting to worry about.

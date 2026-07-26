@@ -61,12 +61,12 @@ set_path :: proc(set, map_name: string, allocator := context.allocator) -> strin
 }
 
 Load_Job :: struct {
-	first, last:    int, // half-open range of TEXTURE_SETS this worker owns
-	width, height:  int, // target size of every array layer
-	albedo:         []byte,
-	normal:         []byte,
-	orm:            []byte,
-	failed:         bool,
+	first, last:   int, // half-open range of TEXTURE_SETS this worker owns
+	width, height: int, // target size of every array layer
+	albedo:        []byte,
+	normal:        []byte,
+	orm:           []byte,
+	failed:        bool,
 }
 
 // Copies one decoded source image into a layer, repeating it if the source is
@@ -176,9 +176,9 @@ load_texture_worker :: proc(job: ^Load_Job) {
 		// value. Packing them together saves a sampler binding.
 		orm := job.orm[base:base + layer_bytes]
 		for entry in ([2]struct {
-					name:    string,
-					channel: int,
-				}{{"AmbientOcclusion", 0}, {"Roughness", 1}}) {
+				name:    string,
+				channel: int,
+			}{{"AmbientOcclusion", 0}, {"Roughness", 1}}) {
 			path := set_path(set, entry.name, context.temp_allocator)
 			img, err := png.load_from_file(path, {})
 			if err != nil {
@@ -343,11 +343,15 @@ create_texture_arrays :: proc() {
 
 	// Decoding 40 PNGs is the slowest part of startup by far, and the layers
 	// are independent, so each worker owns a disjoint slice of the output.
-	worker_count := min(8, layers)
+	//
+	// The second division matters: 10 layers across 8 workers is 2 layers each,
+	// which only five workers can actually take. Spawning the other three costs
+	// three threads that immediately exit.
+	per_worker := (layers + 8 - 1) / 8
+	worker_count := (layers + per_worker - 1) / per_worker
+
 	jobs := make([]Load_Job, worker_count, context.temp_allocator)
 	threads := make([]^thread.Thread, worker_count, context.temp_allocator)
-
-	per_worker := (layers + worker_count - 1) / worker_count
 	for i in 0 ..< worker_count {
 		jobs[i] = Load_Job {
 			first  = i * per_worker,
@@ -373,36 +377,36 @@ create_texture_arrays :: proc() {
 	}
 
 	// full mip chain down to 1x1
-	g.texture_mip_levels = u32(math.floor(math.log2(f32(max(width, height))))) + 1
+	material_system.mip_levels = u32(math.floor(math.log2(f32(max(width, height))))) + 1
 
-	g.albedo_array = upload_texture_array(
+	material_system.albedo = upload_texture_array(
 		albedo_pixels,
 		u32(width),
 		u32(height),
 		u32(layers),
 		ALBEDO_FORMAT,
-		g.texture_mip_levels,
+		material_system.mip_levels,
 	)
-	g.normal_array = upload_texture_array(
+	material_system.normal = upload_texture_array(
 		normal_pixels,
 		u32(width),
 		u32(height),
 		u32(layers),
 		NORMAL_FORMAT,
-		g.texture_mip_levels,
+		material_system.mip_levels,
 	)
-	g.orm_array = upload_texture_array(
+	material_system.orm = upload_texture_array(
 		orm_pixels,
 		u32(width),
 		u32(height),
 		u32(layers),
 		ORM_FORMAT,
-		g.texture_mip_levels,
+		material_system.mip_levels,
 	)
 
 	log.infof(
 		"Texture arrays ready: {} mip levels, {:.1f} MB VRAM, loaded in {}",
-		g.texture_mip_levels,
+		material_system.mip_levels,
 		f64(total * 3) / (1024 * 1024) * 1.34, // mips add roughly a third
 		time.since(start),
 	)
@@ -423,11 +427,11 @@ create_texture_sampler :: proc() {
 		compareEnable           = false,
 		compareOp               = .ALWAYS,
 		minLod                  = 0,
-		maxLod                  = f32(g.texture_mip_levels),
+		maxLod                  = f32(material_system.mip_levels),
 		borderColor             = .INT_OPAQUE_BLACK,
 		unnormalizedCoordinates = false,
 	}
-	vk_check(vk.CreateSampler(g.device, &sampler_ci, nil, &g.texture_sampler))
+	vk_check(vk.CreateSampler(g.device, &sampler_ci, nil, &material_system.sampler))
 
 	if g.anisotropy_enabled {
 		log.infof("Sampler: linear, repeat, {}x anisotropic", g.max_anisotropy)
@@ -437,8 +441,12 @@ create_texture_sampler :: proc() {
 }
 
 destroy_texture_arrays :: proc() {
-	vk.DestroySampler(g.device, g.texture_sampler, nil)
-	for arr in ([]Texture_Array{g.albedo_array, g.normal_array, g.orm_array}) {
+	vk.DestroySampler(g.device, material_system.sampler, nil)
+	for arr in ([]Texture_Array {
+			material_system.albedo,
+			material_system.normal,
+			material_system.orm,
+		}) {
 		vk.DestroyImageView(g.device, arr.view, nil)
 		vk.DestroyImage(g.device, arr.image, nil)
 		vk.FreeMemory(g.device, arr.memory, nil)

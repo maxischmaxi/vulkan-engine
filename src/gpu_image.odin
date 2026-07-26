@@ -16,16 +16,16 @@ create_image :: proc(
 	memory: vk.DeviceMemory,
 ) {
 	image_ci := vk.ImageCreateInfo {
-		sType         = .IMAGE_CREATE_INFO,
-		imageType     = .D2,
-		format        = format,
-		extent        = {width = width, height = height, depth = 1},
-		mipLevels     = mip_levels,
-		arrayLayers   = array_layers,
-		samples       = samples,
-		tiling        = tiling,
-		usage         = usage,
-		sharingMode   = .EXCLUSIVE,
+		sType = .IMAGE_CREATE_INFO,
+		imageType = .D2,
+		format = format,
+		extent = {width = width, height = height, depth = 1},
+		mipLevels = mip_levels,
+		arrayLayers = array_layers,
+		samples = samples,
+		tiling = tiling,
+		usage = usage,
+		sharingMode = .EXCLUSIVE,
 		initialLayout = .UNDEFINED,
 	}
 	vk_check(vk.CreateImage(g.device, &image_ci, nil, &img))

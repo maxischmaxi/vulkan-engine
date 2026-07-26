@@ -8,6 +8,14 @@ import vk "vendor:vulkan"
 
 MAX_FRAMES_IN_FLIGHT :: 2
 
+// The Vulkan context and nothing else: instance, device, swapchain, render
+// targets, frame synchronisation. Everything a feature owns lives with that
+// feature -- world_renderer in world.odin, prop_renderer in prop_render.odin,
+// shadow in shadow.odin, and so on.
+//
+// That split is the point. This struct is touched when the Vulkan setup itself
+// changes, which is rarely; adding gameplay or a new pass does not come near it,
+// so two people adding two features do not collide here.
 Globals :: struct {
 	odin_context:               runtime.Context,
 	window:                     glfw.WindowHandle,
@@ -25,42 +33,17 @@ Globals :: struct {
 	swapchain_views:            []vk.ImageView,
 	swapchain_format:           vk.Format,
 	swapchain_extent:           vk.Extent2D,
+	// Set by the window callback. Waiting for the driver to report OUT_OF_DATE
+	// works on most of them, but "most" is not a resize policy, and a compositor
+	// that resizes to a size the driver still considers valid would leave the
+	// projection matching a window that no longer exists.
+	framebuffer_resized:        bool,
 	command_pool:               vk.CommandPool,
 	command_buffers:            [MAX_FRAMES_IN_FLIGHT]vk.CommandBuffer,
 	image_available_semaphores: [MAX_FRAMES_IN_FLIGHT]vk.Semaphore,
 	in_flight_fences:           [MAX_FRAMES_IN_FLIGHT]vk.Fence,
 	render_finished_semaphores: []vk.Semaphore, // one per swapchain image
 	current_frame:              u32,
-	pipeline_layout:            vk.PipelineLayout,
-	graphics_pipeline:          vk.Pipeline,
-	shadow_layout:              vk.PipelineLayout,
-	shadow_pipeline:            vk.Pipeline,
-
-	// the entire static map: one vertex buffer, one index buffer, one draw
-	world_vertex_buffer:        vk.Buffer,
-	world_vertex_memory:        vk.DeviceMemory,
-	world_index_buffer:         vk.Buffer,
-	world_index_memory:         vk.DeviceMemory,
-	world_index_count:          u32,
-	material_buffer:            vk.Buffer,
-	material_memory:            vk.DeviceMemory,
-	descriptor_set_layout:      vk.DescriptorSetLayout,
-	descriptor_pool:            vk.DescriptorPool,
-	descriptor_sets:            [MAX_FRAMES_IN_FLIGHT]vk.DescriptorSet,
-	uniform_buffers:            [MAX_FRAMES_IN_FLIGHT]vk.Buffer,
-	uniform_memories:           [MAX_FRAMES_IN_FLIGHT]vk.DeviceMemory,
-	uniform_mapped:             [MAX_FRAMES_IN_FLIGHT]rawptr,
-	light_buffers:              [MAX_FRAMES_IN_FLIGHT]vk.Buffer,
-	light_memories:             [MAX_FRAMES_IN_FLIGHT]vk.DeviceMemory,
-	light_mapped:               [MAX_FRAMES_IN_FLIGHT]rawptr,
-	albedo_array:               Texture_Array,
-	normal_array:               Texture_Array,
-	orm_array:                  Texture_Array,
-	texture_sampler:            vk.Sampler,
-	texture_mip_levels:         u32,
-	anisotropy_enabled:         bool,
-	max_anisotropy:             f32,
-	shadow:                     Shadow_Map,
 	msaa_samples:               vk.SampleCountFlags,
 	color_image:                vk.Image, // multisampled, resolved into the swapchain
 	color_memory:               vk.DeviceMemory,
@@ -69,9 +52,9 @@ Globals :: struct {
 	depth_memory:               vk.DeviceMemory,
 	depth_view:                 vk.ImageView,
 	depth_format:               vk.Format,
+	anisotropy_enabled:         bool,
+	max_anisotropy:             f32,
 	validation_enabled:         bool,
-	last_time:                  f64,
-	delta_time:                 f32,
 }
 
 g: Globals
@@ -97,6 +80,14 @@ main :: proc() {
 	g.window = glfw.CreateWindow(1600, 900, "dust2", nil, nil)
 	if g.window == nil do return
 	defer glfw.DestroyWindow(g.window)
+
+	glfw.SetFramebufferSizeCallback(
+		g.window,
+		proc "c" (window: glfw.WindowHandle, width, height: i32) {
+			context = g.odin_context
+			g.framebuffer_resized = true
+		},
+	)
 
 	vk.load_proc_addresses_global(rawptr(glfw.GetInstanceProcAddress))
 	log.assert(vk.CreateInstance != nil, "Failed to load Vulkan API")
@@ -129,13 +120,12 @@ main :: proc() {
 	create_command_pool()
 	defer vk.DestroyCommandPool(g.device, g.command_pool, nil)
 
-	// --------------------------------------------------------------- scene
+	// ---------------------------------------------------------------- scene
 	brushes := build_dust2()
 	defer delete(brushes)
 
 	bake_world(brushes)
 	create_world_buffers()
-	defer destroy_world_buffers()
 
 	create_material_buffer()
 	defer destroy_material_buffer()
@@ -145,72 +135,109 @@ main :: proc() {
 	defer destroy_texture_arrays()
 
 	init_lights()
-	create_light_buffer()
-	defer destroy_light_buffer()
+	defer destroy_lights()
 
 	create_shadow_map()
-	defer destroy_shadow_map()
 
 	// --------------------------------------------------------------- render
-	create_uniform_buffers()
-	defer destroy_uniform_buffers()
-
-	// every resource the sets point at has to exist by now
-	create_descriptor_set_layout()
-	defer vk.DestroyDescriptorSetLayout(g.device, g.descriptor_set_layout, nil)
-
+	// Layouts describe shapes only, so they come before the resources; the sets
+	// that point at those resources come after everything exists.
+	create_descriptor_layouts()
 	create_descriptor_pool()
-	defer vk.DestroyDescriptorPool(g.device, g.descriptor_pool, nil)
+	defer destroy_descriptors()
+
+	create_frame_data()
+	defer destroy_frame_data()
+
+	create_prop_renderer()
+	create_decal_renderer()
 
 	create_descriptor_sets()
 
-	create_graphics_pipeline()
-	create_shadow_pipeline()
-	defer destroy_graphics_pipeline()
+	create_world_pipeline()
+	defer destroy_world()
+
+	create_shadow_pipelines()
+	defer destroy_shadow_map()
+
+	create_prop_pipeline()
+	defer destroy_prop_renderer()
+
+	create_decal_pipeline()
+	defer destroy_decal_renderer()
+
+	create_hud_pipeline()
+	defer destroy_hud_renderer()
 
 	create_command_buffers()
 
 	create_sync_objects()
 	defer destroy_sync_objects()
 
-	// ---------------------------------------------------------------- input
+	// ----------------------------------------------------------- game state
 	init_camera()
-	init_player(brushes)
+	init_player()
+	init_bots(brushes)
+	init_weapons()
+
 	init_input()
 	defer destroy_input()
 	log_input_support()
 
-	g.last_time = glfw.GetTime()
+	init_clock()
 
 	for !glfw.WindowShouldClose(g.window) {
 		free_all(context.temp_allocator)
 		glfw.PollEvents()
-		update(&g.delta_time)
+		update()
 		draw_frame()
 	}
 
 	vk_check(vk.DeviceWaitIdle(g.device))
 }
 
-// Everything that happens between two frames: timing, input, movement.
-update :: proc(dt_out: ^f32) {
-	now := glfw.GetTime()
-	// A long stall (debugger, compositor hiccup) must not teleport the player
-	// through a wall on the next step.
-	dt := f32(min(now - g.last_time, 0.1))
-	g.last_time = now
-	dt_out^ = dt
+// One frame's worth of everything that is not drawing.
+//
+// The order here is the whole point of the fixed tick: look direction is applied
+// immediately from the mouse, the simulation advances in whole steps, and the
+// renderer is handed a blend factor between the last two of them.
+update :: proc() {
+	steps := advance_clock()
 
-	if key_pressed(glfw.KEY_ESCAPE) && input.cursor_grabbed {
-		grab_cursor(false)
-	}
+	poll_keys()
+	handle_hotkeys()
 
+	// Aiming is never tick-quantised -- a frame of latency between the mouse
+	// moving and the view following is the one thing a shooter cannot have.
 	if input.cursor_grabbed {
 		dx, dy := consume_mouse_delta()
 		camera_apply_mouse(dx, dy)
-		update_player(dt)
+		gather_player_intent()
 	}
-	sync_camera_to_player()
+
+	for _ in 0 ..< steps {
+		tick_player(TICK_DT)
+		tick_bots(TICK_DT)
+	}
+
+	sync_camera_to_player(clock.alpha)
+
+	// Firing runs on real time against the interpolated world, so it has to come
+	// after the camera is where the player sees it.
+	update_weapon(clock.frame_dt, clock.alpha)
+	update_transient_lights(clock.frame_dt)
+
+	update_cascades()
+	build_frame(clock.alpha)
+
+	log_frame_stats(clock.frame_dt)
+}
+
+@(private = "file")
+handle_hotkeys :: proc() {
+	if key_pressed(glfw.KEY_ESCAPE) && input.cursor_grabbed {
+		grab_cursor(false)
+	}
 
 	if key_pressed(glfw.KEY_F1) do set_debug_mode(.None)
 	if key_pressed(glfw.KEY_F2) do set_debug_mode(.Cascades)
@@ -218,8 +245,10 @@ update :: proc(dt_out: ^f32) {
 	if key_pressed(glfw.KEY_F4) do set_debug_mode(.Normals)
 	if key_pressed(glfw.KEY_F5) do set_debug_mode(.Lighting)
 
-	update_cascades()
-	log_frame_stats(dt)
+	if key_pressed(glfw.KEY_F6) {
+		clear_decals()
+		log.info("Decals cleared")
+	}
 }
 
 set_debug_mode :: proc(mode: Debug_Mode) {
@@ -236,13 +265,23 @@ log_frame_stats :: proc(dt: f32) {
 	frames += 1
 	if accum < 1 do return
 
+	alive := 0
+	for bot in bots {
+		if bot.alive do alive += 1
+	}
+
 	log.infof(
-		"{:.1f} fps ({:.2f} ms)  pos {:.1f} {:.1f} {:.1f}{}",
+		"{:.1f} fps ({:.2f} ms)  pos {:.1f} {:.1f} {:.1f}  {} {}/{} hits  {} bots  {} decals{}",
 		f32(frames) / accum,
 		accum / f32(frames) * 1000,
-		player.position.x,
-		player.position.y,
-		player.position.z,
+		player.body.position.x,
+		player.body.position.y,
+		player.body.position.z,
+		current_weapon().name,
+		weapon_state.hits,
+		weapon_state.shots,
+		alive,
+		decal_renderer.count,
 		player.noclip ? "  [noclip]" : "",
 	)
 	accum = 0
@@ -298,7 +337,10 @@ create_instance :: proc() {
 				VALIDATION_LAYER,
 			)
 		} else {
-			log.warnf("{} unavailable, continuing without validation", vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
+			log.warnf(
+				"{} unavailable, continuing without validation",
+				vk.EXT_DEBUG_UTILS_EXTENSION_NAME,
+			)
 		}
 	}
 
@@ -568,7 +610,10 @@ choose_extent :: proc(caps: vk.SurfaceCapabilitiesKHR) -> vk.Extent2D {
 	}
 }
 
-create_swapchain :: proc() {
+// `old` is handed to the driver rather than destroyed up front, so it can reuse
+// the images behind it. Dragging a window edge asks for a rebuild on every pixel
+// of travel, and a full reallocation each time is what makes a resize stutter.
+create_swapchain :: proc(old: vk.SwapchainKHR = {}) {
 	caps: vk.SurfaceCapabilitiesKHR
 	vk_check(vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(g.physical_device, g.surface, &caps))
 
@@ -615,7 +660,7 @@ create_swapchain :: proc() {
 		compositeAlpha   = {.OPAQUE},
 		presentMode      = present_mode,
 		clipped          = true,
-		oldSwapchain     = {},
+		oldSwapchain     = old,
 	}
 
 	families := []u32{g.graphics_family, g.present_family}
@@ -672,12 +717,19 @@ create_image_views :: proc() {
 	}
 }
 
-destroy_swapchain :: proc() {
+// The views and the image list belong to the swapchain they came from, so they
+// always go together. The handle itself is separate, because a rebuild passes it
+// on as oldSwapchain before letting go of it.
+destroy_swapchain_views :: proc() {
 	for view in g.swapchain_views {
 		vk.DestroyImageView(g.device, view, nil)
 	}
 	delete(g.swapchain_views)
 	delete(g.swapchain_images)
+}
+
+destroy_swapchain :: proc() {
+	destroy_swapchain_views()
 	vk.DestroySwapchainKHR(g.device, g.swapchain, nil)
 }
 
@@ -727,199 +779,9 @@ create_sync_objects :: proc() {
 	}
 }
 
-record_command_buffer :: proc(cmd: vk.CommandBuffer, image_index: u32, frame: u32) {
-	begin_info := vk.CommandBufferBeginInfo {
-		sType = .COMMAND_BUFFER_BEGIN_INFO,
-	}
-	vk_check(vk.BeginCommandBuffer(cmd, &begin_info))
-
-	// Fills the cascades and leaves them in SHADER_READ_ONLY. There is one
-	// shadow image shared by both frames in flight, so its barrier also
-	// serialises this pass against the previous frame's sampling -- cheap
-	// enough here, and the alternative is another 100 MB of VRAM.
-	record_shadow_pass(cmd)
-
-	transition_image(
-		cmd,
-		g.swapchain_images[image_index],
-		.UNDEFINED,
-		.COLOR_ATTACHMENT_OPTIMAL,
-		{.TOP_OF_PIPE},
-		{.COLOR_ATTACHMENT_OUTPUT},
-		{},
-		{.COLOR_ATTACHMENT_WRITE},
-	)
-
-	transition_color_for_rendering(cmd)
-	transition_depth_for_rendering(cmd)
-
-	// With MSAA the pass renders into the multisampled image and the hardware
-	// resolves into the swapchain on the way out, so the multisampled contents
-	// themselves never need storing.
-	color_attachment := vk.RenderingAttachmentInfo {
-		sType = .RENDERING_ATTACHMENT_INFO,
-		imageView = msaa_enabled() ? g.color_view : g.swapchain_views[image_index],
-		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
-		loadOp = .CLEAR,
-		storeOp = msaa_enabled() ? .DONT_CARE : .STORE,
-		clearValue = {color = {float32 = {0.42, 0.55, 0.75, 1.0}}}, // sky
-	}
-	if msaa_enabled() {
-		color_attachment.resolveMode = {.AVERAGE}
-		color_attachment.resolveImageView = g.swapchain_views[image_index]
-		color_attachment.resolveImageLayout = .COLOR_ATTACHMENT_OPTIMAL
-	}
-
-	// DONT_CARE on store: nothing reads the depth values after the frame
-	depth_attachment := vk.RenderingAttachmentInfo {
-		sType = .RENDERING_ATTACHMENT_INFO,
-		imageView = g.depth_view,
-		imageLayout = .DEPTH_ATTACHMENT_OPTIMAL,
-		loadOp = .CLEAR,
-		storeOp = .DONT_CARE,
-		clearValue = {depthStencil = {depth = 1.0, stencil = 0}},
-	}
-
-	rendering_info := vk.RenderingInfo {
-		sType = .RENDERING_INFO,
-		renderArea = {offset = {0, 0}, extent = g.swapchain_extent},
-		layerCount = 1,
-		colorAttachmentCount = 1,
-		pColorAttachments = &color_attachment,
-		pDepthAttachment = &depth_attachment,
-	}
-
-	vk.CmdBeginRendering(cmd, &rendering_info)
-
-	vk.CmdBindPipeline(cmd, .GRAPHICS, g.graphics_pipeline)
-
-	viewport := vk.Viewport {
-		x        = 0,
-		y        = 0,
-		width    = f32(g.swapchain_extent.width),
-		height   = f32(g.swapchain_extent.height),
-		minDepth = 0,
-		maxDepth = 1,
-	}
-	vk.CmdSetViewport(cmd, 0, 1, &viewport)
-
-	scissor := vk.Rect2D {
-		offset = {0, 0},
-		extent = g.swapchain_extent,
-	}
-	vk.CmdSetScissor(cmd, 0, 1, &scissor)
-
-	offsets := []vk.DeviceSize{0}
-	vk.CmdBindVertexBuffers(cmd, 0, 1, &g.world_vertex_buffer, raw_data(offsets))
-	vk.CmdBindIndexBuffer(cmd, g.world_index_buffer, 0, .UINT32)
-
-	vk.CmdBindDescriptorSets(
-		cmd,
-		.GRAPHICS,
-		g.pipeline_layout,
-		0,
-		1,
-		&g.descriptor_sets[frame],
-		0,
-		nil,
-	)
-
-	// the entire map in one call -- world-space baked geometry needs no per-object state
-	vk.CmdDrawIndexed(cmd, g.world_index_count, 1, 0, 0, 0)
-
-	vk.CmdEndRendering(cmd)
-
-	transition_image(
-		cmd,
-		g.swapchain_images[image_index],
-		.COLOR_ATTACHMENT_OPTIMAL,
-		.PRESENT_SRC_KHR,
-		{.COLOR_ATTACHMENT_OUTPUT},
-		{.BOTTOM_OF_PIPE},
-		{.COLOR_ATTACHMENT_WRITE},
-		{},
-	)
-
-	vk_check(vk.EndCommandBuffer(cmd))
-}
-
-draw_frame :: proc() {
-	frame := g.current_frame
-
-	vk_check(vk.WaitForFences(g.device, 1, &g.in_flight_fences[frame], true, max(u64)))
-
-	image_index: u32
-	acquire_result := vk.AcquireNextImageKHR(
-		g.device,
-		g.swapchain,
-		max(u64),
-		g.image_available_semaphores[frame],
-		{},
-		&image_index,
-	)
-	if acquire_result == .ERROR_OUT_OF_DATE_KHR {
-		recreate_swapchain()
-		return
-	} else if acquire_result != .SUCCESS && acquire_result != .SUBOPTIMAL_KHR {
-		log.panicf("Failed to acquire swapchain image: {}", acquire_result)
-	}
-
-	// only reset once we know we will submit, otherwise the fence stays unsignaled
-	vk_check(vk.ResetFences(g.device, 1, &g.in_flight_fences[frame]))
-
-	// safe to overwrite: the fence above guarantees this frame's buffers are free
-	update_uniform_buffer(frame)
-	update_light_buffer(frame)
-
-	cmd := g.command_buffers[frame]
-	vk_check(vk.ResetCommandBuffer(cmd, {}))
-	record_command_buffer(cmd, image_index, frame)
-
-	wait_info := vk.SemaphoreSubmitInfo {
-		sType     = .SEMAPHORE_SUBMIT_INFO,
-		semaphore = g.image_available_semaphores[frame],
-		stageMask = {.COLOR_ATTACHMENT_OUTPUT},
-	}
-	signal_info := vk.SemaphoreSubmitInfo {
-		sType     = .SEMAPHORE_SUBMIT_INFO,
-		semaphore = g.render_finished_semaphores[image_index],
-		stageMask = {.ALL_COMMANDS},
-	}
-	cmd_info := vk.CommandBufferSubmitInfo {
-		sType         = .COMMAND_BUFFER_SUBMIT_INFO,
-		commandBuffer = cmd,
-	}
-
-	submit_info := vk.SubmitInfo2 {
-		sType                    = .SUBMIT_INFO_2,
-		waitSemaphoreInfoCount   = 1,
-		pWaitSemaphoreInfos      = &wait_info,
-		commandBufferInfoCount   = 1,
-		pCommandBufferInfos      = &cmd_info,
-		signalSemaphoreInfoCount = 1,
-		pSignalSemaphoreInfos    = &signal_info,
-	}
-	vk_check(vk.QueueSubmit2(g.graphics_queue, 1, &submit_info, g.in_flight_fences[frame]))
-
-	present_info := vk.PresentInfoKHR {
-		sType              = .PRESENT_INFO_KHR,
-		waitSemaphoreCount = 1,
-		pWaitSemaphores    = &g.render_finished_semaphores[image_index],
-		swapchainCount     = 1,
-		pSwapchains        = &g.swapchain,
-		pImageIndices      = &image_index,
-	}
-	present_result := vk.QueuePresentKHR(g.present_queue, &present_info)
-	if present_result == .ERROR_OUT_OF_DATE_KHR || present_result == .SUBOPTIMAL_KHR {
-		recreate_swapchain()
-	} else if present_result != .SUCCESS {
-		log.panicf("Failed to present: {}", present_result)
-	}
-
-	g.current_frame = (g.current_frame + 1) % MAX_FRAMES_IN_FLIGHT
-}
-
 recreate_swapchain :: proc() {
+	g.framebuffer_resized = false
+
 	// wait out minimization: a zero-sized framebuffer cannot back a swapchain
 	for {
 		width, height := glfw.GetFramebufferSize(g.window)
@@ -931,13 +793,22 @@ recreate_swapchain :: proc() {
 
 	// colour and depth targets are sized to the swapchain, so they go along
 	destroy_render_targets()
-	destroy_swapchain()
+	destroy_swapchain_views()
 
-	create_swapchain()
+	// The wait above means nothing is still reading the old swapchain, so it can
+	// go as soon as the new one has taken what it needs from it.
+	old := g.swapchain
+	create_swapchain(old)
+	vk.DestroySwapchainKHR(g.device, old, nil)
+
 	get_swapchain_images()
 	create_image_views()
 	create_render_targets()
 	recreate_render_finished_semaphores()
+
+	// The window changed shape, so the field of view did too. Logging it here
+	// makes dragging the window something to read off rather than squint at.
+	log_camera_fov()
 }
 
 recreate_render_finished_semaphores :: proc() {
@@ -967,4 +838,3 @@ destroy_sync_objects :: proc() {
 	}
 	delete(g.render_finished_semaphores)
 }
-
