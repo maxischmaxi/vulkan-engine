@@ -15,10 +15,11 @@ import "vendor:glfw"
 DEBUG_TOOLS :: #config(DEBUG_TOOLS, ODIN_DEBUG)
 
 Debug_State :: struct {
-	enabled:       bool,
-	god_mode:      bool,
-	infinite_ammo: bool,
-	fps:           f32, // smoothed, for the overlay
+	enabled:        bool,
+	god_mode:       bool,
+	infinite_ammo:  bool,
+	fps:            f32, // smoothed, for the overlay
+	teleport_index: int, // where the room hop got to
 }
 
 debug: Debug_State
@@ -46,6 +47,7 @@ Debug_Action :: struct {
 }
 
 DEBUG_ACTIONS := []Debug_Action {
+	{glfw.KEY_T, "T", "NEXT ROOM", debug_teleport, nil},
 	{glfw.KEY_F7, "F7", "REFILL AMMO", debug_refill_ammo, nil},
 	{glfw.KEY_F8, "F8", "FULL HEAL", debug_full_heal, nil},
 	{glfw.KEY_F9, "F9", "KILL BOTS", debug_kill_bots, nil},
@@ -132,6 +134,24 @@ debug_full_heal :: proc() {
 	player.health = PLAYER_MAX_HEALTH
 	player.armor = PLAYER_MAX_ARMOR
 	log.info("Healed")
+}
+
+// Drops the player into the next room on the map's own list. Walking to the far
+// corner of a 104 m map to look at something takes half a minute; this takes a
+// keypress. It reads the same list the bots spawn from, so it cannot point at a
+// room the map no longer has.
+debug_teleport :: proc() {
+	if len(MAP_SPAWN_AREAS) == 0 do return
+
+	debug.teleport_index = (debug.teleport_index + 1) % len(MAP_SPAWN_AREAS)
+	area := MAP_SPAWN_AREAS[debug.teleport_index]
+
+	// Half a metre up, so the drop settles the player onto whatever is actually
+	// there rather than wedging them into it.
+	teleport_player(
+		{(area.min.x + area.max.x) * 0.5, (area.min.y + area.max.y) * 0.5, area.floor + 0.5},
+	)
+	log.infof("Room {} of {}", debug.teleport_index + 1, len(MAP_SPAWN_AREAS))
 }
 
 debug_kill_bots :: proc() {

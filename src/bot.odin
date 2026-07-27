@@ -68,36 +68,22 @@ Bot :: struct {
 bots: [BOT_COUNT]Bot
 bot_rng: rand.Generator
 
-// Where a bot may end up. Filled from the map bounds at startup.
-bot_spawn_area: struct {
-	min, max: [2]f32,
-	top_z:    f32,
-}
+// How far above a room's own floor the spawn probe starts, and how far below it
+// looks. Enough to find a crate to stand on, nowhere near enough to reach the
+// floor of a room stacked over this one.
+BOT_PROBE_UP :: 2.0
+BOT_PROBE_DOWN :: 3.0
 
-// Handpicked fallbacks for the case where rejection sampling comes up empty --
-// somewhere open in each of the main areas.
-BOT_FALLBACK_SPAWNS := [][2]f32 {
-	{0, -44}, // T spawn
-	{-35, -20}, // tunnels
-	{-32, 34}, // B site
-	{0, -20}, // lower mid
-	{0, 14}, // upper mid
-	{34, -28}, // long A
-	{34, 6}, // long A north
-	{30, 32}, // A site
-	{2, 40}, // CT spawn
-}
-
-init_bots :: proc(brushes: []Brush) {
+init_bots :: proc() {
 	// Deterministic by default: the same seed gives the same wandering, which
 	// makes a bug reproducible instead of a story about what happened once.
 	bot_rng = rand.default_random_generator()
 
-	mn, mx := world_bounds(brushes)
-	// inset so a bot never spawns inside the outer shell
-	bot_spawn_area.min = {mn.x + 6, mn.y + 6}
-	bot_spawn_area.max = {mx.x - 6, mx.y - 6}
-	bot_spawn_area.top_z = mx.z + 5
+	// Before the first spawn rather than after it: a room that has been sealed
+	// off by a stray brush shows up here as one line, and as twelve retrying
+	// bots otherwise.
+	verify_spawn_areas()
+	verify_player_spawn()
 
 	for &bot, i in bots {
 		bot.body = physics.Body {
@@ -127,20 +113,31 @@ bot_aabb :: proc(bot: Bot) -> physics.Aabb {
 	return physics.body_aabb(bot.body)
 }
 
-// Drops a ray from above a random spot and takes the surface it lands on, then
-// checks the bot actually fits there. Sampling beats a hand-maintained list of
-// spawn points because it keeps working when the map changes.
+// Picks a room, picks a point in it, drops a short ray onto whatever is under
+// that point, and checks the bot fits there.
+//
+// The ray starts just above the room's own floor rather than above the map. A
+// map with roofs on it answers a ray from the sky with a roof, and bots would
+// spend the round patrolling the top of the tunnels.
 find_bot_spawn :: proc(bot: ^Bot) -> ([3]f32, bool) {
 	probe := bot.body
 
-	for _ in 0 ..< 64 {
-		x := rand.float32_range(bot_spawn_area.min.x, bot_spawn_area.max.x, bot_rng)
-		y := rand.float32_range(bot_spawn_area.min.y, bot_spawn_area.max.y, bot_rng)
+	for attempt in 0 ..< 64 {
+		area := MAP_SPAWN_AREAS[rand.int_max(len(MAP_SPAWN_AREAS), bot_rng)]
+
+		// The first few attempts sample the room; after that, its centre, which
+		// is open by construction in every room on the list.
+		x := (area.min.x + area.max.x) * 0.5
+		y := (area.min.y + area.max.y) * 0.5
+		if attempt < 48 {
+			x = rand.float32_range(area.min.x, area.max.x, bot_rng)
+			y = rand.float32_range(area.min.y, area.max.y, bot_rng)
+		}
 
 		z, found := physics.ground_below(
-			{x, y, bot_spawn_area.top_z},
+			{x, y, area.floor + BOT_PROBE_UP},
 			world_collision,
-			bot_spawn_area.top_z + 10,
+			BOT_PROBE_UP + BOT_PROBE_DOWN,
 		)
 		if !found do continue
 
@@ -150,22 +147,6 @@ find_bot_spawn :: proc(bot: ^Bot) -> ([3]f32, bool) {
 			continue
 		}
 		return candidate, true
-	}
-
-	// Sampling failed -- fall back to a known-open spot rather than leaving a
-	// bot floating somewhere invalid.
-	for point in BOT_FALLBACK_SPAWNS {
-		z, found := physics.ground_below(
-			{point.x, point.y, bot_spawn_area.top_z},
-			world_collision,
-			bot_spawn_area.top_z + 10,
-		)
-		if !found do continue
-
-		candidate := [3]f32{point.x, point.y, z + 0.01}
-		if !physics.overlaps_any(physics.body_aabb_at(probe, candidate), world_collision) {
-			return candidate, true
-		}
 	}
 	return {}, false
 }

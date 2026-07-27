@@ -3,7 +3,6 @@ package main
 import "core:log"
 import "core:math/linalg"
 import "physics"
-import "vendor:glfw"
 
 // Roughly the counter-strike player: 32x32x72 units at 0.0254 m per unit.
 PLAYER_RADIUS :: 0.3
@@ -16,17 +15,17 @@ EYE_HEIGHT :: 1.65
 CROUCH_HEIGHT :: 0.9
 CROUCH_EYE_HEIGHT :: 0.75
 
-WALK_SPEED :: 6.4 // 250 units/s
-SLOW_FACTOR :: 0.45
-CROUCH_FACTOR :: 0.34 // ducked speed, as in counter-strike
-NOCLIP_SPEED :: 22.0
-
-GRAVITY :: 18.0
-JUMP_SPEED :: 5.0 // clears about 0.7 m
+// Half the hull is lost on ducking, and in mid-air half of that comes off the
+// feet -- see physics.duck_hull. Quoted here because it is a number the map is
+// laid out against, not an implementation detail.
+AIR_DUCK_LIFT :: (PLAYER_HEIGHT - CROUCH_HEIGHT) * 0.5
 
 // Source calls this sv_stepsize (18 units). Anything shorter than this gets
 // walked over without a jump, which is what makes the stairs feel like ramps.
+// It also bounds the mid-air duck's lift, since the camera unwinds both through
+// the same smoothing.
 STEP_HEIGHT :: 0.45
+#assert(AIR_DUCK_LIFT <= STEP_HEIGHT)
 
 PLAYER_MAX_HEALTH :: 100
 PLAYER_MAX_ARMOR :: 100
@@ -58,16 +57,7 @@ Player :: struct {
 	deaths:        int,
 }
 
-// Edge-triggered input, buffered between ticks. A key pressed and released
-// inside one frame still has to reach the simulation, which polling at tick time
-// would miss.
-Player_Intent :: struct {
-	jump:          bool,
-	toggle_noclip: bool,
-}
-
 player: Player
-player_intent: Player_Intent
 
 init_player :: proc() {
 	player.body = physics.Body {
@@ -88,6 +78,16 @@ init_player :: proc() {
 
 	// after the stance is settled, so the eye starts where it belongs instead of
 	// sliding into place on the first frame
+	init_view()
+}
+
+// Puts the player somewhere else outright. The view is reset with them, because
+// every smoothing the camera does describes a movement, and this is not one.
+teleport_player :: proc(position: [3]f32) {
+	player.body.position = position
+	player.body.velocity = {}
+	player.body.on_ground = false
+	player.prev_position = position
 	init_view()
 }
 
@@ -146,33 +146,8 @@ player_eye_height_target :: proc() -> f32 {
 	return player.crouching ? CROUCH_EYE_HEIGHT : EYE_HEIGHT
 }
 
-// Ducking shrinks the hull from the top, which costs nothing because the body
-// origin is at the feet. Standing back up does: it needs the headroom, and
-// without the test you rise straight through a ceiling.
-resolve_crouch :: proc() {
-	if key_down(glfw.KEY_LEFT_CONTROL) {
-		player.crouching = true
-		player.body.height = CROUCH_HEIGHT
-		return
-	}
-	if !player.crouching do return
-
-	standing := player.body
-	standing.height = PLAYER_HEIGHT
-	if physics.overlaps_any(physics.body_aabb(standing), world_collision) do return
-
-	player.crouching = false
-	player.body.height = PLAYER_HEIGHT
-}
-
-// Called once per frame, before the tick loop.
-gather_player_intent :: proc() {
-	if key_pressed(glfw.KEY_V) do player_intent.toggle_noclip = true
-	if key_pressed(glfw.KEY_SPACE) do player_intent.jump = true
-}
-
 // One simulation step. Runs at a fixed rate, so the result does not depend on
-// how fast the machine renders.
+// how fast the machine renders. The moving itself is movement.odin's job.
 tick_player :: proc(dt: f32) {
 	player.prev_position = player.body.position
 	player.damage_flash = max(player.damage_flash - dt, 0)
@@ -186,74 +161,7 @@ tick_player :: proc(dt: f32) {
 		return
 	}
 
-	if player_intent.toggle_noclip {
-		player_intent.toggle_noclip = false
-		player.noclip = !player.noclip
-		player.body.velocity = {}
-		log.infof("Noclip {}", player.noclip ? "on" : "off")
-	}
-
-	// movement is relative to where you look, but flattened, so looking down
-	// does not walk you into the floor
-	forward := player.noclip ? camera_forward() : camera_forward_flat()
-	right := camera_right()
-
-	wish: [3]f32
-	if key_down(glfw.KEY_W) do wish += forward
-	if key_down(glfw.KEY_S) do wish -= forward
-	if key_down(glfw.KEY_D) do wish += right
-	if key_down(glfw.KEY_A) do wish -= right
-
-	if linalg.length(wish) > 0.001 {
-		wish = linalg.normalize(wish)
-	}
-
-	if player.noclip {
-		// nothing to duck under while passing through walls
-		player.crouching = false
-		player.body.height = PLAYER_HEIGHT
-
-		speed: f32 = NOCLIP_SPEED
-		if key_down(glfw.KEY_LEFT_SHIFT) do speed *= SLOW_FACTOR
-		if key_down(glfw.KEY_SPACE) do wish.z += 1
-		if key_down(glfw.KEY_C) do wish.z -= 1
-
-		player.body.position += wish * speed * dt
-		player.body.on_ground = false
-		player_intent.jump = false
-		return
-	}
-
-	resolve_crouch()
-
-	speed: f32 = WALK_SPEED
-	if player.crouching {
-		speed *= CROUCH_FACTOR
-	} else if key_down(glfw.KEY_LEFT_SHIFT) {
-		speed *= SLOW_FACTOR
-	}
-
-	if player.body.on_ground && player_intent.jump {
-		player.body.velocity.z = JUMP_SPEED
-		player.body.on_ground = false
-		view_note_airborne()
-	}
-	player_intent.jump = false
-
-	// The stair retry inside step_move is a teleport: the whole climb happens
-	// between these two reads, which is exactly what the eye has to be spared.
-	before_z := player.body.position.z
-	physics.step_move(&player.body, world_collision, wish.x * speed * dt, wish.y * speed * dt)
-	view_note_step(player.body.position.z - before_z)
-
-	// Read before gravity runs, because landing is what clears the speed that
-	// says how hard the landing was.
-	was_airborne := !player.body.on_ground
-	impact := -player.body.velocity.z
-	physics.apply_gravity(&player.body, world_collision, GRAVITY, dt)
-	if was_airborne && player.body.on_ground {
-		view_note_landing(impact)
-	}
+	move_player(dt)
 
 	// A fall through the world is unrecoverable, so treat it as a respawn.
 	if player.body.position.z < -50 {

@@ -60,30 +60,36 @@ init_lights :: proc() {
 		}
 	}
 
-	// tunnels, the longest stretch with no sky above it
-	append(&point_lights, lamp(-35, -30, 3.6))
-	append(&point_lights, lamp(-35, -14, 3.6))
-	append(&point_lights, lamp(-35, 2, 3.6))
-	append(&point_lights, lamp(-35, 16, 4.8))
+	// The tunnels, which are the only stretch with a roof over them and would
+	// otherwise be lit by nothing at all.
+	append(&point_lights, lamp(-33, -32, 4.0))
+	append(&point_lights, lamp(-33, -26, 4.4))
+	append(&point_lights, lamp(-33, -16, 4.0))
+	append(&point_lights, lamp(-37, -6, 3.8))
+	append(&point_lights, lamp(-37, 4, 3.8))
+	append(&point_lights, lamp(-35, 13, 3.8, 14, 10)) // the mouth into B
 
-	// mid doors and the approach either side
-	append(&point_lights, lamp(0, -1, 4.2, 14, 10))
-	append(&point_lights, lamp(0, -18, 4.2))
-	append(&point_lights, lamp(0, 16, 4.2))
+	// mid, its doors, and the climb to top mid
+	append(&point_lights, lamp(0, -10, 4.2, 14, 10))
+	append(&point_lights, lamp(0, -24, 4.2))
+	append(&point_lights, lamp(0, 6, 4.2))
+	append(&point_lights, lamp(0, 24, 5.2))
 
-	// long doors
-	append(&point_lights, lamp(34, -20, 4.2, 14, 10))
-	append(&point_lights, lamp(34, -30, 4.2))
+	// long doors and the pit, both of them deep in shadow
+	append(&point_lights, lamp(32, -24, 5.4, 14, 10))
+	append(&point_lights, lamp(34, -32, 4.2))
+	append(&point_lights, lamp(27, 6, 3.2))
 
-	// catwalk underside
-	append(&point_lights, lamp(19, 12, 4.2))
+	// B doors, the corridor down from CT
+	append(&point_lights, lamp(-17, 41, 3.6))
 
 	// bombsites, cooler so they read as open sky
-	site :: proc(x, y: f32) -> Point_Light {
-		return {position = {x, y, 5.0}, radius = 20, color = {0.72, 0.82, 1.0}, intensity = 5}
+	site :: proc(x, y, z: f32) -> Point_Light {
+		return {position = {x, y, z}, radius = 22, color = {0.72, 0.82, 1.0}, intensity = 5}
 	}
-	append(&point_lights, site(-32, 36))
-	append(&point_lights, site(32, 34))
+	append(&point_lights, site(-34, 30, 5.0))
+	append(&point_lights, site(30, 32, 6.4))
+	append(&point_lights, site(0, 42, 6.4)) // CT spawn
 
 	if len(point_lights) > MAX_POINT_LIGHTS {
 		log.panicf("{} point lights exceeds the buffer's {}", len(point_lights), MAX_POINT_LIGHTS)

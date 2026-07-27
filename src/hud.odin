@@ -33,6 +33,10 @@ HUD_PANEL :: [4]f32{0.03, 0.04, 0.05, 0.72}
 // Doom has warned that the next hit is the last one.
 HUD_LOW_HEALTH :: 25
 
+// The weapon slots' outer height, in reference pixels. Shared because the
+// speedometer sits directly above them and the two must not overlap.
+HUD_SLOT_HEIGHT :: HUD_TEXT_SMALL + 2 * 8
+
 Hud :: struct {
 	visible: bool,
 }
@@ -74,6 +78,7 @@ build_hud :: proc() {
 	draw_health(margin, height - margin)
 	draw_ammo(width - margin, height - margin)
 	draw_slots(width * 0.5, height - margin)
+	draw_speed(width * 0.5, height - margin - HUD_SLOT_HEIGHT * scale)
 	draw_weapon_prompt(width * 0.5, height * 0.5)
 
 	if debug_active() do draw_debug_panel(width - margin, margin)
@@ -268,6 +273,48 @@ draw_slots :: proc(center, bottom: f32) {
 
 		x += widths[slot] + gap
 	}
+}
+
+// Bottom centre, above the slots: how fast the player is actually travelling.
+//
+// Not a debug readout. A movement game where speed is something you build has to
+// show it, or the difference between a hop that gained and one that did not is
+// invisible -- and gaining is the entire feedback loop. Quoted in Source units a
+// second, because 250 is a number a counter-strike player already knows the feel
+// of, and the metric equivalent is 6.35.
+@(private = "file")
+draw_speed :: proc(center_x, bottom: f32) {
+	scale := hud_scale()
+	speed := player_speed_units()
+
+	// Grey while walking, white once running, green once the air has given you
+	// something the ground never would.
+	color := HUD_FAINT
+	if speed > WALK_SPEED * UNITS_PER_METRE + 12 {
+		color = HUD_GOOD
+	} else if speed > WALK_SPEED * UNITS_PER_METRE * 0.5 {
+		color = HUD_DIM
+	}
+
+	value := fmt.tprintf("{}", int(speed))
+	size := HUD_TEXT_MEDIUM * scale
+	unit_size := HUD_TEXT_SMALL * scale
+	gap := 5 * scale
+
+	// Centred as one block, so the number growing a digit does not shift the
+	// label out from under the crosshair.
+	total := hud_text_width(value, size) + gap + hud_text_width("u/s", unit_size)
+	x := center_x - total * 0.5
+	y := bottom - size - 6 * scale
+
+	hud_text_shadow(x, y, value, size, color)
+	hud_text_shadow(
+		x + total - hud_text_width("u/s", unit_size),
+		y + size - unit_size,
+		"u/s",
+		unit_size,
+		HUD_FAINT,
+	)
 }
 
 // Just under the crosshair, where the eye already is: what the weapon is doing

@@ -40,6 +40,7 @@ WATCHED_KEYS := []i32 {
 	glfw.KEY_C,
 	glfw.KEY_V,
 	glfw.KEY_R,
+	glfw.KEY_T,
 	glfw.KEY_ESCAPE,
 	glfw.KEY_1,
 	glfw.KEY_2,

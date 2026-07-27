@@ -17,11 +17,14 @@ import "physics"
 // radar size would put a player dot below one pixel.
 MINIMAP_RANGE :: f32(34)
 
-// A brush counts as layout if it stands in the band a player walks through.
-// Below it are floor slabs and stair treads, above it are lintels and rails --
-// neither blocks movement, and drawing them turns the radar into a solid block.
-MINIMAP_FLOOR_CLEARANCE :: f32(0.4)
-MINIMAP_HEAD_CLEARANCE :: f32(2.2)
+// A brush counts as layout if it is tall enough to be something you walk around
+// rather than over. Height rather than a band of world z, because the map is
+// stacked: CT-spawn's floor is over two metres up and A-site's platform higher
+// still, and a fixed band would draw one storey and drop the next.
+//
+// The cut lands where it does on purpose. Floor slabs, roofs and single stair
+// treads fall under it; walls, crates and platforms stand above it.
+MINIMAP_MIN_HEIGHT :: f32(0.9)
 
 // The ground plane is 104 x 104 m and would cover everything. Anything near that
 // size is backdrop, not layout.
@@ -55,10 +58,8 @@ init_minimap :: proc(brushes: []Brush) {
 	minimap.cells = make([dynamic]Minimap_Cell, 0, len(brushes))
 
 	for b in brushes {
-		if b.max.z <= GROUND_Z + MINIMAP_FLOOR_CLEARANCE do continue
-		if b.min.z >= GROUND_Z + MINIMAP_HEAD_CLEARANCE do continue
-
 		size := b.max - b.min
+		if size.z < MINIMAP_MIN_HEIGHT do continue
 		if size.x * size.y > MINIMAP_MAX_AREA do continue
 
 		append(

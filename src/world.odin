@@ -161,11 +161,15 @@ bake_world :: proc(brushes: []Brush) {
 		verify_winding()
 	}
 
+	mn, mx := world_bounds(brushes)
 	log.infof(
-		"World: {} brushes, {} vertices, {} triangles",
+		"World: {} brushes, {} vertices, {} triangles, {:.0f} x {:.0f} m, {:.1f} m tall",
 		len(brushes),
 		len(world_vertices),
 		len(world_indices) / 3,
+		mx.x - mn.x,
+		mx.y - mn.y,
+		mx.z - mn.z,
 	)
 }
 
@@ -241,8 +245,7 @@ record_world_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
 	vk.CmdDrawIndexed(cmd, world_renderer.index_count, 1, 0, 0, 0)
 }
 
-// Bounds of everything, used to size the sun's shadow volume and to pick bot
-// spawn points.
+// Bounds of everything, which is what the load line reports the map's size from.
 world_bounds :: proc(brushes: []Brush) -> (mn, mx: [3]f32) {
 	mn = {max(f32), max(f32), max(f32)}
 	mx = {min(f32), min(f32), min(f32)}

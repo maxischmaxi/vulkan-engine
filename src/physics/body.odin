@@ -95,11 +95,15 @@ horizontal_distance :: proc(a, b: [3]f32) -> f32 {
 
 // Horizontal move that retries from a raised position when something is in the
 // way, then settles back down. That single retry is the whole of stair climbing.
-step_move :: proc(body: ^Body, boxes: []Aabb, dx, dy: f32) {
+//
+// Reports which axes ran into something, because a velocity-driven caller has to
+// clear the component that was stopped. Without that, walking into a wall keeps
+// piling speed into it and stepping away releases all of it at once.
+step_move :: proc(body: ^Body, boxes: []Aabb, dx, dy: f32) -> (blocked_x, blocked_y: bool) {
 	start := body.position
 
-	move_axis(body, boxes, 0, dx)
-	move_axis(body, boxes, 1, dy)
+	blocked_x = move_axis(body, boxes, 0, dx)
+	blocked_y = move_axis(body, boxes, 1, dy)
 	flat := body.position
 
 	if !body.on_ground do return
@@ -117,13 +121,17 @@ step_move :: proc(body: ^Body, boxes: []Aabb, dx, dy: f32) {
 		return
 	}
 
-	move_axis(body, boxes, 0, dx)
-	move_axis(body, boxes, 1, dy)
+	raised_x := move_axis(body, boxes, 0, dx)
+	raised_y := move_axis(body, boxes, 1, dy)
 	move_axis(body, boxes, 2, -body.step)
 
+	// The climb gained nothing, so the flat result stands -- and with it the
+	// flat attempt's answer about what stopped the body.
 	if horizontal_distance(body.position, start) <= got {
 		body.position = flat
+		return
 	}
+	return raised_x, raised_y
 }
 
 // Gravity plus the vertical move and its ground/ceiling response. Shared by the

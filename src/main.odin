@@ -184,7 +184,7 @@ main :: proc() {
 	// ----------------------------------------------------------- game state
 	init_camera()
 	init_player()
-	init_bots(brushes)
+	init_bots()
 	init_weapons()
 
 	init_minimap(brushes)
@@ -266,12 +266,13 @@ log_frame_stats :: proc(dt: f32) {
 	if accum < 1 do return
 
 	log.infof(
-		"{:.1f} fps ({:.2f} ms)  pos {:.1f} {:.1f} {:.1f}  {} hp  {} {}/{} ammo  {}/{} hits  {} bots  {} decals{}",
+		"{:.1f} fps ({:.2f} ms)  pos {:.1f} {:.1f} {:.1f}  {:.0f} u/s  {} hp  {} {}/{} ammo  {}/{} hits  {} bots  {} decals{}",
 		f32(frames) / accum,
 		accum / f32(frames) * 1000,
 		player.body.position.x,
 		player.body.position.y,
 		player.body.position.z,
+		player_speed_units(),
 		player.health,
 		current_weapon().name,
 		current_ammo().mag,
