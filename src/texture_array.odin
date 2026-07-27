@@ -412,7 +412,14 @@ create_texture_arrays :: proc() {
 	)
 }
 
+// Anisotropy is the cheapest quality dial there is on a bandwidth-starved GPU:
+// most of a shooter's screen is floor seen at a glancing angle, which is exactly
+// the case anisotropic filtering spends its samples on, and this shader takes
+// three of those per fragment. A positive LOD bias pushes the whole chain toward
+// smaller mips, trading sharpness for cache hits.
 create_texture_sampler :: proc() {
+	aniso := g.anisotropy_enabled && settings.anisotropy > 1
+
 	sampler_ci := vk.SamplerCreateInfo {
 		sType                   = .SAMPLER_CREATE_INFO,
 		magFilter               = .LINEAR,
@@ -421,9 +428,9 @@ create_texture_sampler :: proc() {
 		addressModeU            = .REPEAT,
 		addressModeV            = .REPEAT,
 		addressModeW            = .REPEAT,
-		mipLodBias              = 0,
-		anisotropyEnable        = b32(g.anisotropy_enabled),
-		maxAnisotropy           = g.max_anisotropy,
+		mipLodBias              = settings.mip_lod_bias,
+		anisotropyEnable        = b32(aniso),
+		maxAnisotropy           = aniso ? f32(settings.anisotropy) : 1,
 		compareEnable           = false,
 		compareOp               = .ALWAYS,
 		minLod                  = 0,
@@ -433,11 +440,25 @@ create_texture_sampler :: proc() {
 	}
 	vk_check(vk.CreateSampler(g.device, &sampler_ci, nil, &material_system.sampler))
 
-	if g.anisotropy_enabled {
-		log.infof("Sampler: linear, repeat, {}x anisotropic", g.max_anisotropy)
-	} else {
+	if !g.anisotropy_enabled {
 		log.info("Sampler: linear, repeat, anisotropy unsupported")
+		return
 	}
+	log.infof(
+		"Sampler: linear, repeat, {}x anisotropic, lod bias {:.2f}",
+		aniso ? int(settings.anisotropy) : 1,
+		settings.mip_lod_bias,
+	)
+}
+
+// Anisotropy and LOD bias live entirely in sampler state, so changing them costs
+// one object and one descriptor write -- no pipeline touches them.
+rebuild_samplers :: proc() {
+	vk_check(vk.DeviceWaitIdle(g.device))
+
+	vk.DestroySampler(g.device, material_system.sampler, nil)
+	create_texture_sampler()
+	write_material_set()
 }
 
 destroy_texture_arrays :: proc() {

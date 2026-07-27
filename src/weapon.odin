@@ -360,8 +360,9 @@ update_weapon :: proc(dt: f32, alpha: f32) {
 		if index := weapon_in_slot(slot); index >= 0 do select_weapon(index)
 	}
 
-	// A corpse holds neither trigger nor magazine.
-	if !player.alive || !input.cursor_grabbed {
+	// A corpse holds neither trigger nor magazine. The benchmark holds one
+	// without a cursor to grab.
+	if !player.alive || (!input.cursor_grabbed && !bench_active()) {
 		weapon_state.trigger_held = false
 		consume_fire_click()
 		return
@@ -369,7 +370,8 @@ update_weapon :: proc(dt: f32, alpha: f32) {
 
 	if key_pressed(glfw.KEY_R) do start_reload()
 
-	pressed := glfw.GetMouseButton(g.window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS
+	pressed :=
+		glfw.GetMouseButton(g.window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS || bench_fire_held()
 	clicked := consume_fire_click()
 	weapon := current_weapon()
 

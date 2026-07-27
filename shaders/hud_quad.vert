@@ -35,8 +35,11 @@ void main() {
     float s = sin(i_params.x);
     vec2 turned = vec2(local.x * c - local.y * s, local.x * s + local.y * c);
 
+    // z = 1 is the near plane under the reversed-Z the world renders with. The
+    // HUD pipeline has depth testing off so nothing reads it today, but a 0 here
+    // would sit at the far plane and vanish the day it is switched on.
     vec2 pixel = i_rect.xy + half_size + turned;
-    gl_Position = vec4(pixel * pc.screen.xy * 2.0 - 1.0, 0.0, 1.0);
+    gl_Position = vec4(pixel * pc.screen.xy * 2.0 - 1.0, 1.0, 1.0);
 
     v_color = i_color;
     v_uv = mix(i_uv.xy, i_uv.zw, q);

@@ -118,8 +118,8 @@ create_hud_pipeline :: proc() {
 		frag_spv       = CROSSHAIR_FRAG_CODE,
 		push_constants = push,
 		color_formats  = {g.swapchain_format},
-		depth_format   = g.depth_format,
-		samples        = g.msaa_samples,
+		// The HUD is drawn in its own block after the scene has been resolved and
+		// stretched: one sample, no depth buffer, at the window's own size.
 		// sits on top of everything, and writing depth would be meaningless
 		depth_test     = .Disabled,
 		no_depth_write = true,
@@ -201,8 +201,7 @@ create_hud_quad_pipeline :: proc() {
 			set_layouts    = {descriptors.hud_layout},
 			push_constants = push,
 			color_formats  = {g.swapchain_format},
-			depth_format   = g.depth_format,
-			samples        = g.msaa_samples,
+			// see create_hud_pipeline: its own block, one sample, no depth
 			depth_test     = .Disabled,
 			no_depth_write = true,
 			blend          = .Alpha,
@@ -213,8 +212,6 @@ create_hud_quad_pipeline :: proc() {
 }
 
 destroy_hud_renderer :: proc() {
-	destroy_pipeline(hud_renderer.quad_pipeline)
-	destroy_pipeline(hud_renderer.pipeline)
 
 	for i in 0 ..< MAX_FRAMES_IN_FLIGHT {
 		vk.UnmapMemory(g.device, hud_renderer.instance_memories[i])

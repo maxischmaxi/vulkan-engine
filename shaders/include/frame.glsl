@@ -8,14 +8,25 @@
 // offsets there catches the Odin side; nothing catches a mismatch introduced
 // here, so change both or neither.
 
-#define SHADOW_CASCADES 3
+// The most cascades the uniform block can carry. Fixed, because the block's
+// layout is, and unused slots cost nothing.
+#define SHADOW_CASCADES_MAX 3
 #define PI 3.14159265359
+
+// How many are actually in use, and how wide the percentage-closer filter is.
+// Both are specialization constants, so the loops below unroll to whatever the
+// current settings chose and a cascade count of zero deletes the shadow lookup
+// entirely rather than branching around it.
+//
+// KEEP IN SYNC with Spec_Shadow_Cascades / Spec_Shadow_Pcf in src/shadow.odin.
+layout(constant_id = 0) const int SHADOW_CASCADES = 3;
+layout(constant_id = 1) const int SHADOW_PCF = 9;
 
 layout(set = 0, binding = 0) uniform FrameUniforms {
     mat4 view;
     mat4 proj;
     mat4 view_proj;
-    mat4 cascade_vp[SHADOW_CASCADES];
+    mat4 cascade_vp[SHADOW_CASCADES_MAX];
     vec4 cascade_splits;
     vec4 cascade_texel;
     vec4 camera_pos;

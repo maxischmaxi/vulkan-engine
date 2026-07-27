@@ -208,12 +208,12 @@ create_prop_pipeline :: proc() {
 			color_formats = {g.swapchain_format},
 			depth_format = g.depth_format,
 			samples = g.msaa_samples,
+			spec = shadow_spec_constants(),
 		},
 	)
 }
 
 destroy_prop_renderer :: proc() {
-	destroy_pipeline(prop_renderer.pipeline)
 
 	for i in 0 ..< MAX_FRAMES_IN_FLIGHT {
 		vk.UnmapMemory(g.device, prop_renderer.instance_memories[i])
@@ -403,12 +403,15 @@ record_viewmodel_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
 // within the weapon still works, which a plain depth_compare = ALWAYS would lose.
 @(private = "file")
 clear_viewmodel_depth :: proc(cmd: vk.CommandBuffer) {
+	// 0 is the far plane under reversed-Z, the same value the pass began with
 	attachment := vk.ClearAttachment {
 		aspectMask = {.DEPTH},
-		clearValue = {depthStencil = {depth = 1.0}},
+		clearValue = {depthStencil = {depth = 0.0}},
 	}
+	// The scene's extent, not the window's: under a render scale below 1 those
+	// differ, and a clear rect larger than the rendering area is illegal.
 	rect := vk.ClearRect {
-		rect = {offset = {0, 0}, extent = g.swapchain_extent},
+		rect = {offset = {0, 0}, extent = scene_extent()},
 		baseArrayLayer = 0,
 		layerCount = 1,
 	}

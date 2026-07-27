@@ -100,53 +100,27 @@ world_indices: [dynamic]u32
 // what lets a broadphase slot in here later without touching gameplay code.
 world_collision: []physics.Aabb
 
-// Turns every brush face into two triangles in world space. UVs are a planar
-// world-space projection measured in metres -- the shader divides by the
-// material's uv_scale, so textures line up across brush boundaries no matter
-// how the brushes are cut, and the tiling density stays tweakable at runtime.
+// Turns the visible parts of every brush face into two triangles in world space.
+// UVs are a planar world-space projection measured in metres -- the shader
+// divides by the material's uv_scale, so textures line up across brush
+// boundaries no matter how the brushes are cut, and the tiling density stays
+// tweakable at runtime.
+//
+// Which parts are visible is map_clip's problem; this only emits what it hands
+// over. Collision is built from the brushes themselves, untouched by any of it.
 bake_world :: proc(brushes: []Brush) {
-	// four vertices and six indices per face, six faces per brush
-	world_vertices = make([dynamic]Vertex, 0, len(brushes) * 24)
-	world_indices = make([dynamic]u32, 0, len(brushes) * 36)
+	faces := clip_world_faces(brushes)
+	defer delete(faces)
 
-	for b in brushes {
-		for face in Face {
-			if face not_in b.faces do continue
+	when ODIN_DEBUG {
+		verify_face_partition(faces)
+	}
 
-			basis := FACE_BASES[face]
-			origin := face_origin(b, face)
-			u_len, v_len := face_extent(b, face)
+	world_vertices = make([dynamic]Vertex, 0, len(faces) * 4)
+	world_indices = make([dynamic]u32, 0, len(faces) * 6)
 
-			// glTF convention: bitangent = cross(normal, tangent.xyz) * w.
-			// We want that to come out as v_dir.
-			expected := linalg.cross(basis.normal, basis.u_dir)
-			handedness: f32 = linalg.dot(expected, basis.v_dir) > 0 ? 1 : -1
-
-			base := u32(len(world_vertices))
-
-			// counter-clockwise seen from outside the brush
-			corners := [4][3]f32 {
-				origin + basis.v_dir * v_len,
-				origin + basis.u_dir * u_len + basis.v_dir * v_len,
-				origin + basis.u_dir * u_len,
-				origin,
-			}
-
-			for p in corners {
-				append(
-					&world_vertices,
-					Vertex {
-						pos = p,
-						normal = basis.normal,
-						tangent = {basis.u_dir.x, basis.u_dir.y, basis.u_dir.z, handedness},
-						uv = {linalg.dot(p, basis.u_dir), linalg.dot(p, basis.v_dir)},
-						material = b.material,
-					},
-				)
-			}
-
-			append(&world_indices, base, base + 1, base + 2, base, base + 2, base + 3)
-		}
+	for f in faces {
+		emit_face_quad(f)
 	}
 
 	world_collision = make([]physics.Aabb, len(brushes))
@@ -163,14 +137,56 @@ bake_world :: proc(brushes: []Brush) {
 
 	mn, mx := world_bounds(brushes)
 	log.infof(
-		"World: {} brushes, {} vertices, {} triangles, {:.0f} x {:.0f} m, {:.1f} m tall",
+		"World: {} brushes, {} quads, {} vertices, {} triangles, {:.0f} x {:.0f} m, {:.1f} m tall",
 		len(brushes),
+		len(faces),
 		len(world_vertices),
 		len(world_indices) / 3,
 		mx.x - mn.x,
 		mx.y - mn.y,
 		mx.z - mn.z,
 	)
+}
+
+// One clipped rectangle, wound counter-clockwise seen from outside the brush.
+//
+// The corner order is the one bake_world used when a face was always a whole
+// brush side: (u0,v1) (u1,v1) (u1,v0) (u0,v0). Whether that is counter-clockwise
+// depends only on the face's basis, not on how large the rectangle is, so it
+// stays correct for any sub-rectangle -- verify_winding checks every triangle
+// regardless.
+@(private = "file")
+emit_face_quad :: proc(f: Baked_Face) {
+	basis := FACE_BASES[f.face]
+
+	// glTF convention: bitangent = cross(normal, tangent.xyz) * w.
+	// We want that to come out as v_dir.
+	expected := linalg.cross(basis.normal, basis.u_dir)
+	handedness: f32 = linalg.dot(expected, basis.v_dir) > 0 ? 1 : -1
+
+	base := u32(len(world_vertices))
+
+	uvs := [4][2]f32 {
+		{f.uv_min.x, f.uv_max.y},
+		{f.uv_max.x, f.uv_max.y},
+		{f.uv_max.x, f.uv_min.y},
+		{f.uv_min.x, f.uv_min.y},
+	}
+
+	for uv in uvs {
+		append(
+			&world_vertices,
+			Vertex {
+				pos = face_uv_point(f.face, f.coord, uv),
+				normal = basis.normal,
+				tangent = {basis.u_dir.x, basis.u_dir.y, basis.u_dir.z, handedness},
+				uv = uv,
+				material = f.material,
+			},
+		)
+	}
+
+	append(&world_indices, base, base + 1, base + 2, base, base + 2, base + 3)
 }
 
 // Every triangle's winding must match its stored normal. Getting this wrong
@@ -216,12 +232,14 @@ create_world_pipeline :: proc() {
 			color_formats = {g.swapchain_format},
 			depth_format = g.depth_format,
 			samples = g.msaa_samples,
+			spec = shadow_spec_constants(),
 		},
 	)
 }
 
+// The pipeline is not destroyed here: rebuild_renderer owns every pipeline,
+// because a settings change has to drop and rebuild all of them together.
 destroy_world :: proc() {
-	destroy_pipeline(world_renderer.pipeline)
 	destroy_buffer(world_renderer.vertex_buffer, world_renderer.vertex_memory)
 	destroy_buffer(world_renderer.index_buffer, world_renderer.index_memory)
 	delete(world_vertices)

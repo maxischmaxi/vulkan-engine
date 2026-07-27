@@ -2,8 +2,6 @@ package main
 
 import "core:log"
 import "core:math"
-import "core:math/linalg"
-import "physics"
 
 // The radar. Generated from the same brushes the map is built out of, so it can
 // never disagree with the level -- there is no image to redraw when a wall
@@ -101,9 +99,12 @@ minimap_color :: proc(material: Material_ID) -> [4]f32 {
 
 // Runs on the frame rather than the tick: how long ago something was seen is
 // real-time feedback, like every other fade in the HUD.
+// Line of sight is not asked again here. The bots cast that exact ray on every
+// tick anyway, so the radar reads their answer: the same question, asked once at
+// 64 Hz instead of twice at whatever the frame rate happens to be. It also makes
+// the radar agree with what the AI knows, which is the more defensible rule --
+// a bot that cannot see you should not be on your radar.
 update_minimap :: proc(dt: f32) {
-	eye := player_eye()
-
 	for &contact, i in minimap.contacts {
 		bot := bots[i]
 		if !bot.alive || !player.alive {
@@ -111,27 +112,13 @@ update_minimap :: proc(dt: f32) {
 			continue
 		}
 
-		if minimap_sees(eye, bot) {
+		if bot.sees_player {
 			contact.position = {bot.body.position.x, bot.body.position.y}
 			contact.age = 0
 			continue
 		}
 		contact.age = min(contact.age + dt, MINIMAP_MEMORY)
 	}
-}
-
-// The same line-of-sight question the bots ask, from the other end. Aimed at the
-// bot's chest, so one crouched behind a crate is genuinely hidden.
-@(private = "file")
-minimap_sees :: proc(eye: [3]f32, bot: Bot) -> bool {
-	delta := bot.body.position + {0, 0, BOT_HEIGHT * 0.5} - eye
-	dist := linalg.length(delta)
-	if dist < 0.001 do return true
-
-	if hit, ok := physics.ray_scene(eye, delta / dist, world_collision, dist); ok {
-		if hit.t < dist - 0.2 do return false
-	}
-	return true
 }
 
 // ------------------------------------------------------------------- drawing

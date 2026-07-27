@@ -170,7 +170,8 @@ create_descriptor_sets :: proc() {
 	log.info("Descriptors: set 0 per frame, set 1 static materials, HUD glyph atlas")
 }
 
-@(private = "file")
+// Not file-private: rebuild_renderer calls it, because a new shadow image means
+// the descriptors pointing at the old one are stale.
 write_frame_sets :: proc() {
 	for i in 0 ..< MAX_FRAMES_IN_FLIGHT {
 		uniform_info := vk.DescriptorBufferInfo {
@@ -217,7 +218,8 @@ write_frame_sets :: proc() {
 	}
 }
 
-@(private = "file")
+// Not file-private: rebuild_samplers calls it, because a new sampler object
+// means the set that names it has to be rewritten.
 write_material_set :: proc() {
 	material_info := vk.DescriptorBufferInfo {
 		buffer = material_system.buffer,

@@ -5,9 +5,46 @@ import "core:math"
 import "core:math/linalg"
 import vk "vendor:vulkan"
 
-SHADOW_CASCADES :: 3
-SHADOW_RESOLUTION :: 2048
+// The most cascades that can ever be asked for. The UBO array and the view array
+// are sized to it, and unused slots cost nothing -- so raising the cap is a
+// recompile and lowering the count at runtime is a setting.
+SHADOW_CASCADES_MAX :: 3
+
 SHADOW_FORMAT :: vk.Format.D32_SFLOAT
+
+// How many are actually rendered and sampled right now.
+//
+// This is the single most expensive number in the renderer. Three cascades at
+// 2048 rasterise 12.6 megapixels of depth every frame against a 1600x900 screen's
+// 1.4 -- the sun costs nine times what the view does. Two at 1024 is a sixth of
+// that, and on a weak GPU it is the difference between playable and not.
+shadow_cascades :: proc() -> int {
+	return int(min(settings.shadow_cascades, SHADOW_CASCADES_MAX))
+}
+
+shadow_resolution :: proc() -> u32 {
+	return u32(settings.shadow_resolution)
+}
+
+shadows_enabled :: proc() -> bool {
+	return shadow_cascades() > 0
+}
+
+// Specialization constant ids, matching the layout(constant_id = ...) lines in
+// shaders/include/frame.glsl. Nothing catches a mismatch, so change both or
+// neither.
+SPEC_SHADOW_CASCADES :: 0
+SPEC_SHADOW_PCF :: 1
+
+// What every pipeline that samples shadows has to be built with.
+shadow_spec_constants :: proc() -> []Spec_Constant {
+	@(static) spec: [2]Spec_Constant
+	spec = {
+		{id = SPEC_SHADOW_CASCADES, value = i32(shadow_cascades())},
+		{id = SPEC_SHADOW_PCF, value = i32(settings.shadow_pcf)},
+	}
+	return spec[:]
+}
 
 // Beyond this the sun simply stops casting. Covering the whole 100 m map with
 // three cascades would waste most of the resolution on geometry nobody looks at.
@@ -21,11 +58,11 @@ Shadow_Map :: struct {
 	image:        vk.Image,
 	memory:       vk.DeviceMemory,
 	array_view:   vk.ImageView, // for sampling all cascades
-	layer_views:  [SHADOW_CASCADES]vk.ImageView, // one render target each
+	layer_views:  [SHADOW_CASCADES_MAX]vk.ImageView, // one render target each
 	sampler:      vk.Sampler,
-	cascade_vp:   [SHADOW_CASCADES]linalg.Matrix4f32,
-	split_depths: [SHADOW_CASCADES]f32, // view-space distance where each cascade ends
-	texel_world:  [SHADOW_CASCADES]f32, // metres covered by one shadow texel
+	cascade_vp:   [SHADOW_CASCADES_MAX]linalg.Matrix4f32,
+	split_depths: [SHADOW_CASCADES_MAX]f32, // view-space distance where each cascade ends
+	texel_world:  [SHADOW_CASCADES_MAX]f32, // metres covered by one shadow texel
 	world_pipe:   Pipeline, // baked map geometry
 	prop_pipe:    Pipeline, // instanced boxes
 }
@@ -48,15 +85,26 @@ ortho_vulkan :: proc(left, right, bottom, top, near, far: f32) -> linalg.Matrix4
 }
 
 create_shadow_map :: proc() {
+	// Shadows off: still build a one-layer image and a sampler, because the
+	// descriptor set has a binding that must point at something valid even
+	// though no shader ever reads it. One 512x512 depth image is a rounding
+	// error against not rendering the sun at all.
+	layers := u32(max(shadow_cascades(), 1))
+	size := shadows_enabled() ? shadow_resolution() : 512
+
+	// A rebuild may ask for fewer cascades than the last one had, so the unused
+	// slots must read as empty rather than as handles that were already freed.
+	shadow.layer_views = {}
+
 	shadow.image, shadow.memory = create_image(
-		SHADOW_RESOLUTION,
-		SHADOW_RESOLUTION,
+		size,
+		size,
 		1,
 		SHADOW_FORMAT,
 		.OPTIMAL,
 		{.DEPTH_STENCIL_ATTACHMENT, .SAMPLED},
 		{.DEVICE_LOCAL},
-		SHADOW_CASCADES,
+		layers,
 	)
 
 	array_ci := vk.ImageViewCreateInfo {
@@ -69,13 +117,13 @@ create_shadow_map :: proc() {
 			baseMipLevel = 0,
 			levelCount = 1,
 			baseArrayLayer = 0,
-			layerCount = SHADOW_CASCADES,
+			layerCount = layers,
 		},
 	}
 	vk_check(vk.CreateImageView(g.device, &array_ci, nil, &shadow.array_view))
 
 	// dynamic rendering targets a single layer at a time, so each needs its own view
-	for i in 0 ..< SHADOW_CASCADES {
+	for i in 0 ..< int(layers) {
 		layer_ci := vk.ImageViewCreateInfo {
 			sType = .IMAGE_VIEW_CREATE_INFO,
 			image = shadow.image,
@@ -111,11 +159,16 @@ create_shadow_map :: proc() {
 	}
 	vk_check(vk.CreateSampler(g.device, &sampler_ci, nil, &shadow.sampler))
 
+	if !shadows_enabled() {
+		log.info("Shadows: off")
+		return
+	}
 	log.infof(
-		"Shadows: {} cascades at {}x{}, {} m range",
-		SHADOW_CASCADES,
-		SHADOW_RESOLUTION,
-		SHADOW_RESOLUTION,
+		"Shadows: {} cascades at {}x{}, {} taps, {} m range",
+		shadow_cascades(),
+		size,
+		size,
+		settings.shadow_pcf,
 		int(SHADOW_DISTANCE),
 	)
 }
@@ -127,6 +180,10 @@ create_shadow_map :: proc() {
 // No culling. The orthographic light matrix flips y as well, so the winding
 // would need its own reasoning -- and with a slope-scaled bias handling acne,
 // culling buys nothing here but a way to get it wrong.
+// Both pipelines spell out depth_test even though it is the only thing they
+// state that a default could cover. The default is the main camera's reversed-Z,
+// and these render through ortho_vulkan, which is near-is-zero -- leaving it
+// implicit would invert every shadow in the game and give no clue why.
 create_shadow_pipelines :: proc() {
 	cascade_push := []vk.PushConstantRange {
 		{stageFlags = {.VERTEX}, offset = 0, size = size_of(u32)},
@@ -145,6 +202,7 @@ create_shadow_pipelines :: proc() {
 			push_constants = cascade_push,
 			depth_format = SHADOW_FORMAT,
 			cull = .None,
+			depth_test = .Forward_Less,
 			depth_bias = true,
 		},
 	)
@@ -162,19 +220,20 @@ create_shadow_pipelines :: proc() {
 			push_constants = cascade_push,
 			depth_format = SHADOW_FORMAT,
 			cull = .None,
+			depth_test = .Forward_Less,
 			depth_bias = true,
 		},
 	)
 }
 
 destroy_shadow_map :: proc() {
-	destroy_pipeline(shadow.prop_pipe)
-	destroy_pipeline(shadow.world_pipe)
 
 	vk.DestroySampler(g.device, shadow.sampler, nil)
 	for view in shadow.layer_views {
+		if view == 0 do continue
 		vk.DestroyImageView(g.device, view, nil)
 	}
+	shadow.layer_views = {}
 	vk.DestroyImageView(g.device, shadow.array_view, nil)
 	vk.DestroyImage(g.device, shadow.image, nil)
 	vk.FreeMemory(g.device, shadow.memory, nil)
@@ -182,14 +241,14 @@ destroy_shadow_map :: proc() {
 
 // Splits the view distance so each cascade covers a slice of the frustum. The
 // blend of logarithmic and linear is the standard practical scheme.
-cascade_split_distances :: proc() -> [SHADOW_CASCADES]f32 {
+cascade_split_distances :: proc() -> [SHADOW_CASCADES_MAX]f32 {
 	near := camera.near
 	far := f32(SHADOW_DISTANCE)
 	ratio := far / near
 
-	splits: [SHADOW_CASCADES]f32
-	for i in 0 ..< SHADOW_CASCADES {
-		p := f32(i + 1) / f32(SHADOW_CASCADES)
+	splits: [SHADOW_CASCADES_MAX]f32
+	for i in 0 ..< shadow_cascades() {
+		p := f32(i + 1) / f32(shadow_cascades())
 		log_split := near * math.pow(ratio, p)
 		lin_split := near + (far - near) * p
 		splits[i] = CASCADE_SPLIT_LAMBDA * log_split + (1 - CASCADE_SPLIT_LAMBDA) * lin_split
@@ -220,7 +279,7 @@ update_cascades :: proc() {
 	cam_up := linalg.cross(right, forward)
 
 	near_dist := camera.near
-	for i in 0 ..< SHADOW_CASCADES {
+	for i in 0 ..< shadow_cascades() {
 		far_dist := shadow.split_depths[i]
 
 		// eight corners of this slice of the frustum, in world space
@@ -267,7 +326,7 @@ update_cascades :: proc() {
 		// texel grid slides continuously as the player walks and every shadow
 		// edge crawls.
 		origin := vp * [4]f32{0, 0, 0, 1}
-		scale := f32(SHADOW_RESOLUTION) / 2
+		scale := f32(shadow_resolution()) / 2
 		shadow_origin := [2]f32{origin.x, origin.y} * scale
 		rounded := [2]f32{math.round(shadow_origin.x), math.round(shadow_origin.y)}
 		offset := (rounded - shadow_origin) / scale
@@ -276,7 +335,7 @@ update_cascades :: proc() {
 		vp[1, 3] += offset.y
 
 		shadow.cascade_vp[i] = vp
-		shadow.texel_world[i] = extent / SHADOW_RESOLUTION
+		shadow.texel_world[i] = extent / f32(shadow_resolution())
 		near_dist = far_dist
 	}
 }
@@ -285,6 +344,29 @@ update_cascades :: proc() {
 // these into a single pass, but at this triangle count the difference is noise
 // and separate passes are far easier to inspect in a capture.
 record_shadow_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
+	// With shadows off nothing is rendered into the cascades and the shader,
+	// built with a cascade count of zero, never samples them. The descriptor
+	// still names the image though, and a bound image has to be in the layout the
+	// set was written with -- so it is moved there and left alone.
+	if !shadows_enabled() {
+		transition_image(
+			cmd,
+			shadow.image,
+			.UNDEFINED,
+			.SHADER_READ_ONLY_OPTIMAL,
+			{.TOP_OF_PIPE},
+			{.FRAGMENT_SHADER},
+			{},
+			{.SHADER_READ},
+			0,
+			1,
+			{.DEPTH},
+			0,
+			1,
+		)
+		return
+	}
+
 	transition_image(
 		cmd,
 		shadow.image,
@@ -298,20 +380,20 @@ record_shadow_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
 		1,
 		{.DEPTH},
 		0,
-		SHADOW_CASCADES,
+		u32(shadow_cascades()),
 	)
 
 	viewport := vk.Viewport {
-		width    = SHADOW_RESOLUTION,
-		height   = SHADOW_RESOLUTION,
+		width    = f32(shadow_resolution()),
+		height   = f32(shadow_resolution()),
 		minDepth = 0,
 		maxDepth = 1,
 	}
 	scissor := vk.Rect2D {
-		extent = {SHADOW_RESOLUTION, SHADOW_RESOLUTION},
+		extent = {shadow_resolution(), shadow_resolution()},
 	}
 
-	for i in 0 ..< SHADOW_CASCADES {
+	for i in 0 ..< shadow_cascades() {
 		depth_attachment := vk.RenderingAttachmentInfo {
 			sType = .RENDERING_ATTACHMENT_INFO,
 			imageView = shadow.layer_views[i],
@@ -323,7 +405,7 @@ record_shadow_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
 
 		rendering_info := vk.RenderingInfo {
 			sType = .RENDERING_INFO,
-			renderArea = {extent = {SHADOW_RESOLUTION, SHADOW_RESOLUTION}},
+			renderArea = {extent = {shadow_resolution(), shadow_resolution()}},
 			layerCount = 1,
 			pDepthAttachment = &depth_attachment,
 		}
@@ -367,6 +449,6 @@ record_shadow_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
 		1,
 		{.DEPTH},
 		0,
-		SHADOW_CASCADES,
+		u32(shadow_cascades()),
 	)
 }

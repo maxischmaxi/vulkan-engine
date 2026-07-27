@@ -69,13 +69,26 @@ void main() {
     vec3 n = normalize(mat3(t, b, n_geom) * n_ts);
     vec3 v = normalize(frame.camera_pos.xyz - v_world_pos);
 
+    // Checked before the lighting, not after. These two views throw the lit
+    // colour away, and running the full PBR plus a cascade lookup to discard it
+    // made the debug views the slowest thing in the build -- on exactly the
+    // hardware they exist to diagnose.
+    int mode = int(frame.params.z);
+    if (mode == 2) {
+        out_color = vec4(albedo, 1.0);
+        return;
+    }
+    if (mode == 3) {
+        out_color = vec4(n * 0.5 + 0.5, 1.0);
+        return;
+    }
+
     vec3 color = light_surface(
         v_world_pos, n, n_geom, v,
         albedo, roughness, metallic, occlusion,
         v_view_depth, true
     );
 
-    int mode = int(frame.params.z);
     if (mode == 1) {
         int cascade = pick_cascade(v_view_depth);
         vec3 tint = vec3(0.4);
@@ -83,12 +96,6 @@ void main() {
         else if (cascade == 1) tint = vec3(0.3, 1.0, 0.3);
         else if (cascade == 2) tint = vec3(0.3, 0.3, 1.0);
         color *= tint;
-    } else if (mode == 2) {
-        out_color = vec4(albedo, 1.0);
-        return;
-    } else if (mode == 3) {
-        out_color = vec4(n * 0.5 + 0.5, 1.0);
-        return;
     } else if (mode == 4) {
         // same lighting with a neutral surface, to judge light placement
         color /= max(albedo, vec3(1e-3));

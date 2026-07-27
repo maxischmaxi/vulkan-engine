@@ -83,6 +83,9 @@ build_hud :: proc() {
 
 	if debug_active() do draw_debug_panel(width - margin, margin)
 	if !player.alive do draw_death_overlay(width, height)
+
+	// Last, so it sits over everything -- it is modal while it is open.
+	draw_settings_ui()
 }
 
 // ------------------------------------------------------------------- panels

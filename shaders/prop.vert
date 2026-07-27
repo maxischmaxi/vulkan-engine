@@ -34,9 +34,19 @@ void main() {
 
     // Blocks are deliberately non-uniformly scaled -- a rifle barrel is long and
     // thin -- so the model matrix alone would skew the normals and light the
-    // sides wrong. The inverse transpose is the correct transform, and at two
-    // dozen instances its cost does not register.
-    mat3 normal_matrix = transpose(inverse(mat3(model)));
+    // sides wrong.
+    //
+    // Every prop transform is built from three perpendicular scaled axes
+    // (prop_transform and prop_transform_oriented), and for a matrix whose
+    // columns are orthogonal the inverse transpose is just each column divided
+    // by its own squared length. Exact, cheaper, and -- unlike inverse() -- it
+    // does not produce NaN the day something is given a zero extent.
+    mat3 m = mat3(model);
+    mat3 normal_matrix = mat3(
+        m[0] / max(dot(m[0], m[0]), 1e-8),
+        m[1] / max(dot(m[1], m[1]), 1e-8),
+        m[2] / max(dot(m[2], m[2]), 1e-8)
+    );
 
     v_world_pos  = world.xyz;
     v_normal     = normalize(normal_matrix * in_normal);

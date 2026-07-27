@@ -7,15 +7,23 @@ import vk "vendor:vulkan"
 // attachments, so the loop below always finds something on real hardware.
 DEPTH_FORMAT_CANDIDATES := []vk.Format{.D32_SFLOAT, .D32_SFLOAT_S8_UINT, .D24_UNORM_S8_UINT}
 
-// Box geometry is nothing but hard edges, so anti-aliasing is not optional if
-// the result is meant to look like a game rather than a demo.
-MAX_MSAA :: vk.SampleCountFlag._4
+// Box geometry is nothing but hard edges, so anti-aliasing is what makes the
+// result look like a game rather than a demo -- but it is also pure framebuffer
+// bandwidth, and bandwidth is the thing a weak GPU has least of. Hence a
+// setting, with this as the ceiling.
+MAX_MSAA :: vk.SampleCountFlag._8
 
 find_depth_format :: proc() -> vk.Format {
 	for format in DEPTH_FORMAT_CANDIDATES {
 		props: vk.FormatProperties
 		vk.GetPhysicalDeviceFormatProperties(g.physical_device, format, &props)
 		if .DEPTH_STENCIL_ATTACHMENT in props.optimalTilingFeatures {
+			// Reversed-Z only pays off against a float exponent. On a normalised
+			// integer format it is a harmless relabelling that buys nothing, so
+			// say so rather than let the precision claim quietly become false.
+			if format != .D32_SFLOAT && format != .D32_SFLOAT_S8_UINT {
+				log.warnf("Depth format {} is not float -- reversed-Z gains nothing here", format)
+			}
 			return format
 		}
 	}
@@ -34,16 +42,35 @@ depth_aspect_mask :: proc(format: vk.Format) -> vk.ImageAspectFlags {
 
 // Colour and depth must agree on the sample count, so only counts both support
 // are usable.
-pick_msaa_samples :: proc() -> vk.SampleCountFlags {
+@(private = "file")
+supported_msaa :: proc() -> vk.SampleCountFlags {
 	props: vk.PhysicalDeviceProperties
 	vk.GetPhysicalDeviceProperties(g.physical_device, &props)
+	return props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts
+}
 
-	supported :=
-		props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts
+// The highest count at or below what was asked for that the device can actually
+// do. Rounding down rather than refusing means a config file naming an
+// unsupported count still starts the game.
+clamp_msaa :: proc(wanted: u8) -> u8 {
+	supported := supported_msaa()
 
-	for candidate in ([]vk.SampleCountFlag{._4, ._2}) {
+	for candidate in ([]vk.SampleCountFlag{._8, ._4, ._2}) {
 		if candidate > MAX_MSAA do continue
-		if candidate in supported do return {candidate}
+		if u8(1) << u8(candidate) > wanted do continue
+		if candidate in supported do return u8(1) << u8(candidate)
+	}
+	return 1
+}
+
+pick_msaa_samples :: proc() -> vk.SampleCountFlags {
+	switch settings.msaa {
+	case 8:
+		return {._8}
+	case 4:
+		return {._4}
+	case 2:
+		return {._2}
 	}
 	return {._1}
 }
@@ -52,11 +79,31 @@ msaa_enabled :: proc() -> bool {
 	return g.msaa_samples != {._1}
 }
 
-// Both targets are sized to the swapchain, so they get rebuilt on every resize.
+// How large the scene itself is drawn. Everything fragment-side scales with
+// this, which is what makes it the strongest dial there is; the HUD is drawn
+// afterwards at the window's own size so text does not go through the stretch.
+scene_extent :: proc() -> vk.Extent2D {
+	scale := clamp(settings.render_scale, 0.5, 1.0)
+	if scale >= 0.999 do return g.swapchain_extent
+
+	return {
+		width = max(u32(f32(g.swapchain_extent.width) * scale), 1),
+		height = max(u32(f32(g.swapchain_extent.height) * scale), 1),
+	}
+}
+
+scene_scaled :: proc() -> bool {
+	return scene_extent() != g.swapchain_extent
+}
+
+// Both targets are sized to the scene, so they get rebuilt on every resize and
+// on every change of render scale.
 create_render_targets :: proc() {
+	extent := scene_extent()
+
 	g.depth_image, g.depth_memory = create_image(
-		g.swapchain_extent.width,
-		g.swapchain_extent.height,
+		extent.width,
+		extent.height,
 		1,
 		g.depth_format,
 		.OPTIMAL,
@@ -82,13 +129,43 @@ create_render_targets :: proc() {
 	}
 	vk_check(vk.CreateImageView(g.device, &depth_view_ci, nil, &g.depth_view))
 
-	// Without MSAA the swapchain image is the colour target and there is
-	// nothing to resolve from.
+	// At less than full scale the scene needs somewhere of its own to land
+	// before being stretched onto the swapchain image.
+	if scene_scaled() {
+		g.scene_image, g.scene_memory = create_image(
+			extent.width,
+			extent.height,
+			1,
+			g.swapchain_format,
+			.OPTIMAL,
+			{.COLOR_ATTACHMENT, .TRANSFER_SRC},
+			{.DEVICE_LOCAL},
+			1,
+		)
+
+		scene_view_ci := vk.ImageViewCreateInfo {
+			sType = .IMAGE_VIEW_CREATE_INFO,
+			image = g.scene_image,
+			viewType = .D2,
+			format = g.swapchain_format,
+			subresourceRange = {
+				aspectMask = {.COLOR},
+				baseMipLevel = 0,
+				levelCount = 1,
+				baseArrayLayer = 0,
+				layerCount = 1,
+			},
+		}
+		vk_check(vk.CreateImageView(g.device, &scene_view_ci, nil, &g.scene_view))
+	}
+
+	// Without MSAA whatever the scene lands in is the colour target directly and
+	// there is nothing to resolve from.
 	if !msaa_enabled() do return
 
 	g.color_image, g.color_memory = create_image(
-		g.swapchain_extent.width,
-		g.swapchain_extent.height,
+		extent.width,
+		extent.height,
 		1,
 		g.swapchain_format,
 		.OPTIMAL,
@@ -114,16 +191,28 @@ create_render_targets :: proc() {
 	vk_check(vk.CreateImageView(g.device, &color_view_ci, nil, &g.color_view))
 }
 
+// Driven by the handles rather than by re-deriving which targets ought to exist:
+// a settings change rebuilds these while the old settings still describe them,
+// and asking scene_scaled() here would free the wrong set.
 destroy_render_targets :: proc() {
 	vk.DestroyImageView(g.device, g.depth_view, nil)
 	vk.DestroyImage(g.device, g.depth_image, nil)
 	vk.FreeMemory(g.device, g.depth_memory, nil)
+	g.depth_view, g.depth_image, g.depth_memory = {}, {}, {}
 
-	if !msaa_enabled() do return
+	if g.scene_image != 0 {
+		vk.DestroyImageView(g.device, g.scene_view, nil)
+		vk.DestroyImage(g.device, g.scene_image, nil)
+		vk.FreeMemory(g.device, g.scene_memory, nil)
+		g.scene_view, g.scene_image, g.scene_memory = {}, {}, {}
+	}
 
-	vk.DestroyImageView(g.device, g.color_view, nil)
-	vk.DestroyImage(g.device, g.color_image, nil)
-	vk.FreeMemory(g.device, g.color_memory, nil)
+	if g.color_image != 0 {
+		vk.DestroyImageView(g.device, g.color_view, nil)
+		vk.DestroyImage(g.device, g.color_image, nil)
+		vk.FreeMemory(g.device, g.color_memory, nil)
+		g.color_view, g.color_image, g.color_memory = {}, {}, {}
+	}
 }
 
 // Called once per frame. Coming from UNDEFINED is correct and cheaper than
@@ -145,16 +234,32 @@ transition_depth_for_rendering :: proc(cmd: vk.CommandBuffer) {
 }
 
 transition_color_for_rendering :: proc(cmd: vk.CommandBuffer) {
-	if !msaa_enabled() do return
+	// Both come from UNDEFINED for the same reason the depth target does: the
+	// pass clears or fully overwrites them, so preserving the old contents would
+	// only cost bandwidth.
+	if msaa_enabled() {
+		transition_image(
+			cmd,
+			g.color_image,
+			.UNDEFINED,
+			.COLOR_ATTACHMENT_OPTIMAL,
+			{.TOP_OF_PIPE},
+			{.COLOR_ATTACHMENT_OUTPUT},
+			{},
+			{.COLOR_ATTACHMENT_WRITE},
+		)
+	}
 
-	transition_image(
-		cmd,
-		g.color_image,
-		.UNDEFINED,
-		.COLOR_ATTACHMENT_OPTIMAL,
-		{.TOP_OF_PIPE},
-		{.COLOR_ATTACHMENT_OUTPUT},
-		{},
-		{.COLOR_ATTACHMENT_WRITE},
-	)
+	if scene_scaled() {
+		transition_image(
+			cmd,
+			g.scene_image,
+			.UNDEFINED,
+			.COLOR_ATTACHMENT_OPTIMAL,
+			{.BLIT},
+			{.COLOR_ATTACHMENT_OUTPUT},
+			{},
+			{.COLOR_ATTACHMENT_WRITE},
+		)
+	}
 }

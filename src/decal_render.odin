@@ -39,7 +39,9 @@ Decal_Renderer :: struct {
 	vertices:        [MAX_DECALS * 4]Decal_Vertex,
 	count:           int, // decals placed so far, capped at MAX_DECALS
 	next:            int, // ring cursor
-	dirty:           bool,
+	// One per frame in flight: a single bullet dirties every copy of the buffer,
+	// not just the one about to be written.
+	dirty:           [MAX_FRAMES_IN_FLIGHT]bool,
 }
 
 decal_renderer: Decal_Renderer
@@ -126,19 +128,19 @@ create_decal_pipeline :: proc() {
 			samples        = g.msaa_samples,
 			// Coplanar with the wall it sits on: test against it, never write, and
 			// bias toward the camera so the comparison resolves in our favour.
-			depth_test     = .Less_Equal,
+			depth_test     = .Nearer_Or_Equal,
 			no_depth_write = true,
 			blend          = .Alpha,
 			depth_bias     = true,
 			// no culling: a decal is a flat quad and the basis below may wind
 			// either way depending on which face was hit
 			cull           = .None,
+			spec           = shadow_spec_constants(),
 		},
 	)
 }
 
 destroy_decal_renderer :: proc() {
-	destroy_pipeline(decal_renderer.pipeline)
 
 	for i in 0 ..< MAX_FRAMES_IN_FLIGHT {
 		vk.UnmapMemory(g.device, decal_renderer.vertex_memories[i])
@@ -179,19 +181,23 @@ add_decal :: proc(point, normal: [3]f32, seed: f32) {
 		}
 	}
 
-	decal_renderer.dirty = true
+	for &d in decal_renderer.dirty do d = true
 }
 
 clear_decals :: proc() {
 	decal_renderer.count = 0
 	decal_renderer.next = 0
-	decal_renderer.dirty = true
+	for &d in decal_renderer.dirty do d = true
 }
 
 // The whole ring is copied rather than tracking which slots changed: 24 KB is
-// well below the point where the bookkeeping would pay for itself.
+// well below the point where per-slot bookkeeping would pay for itself. Whether
+// to copy at all is worth tracking though -- decals change when a bullet lands
+// and not otherwise, so the overwhelming majority of frames skip this entirely.
 upload_decals :: proc(frame: u32) {
 	if decal_renderer.count == 0 do return
+	if !decal_renderer.dirty[frame] do return
+	decal_renderer.dirty[frame] = false
 
 	mem.copy(
 		decal_renderer.vertex_mapped[frame],
@@ -206,10 +212,10 @@ record_decal_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
 	vk.CmdBindPipeline(cmd, .GRAPHICS, decal_renderer.pipeline.pipeline)
 	bind_frame_set(cmd, decal_renderer.pipeline.layout, frame)
 
-	// Negative bias pulls the quad toward the camera in depth. Slope scaling
-	// matters here because a decal seen at a glancing angle spans many depth
-	// values across a single pixel.
-	vk.CmdSetDepthBias(cmd, -2.0, 0, -2.0)
+	// Positive bias pulls the quad toward the camera, because under reversed-Z
+	// nearer is greater. Slope scaling matters here because a decal seen at a
+	// glancing angle spans many depth values across a single pixel.
+	vk.CmdSetDepthBias(cmd, 2.0, 0, 2.0)
 
 	offsets := []vk.DeviceSize{0}
 	vk.CmdBindVertexBuffers(cmd, 0, 1, &decal_renderer.vertex_buffers[frame], raw_data(offsets))

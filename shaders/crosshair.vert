@@ -38,6 +38,7 @@ void main() {
         p = pivot + vec2(d.x * rot.x - d.y * rot.y, d.x * rot.y + d.y * rot.x);
     }
 
-    gl_Position = vec4(p * pc.screen.xy * 2.0 - 1.0, 0.0, 1.0);
+    // z = 1 is the near plane under reversed-Z -- see hud_quad.vert
+    gl_Position = vec4(p * pc.screen.xy * 2.0 - 1.0, 1.0, 1.0);
     v_color = pc.color;
 }

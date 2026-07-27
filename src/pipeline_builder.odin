@@ -1,7 +1,10 @@
 package main
 
+import "core:fmt"
 import "core:log"
 import "core:mem"
+import "core:os"
+import "core:strings"
 import vk "vendor:vulkan"
 
 // Creating a graphics pipeline is a hundred lines of structs of which maybe six
@@ -18,9 +21,19 @@ Cull_Mode :: enum {
 	Front,
 }
 
+// The main camera renders reversed-Z (see perspective_tangents in frame.odin):
+// the near plane is 1, the far plane is 0, so nearer means greater. The shadow
+// cascades are orthographic and therefore linear in depth, where reversed-Z has
+// no 1/z distribution to cancel and buys nothing, so they keep the plain
+// near-is-zero convention -- and have to say so, because the zero value here is
+// the main camera's.
+//
+// The names say which way is nearer rather than naming the raw comparison, so a
+// pipeline that picks the wrong convention reads wrong.
 Depth_Test :: enum {
-	Less, // zero value
-	Less_Equal,
+	Nearer, // zero value: reversed-Z
+	Nearer_Or_Equal, // reversed-Z, for surfaces coplanar with what they sit on
+	Forward_Less, // plain near-is-zero depth -- the shadow cascades only
 	Always,
 	Disabled,
 }
@@ -47,6 +60,20 @@ Pipeline_Desc :: struct {
 	blend:          Blend_Mode,
 	depth_bias:     bool,
 	extra_dynamic:  []vk.DynamicState,
+	spec:           []Spec_Constant,
+}
+
+// A quality setting compiled into the shader rather than branched on.
+//
+// The rule this codebase follows: express a setting as data first, and reach for
+// a compiled variant only where it removes work from an inner loop. Anisotropy
+// is sampler state and costs nothing; the shadow tap count is a loop bound, and
+// baking it lets the loop unroll and a cascade count of zero delete the whole
+// texture-fetch path. Only ever one variant of each pipeline exists at a time --
+// the one the current settings need.
+Spec_Constant :: struct {
+	id:    u32,
+	value: i32,
 }
 
 Pipeline :: struct {
@@ -75,14 +102,16 @@ create_shader_module :: proc(code: []byte) -> vk.ShaderModule {
 @(private = "file")
 compare_op :: proc(test: Depth_Test) -> vk.CompareOp {
 	switch test {
-	case .Less:
+	case .Nearer:
+		return .GREATER
+	case .Nearer_Or_Equal:
+		return .GREATER_OR_EQUAL
+	case .Forward_Less:
 		return .LESS
-	case .Less_Equal:
-		return .LESS_OR_EQUAL
 	case .Always, .Disabled:
 		return .ALWAYS
 	}
-	return .LESS
+	return .GREATER
 }
 
 @(private = "file")
@@ -104,6 +133,26 @@ build_pipeline :: proc(desc: Pipeline_Desc) -> Pipeline {
 	vert_module := create_shader_module(desc.vert_spv)
 	defer vk.DestroyShaderModule(g.device, vert_module, nil)
 
+	// One entry per constant, all i32, tightly packed -- so the map entries are
+	// simply index * 4 and there is no alignment question to get wrong.
+	spec_entries := make([]vk.SpecializationMapEntry, len(desc.spec), context.temp_allocator)
+	spec_values := make([]i32, len(desc.spec), context.temp_allocator)
+	for c, i in desc.spec {
+		spec_entries[i] = {
+			constantID = c.id,
+			offset     = u32(i * size_of(i32)),
+			size       = size_of(i32),
+		}
+		spec_values[i] = c.value
+	}
+	spec_info := vk.SpecializationInfo {
+		mapEntryCount = u32(len(spec_entries)),
+		pMapEntries   = raw_data(spec_entries),
+		dataSize      = len(spec_values) * size_of(i32),
+		pData         = raw_data(spec_values),
+	}
+	spec := len(desc.spec) > 0 ? &spec_info : nil
+
 	stages := make([dynamic]vk.PipelineShaderStageCreateInfo, 0, 2, context.temp_allocator)
 	append(
 		&stages,
@@ -112,6 +161,7 @@ build_pipeline :: proc(desc: Pipeline_Desc) -> Pipeline {
 			stage = {.VERTEX},
 			module = vert_module,
 			pName = "main",
+			pSpecializationInfo = spec,
 		},
 	)
 
@@ -125,6 +175,7 @@ build_pipeline :: proc(desc: Pipeline_Desc) -> Pipeline {
 				stage = {.FRAGMENT},
 				module = frag_module,
 				pName = "main",
+				pSpecializationInfo = spec,
 			},
 		)
 	}
@@ -244,10 +295,69 @@ build_pipeline :: proc(desc: Pipeline_Desc) -> Pipeline {
 		renderPass          = {},
 	}
 
-	vk_check(vk.CreateGraphicsPipelines(g.device, {}, 1, &pipeline_ci, nil, &result.pipeline))
+	vk_check(
+		vk.CreateGraphicsPipelines(
+			g.device,
+			pipeline_cache,
+			1,
+			&pipeline_ci,
+			nil,
+			&result.pipeline,
+		),
+	)
 
 	log.infof("Pipeline: {}", desc.name)
 	return result
+}
+
+// Compiling the six pipelines from scratch costs a second or two on a slow CPU
+// with an old driver. That is tolerable once at startup and not at all when a
+// settings change rebuilds all of them, so the driver's own compilation results
+// are kept between runs.
+pipeline_cache: vk.PipelineCache
+
+create_pipeline_cache :: proc() {
+	data, err := os.read_entire_file(pipeline_cache_path(), context.temp_allocator)
+
+	// The driver is required to reject a cache it does not recognise, but a
+	// truncated file has crashed drivers before, so the header is checked here
+	// rather than trusted.
+	if err != nil || len(data) < size_of(vk.PipelineCacheHeaderVersionOne) {
+		data = nil
+	}
+
+	cache_ci := vk.PipelineCacheCreateInfo {
+		sType           = .PIPELINE_CACHE_CREATE_INFO,
+		initialDataSize = len(data),
+		pInitialData    = raw_data(data),
+	}
+	vk_check(vk.CreatePipelineCache(g.device, &cache_ci, nil, &pipeline_cache))
+}
+
+destroy_pipeline_cache :: proc() {
+	size: int
+	if vk.GetPipelineCacheData(g.device, pipeline_cache, &size, nil) == .SUCCESS && size > 0 {
+		data := make([]byte, size, context.temp_allocator)
+		if vk.GetPipelineCacheData(g.device, pipeline_cache, &size, raw_data(data)) == .SUCCESS {
+			path := pipeline_cache_path()
+			dir := path[:strings.last_index_byte(path, '/')]
+			if os.exists(dir) || os.make_directory(dir) == nil {
+				_ = os.write_entire_file(path, data)
+			}
+		}
+	}
+	vk.DestroyPipelineCache(g.device, pipeline_cache, nil)
+}
+
+@(private = "file")
+pipeline_cache_path :: proc() -> string {
+	dir := os.get_env("XDG_CACHE_HOME", context.temp_allocator)
+	if dir == "" {
+		home := os.get_env("HOME", context.temp_allocator)
+		if home == "" do return "pipeline.cache"
+		dir = fmt.tprintf("%s/.cache", home)
+	}
+	return fmt.tprintf("%s/dust2/pipeline.cache", dir)
 }
 
 destroy_pipeline :: proc(p: Pipeline) {

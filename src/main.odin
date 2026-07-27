@@ -33,6 +33,10 @@ Globals :: struct {
 	swapchain_views:            []vk.ImageView,
 	swapchain_format:           vk.Format,
 	swapchain_extent:           vk.Extent2D,
+	// What the driver actually gave us. A compositor without tearing control
+	// hands back FIFO no matter what is asked for, and a frame time measured
+	// against that is a refresh rate rather than a result.
+	present_mode:               vk.PresentModeKHR,
 	// Set by the window callback. Waiting for the driver to report OUT_OF_DATE
 	// works on most of them, but "most" is not a resize policy, and a compositor
 	// that resizes to a size the driver still considers valid would leave the
@@ -45,9 +49,15 @@ Globals :: struct {
 	render_finished_semaphores: []vk.Semaphore, // one per swapchain image
 	current_frame:              u32,
 	msaa_samples:               vk.SampleCountFlags,
-	color_image:                vk.Image, // multisampled, resolved into the swapchain
+	color_image:                vk.Image, // multisampled, resolved into the scene target
 	color_memory:               vk.DeviceMemory,
 	color_view:                 vk.ImageView,
+	// Where the scene lands when it is rendered smaller than the window, before
+	// being stretched onto the swapchain. Absent at full scale, where the
+	// swapchain image serves directly.
+	scene_image:                vk.Image,
+	scene_memory:               vk.DeviceMemory,
+	scene_view:                 vk.ImageView,
 	depth_image:                vk.Image,
 	depth_memory:               vk.DeviceMemory,
 	depth_view:                 vk.ImageView,
@@ -67,6 +77,8 @@ QueueFamilies :: struct {
 main :: proc() {
 	context.logger = log.create_console_logger()
 	g.odin_context = context
+
+	parse_cli()
 
 	glfw.SetErrorCallback(proc "c" (error: i32, description: cstring) {
 		context = g.odin_context
@@ -103,6 +115,10 @@ main :: proc() {
 	create_logical_device()
 	defer vk.DestroyDevice(g.device, nil)
 
+	// Before anything reads a quality number. Nothing below may ask the driver
+	// for a limit and decide for itself what to do with it.
+	load_settings()
+
 	// the pipelines bake both of these in, so they are picked before anything uses them
 	g.depth_format = find_depth_format()
 	g.msaa_samples = pick_msaa_samples()
@@ -119,6 +135,9 @@ main :: proc() {
 	// the pool must exist before any buffer upload, which uses a one-off command buffer
 	create_command_pool()
 	defer vk.DestroyCommandPool(g.device, g.command_pool, nil)
+
+	create_pipeline_cache()
+	defer destroy_pipeline_cache()
 
 	// ---------------------------------------------------------------- scene
 	brushes := build_dust2()
@@ -160,26 +179,24 @@ main :: proc() {
 
 	create_descriptor_sets()
 
-	create_world_pipeline()
+	// Every pipeline is created and destroyed as a group, because a settings
+	// change has to drop and rebuild all of them together -- see rebuild_renderer.
+	create_all_pipelines()
+	defer destroy_all_pipelines()
+
 	defer destroy_world()
-
-	create_shadow_pipelines()
 	defer destroy_shadow_map()
-
-	create_prop_pipeline()
 	defer destroy_prop_renderer()
-
-	create_decal_pipeline()
 	defer destroy_decal_renderer()
-
-	create_hud_pipeline()
-	create_hud_quad_pipeline()
 	defer destroy_hud_renderer()
 
 	create_command_buffers()
 
 	create_sync_objects()
 	defer destroy_sync_objects()
+
+	create_gpu_timer(cli.gpu_timing)
+	defer destroy_gpu_timer()
 
 	// ----------------------------------------------------------- game state
 	init_camera()
@@ -196,13 +213,20 @@ main :: proc() {
 	defer destroy_input()
 	log_input_support()
 
+	// After the player and the bots exist: it seeds their randomness and takes
+	// the camera off the player's own movement.
+	init_bench()
+	defer destroy_bench()
+
 	init_clock()
 
 	for !glfw.WindowShouldClose(g.window) {
+		cpu_frame_begin()
 		free_all(context.temp_allocator)
 		glfw.PollEvents()
 		update()
 		draw_frame()
+		limit_frame_rate()
 	}
 
 	vk_check(vk.DeviceWaitIdle(g.device))
@@ -214,24 +238,29 @@ main :: proc() {
 // immediately from the mouse, the simulation advances in whole steps, and the
 // renderer is handed a blend factor between the last two of them.
 update :: proc() {
-	steps := advance_clock()
+	// The benchmark owns the clock and the camera, so that a frame index rather
+	// than a stopwatch decides what the world looks like.
+	steps := bench_active() ? bench_step() : advance_clock()
 
 	poll_keys()
 	handle_hotkeys()
 	update_debug()
+	update_settings_ui()
 
 	// Aiming is never tick-quantised -- a frame of latency between the mouse
 	// moving and the view following is the one thing a shooter cannot have.
-	if input.cursor_grabbed {
+	if input.cursor_grabbed && !bench_active() && !settings_ui.open {
 		dx, dy := consume_mouse_delta()
 		camera_apply_mouse(dx, dy)
 		gather_player_intent()
 	}
 
+	cpu_zone(.Tick)
 	for _ in 0 ..< steps {
 		tick_player(TICK_DT)
 		tick_bots(TICK_DT)
 	}
+	cpu_zone(.Other)
 
 	sync_camera_to_player(clock.alpha)
 
@@ -240,9 +269,12 @@ update :: proc() {
 	update_weapon(clock.frame_dt, clock.alpha)
 	update_transient_lights(clock.frame_dt)
 
+	cpu_zone(.Build_Frame)
 	update_cascades()
 	build_frame(clock.alpha)
+	cpu_zone(.Other)
 
+	if bench_active() do return
 	log_frame_stats(clock.frame_dt)
 }
 
@@ -473,6 +505,49 @@ is_device_suitable :: proc(device: vk.PhysicalDevice) -> bool {
 	return format_count > 0 && present_mode_count > 0
 }
 
+// Total size of every heap the device renders out of. The only property in all
+// of Vulkan besides the device type that correlates with speed at all, and even
+// that one is weak -- a 4 GB RX 6400 loses to a 3 GB GTX 1060.
+device_local_bytes :: proc(device: vk.PhysicalDevice) -> u64 {
+	props: vk.PhysicalDeviceMemoryProperties
+	vk.GetPhysicalDeviceMemoryProperties(device, &props)
+
+	total: u64
+	for i in 0 ..< props.memoryHeapCount {
+		if .DEVICE_LOCAL in props.memoryHeaps[i].flags do total += u64(props.memoryHeaps[i].size)
+	}
+	return total
+}
+
+// Device type first, memory only to break ties. This used to add
+// maxImageDimension2D, which is 16384 on everything made this decade and so
+// swamped the discrete-GPU bonus instead of breaking a tie with it -- the choice
+// then came down to enumeration order. Nothing else in VkPhysicalDeviceProperties
+// is a speed signal: maxComputeSharedMemorySize, for instance, is larger on this
+// machine's integrated GPU than on its discrete one.
+device_score :: proc(device: vk.PhysicalDevice) -> int {
+	props: vk.PhysicalDeviceProperties
+	vk.GetPhysicalDeviceProperties(device, &props)
+
+	rank := 0
+	switch props.deviceType {
+	case .DISCRETE_GPU:
+		rank = 4
+	case .INTEGRATED_GPU:
+		rank = 3
+	case .VIRTUAL_GPU:
+		rank = 2
+	case .CPU:
+		rank = 1
+	case .OTHER:
+		rank = 0
+	}
+
+	// in 256 MB units, so the largest card on the market still cannot outrank a
+	// device one tier above it
+	return rank * 1024 + int(device_local_bytes(device) / (256 * 1024 * 1024))
+}
+
 pick_physical_device :: proc() {
 	count: u32
 	vk.EnumeratePhysicalDevices(g.instance, &count, nil)
@@ -481,20 +556,40 @@ pick_physical_device :: proc() {
 	devices := make([]vk.PhysicalDevice, count, context.temp_allocator)
 	vk.EnumeratePhysicalDevices(g.instance, &count, raw_data(devices))
 
-	best_score := -1
-	for device in devices {
-		if !is_device_suitable(device) do continue
-
+	// Printed every run, because --gpu=N indexes into exactly this list and
+	// because "which GPU was this measured on" is the first question anyone asks
+	// about a frame time.
+	for device, i in devices {
 		props: vk.PhysicalDeviceProperties
 		vk.GetPhysicalDeviceProperties(device, &props)
+		log.infof(
+			"GPU {}: {} ({}, {} MB local){}",
+			i,
+			string(cstring(&props.deviceName[0])),
+			props.deviceType,
+			device_local_bytes(device) / (1024 * 1024),
+			is_device_suitable(device) ? "" : " -- cannot present here",
+		)
+	}
 
-		score := 0
-		if props.deviceType == .DISCRETE_GPU do score += 1000
-		score += int(props.limits.maxImageDimension2D)
+	if cli.gpu_index >= 0 {
+		if cli.gpu_index >= len(devices) {
+			log.panicf("--gpu={} but there are only {} devices", cli.gpu_index, len(devices))
+		}
+		if !is_device_suitable(devices[cli.gpu_index]) {
+			log.panicf("--gpu={} cannot present to this surface", cli.gpu_index)
+		}
+		g.physical_device = devices[cli.gpu_index]
+	} else {
+		best_score := -1
+		for device in devices {
+			if !is_device_suitable(device) do continue
 
-		if score > best_score {
-			best_score = score
-			g.physical_device = device
+			score := device_score(device)
+			if score > best_score {
+				best_score = score
+				g.physical_device = device
+			}
 		}
 	}
 
@@ -588,11 +683,20 @@ choose_surface_format :: proc(formats: []vk.SurfaceFormatKHR) -> vk.SurfaceForma
 	return formats[0]
 }
 
+// FIFO is the default and the friendlier one. Rendering as fast as the machine
+// can go throws most of those frames away, and on a thermally or power limited
+// part -- which is exactly the hardware this has to run on -- the heat it wastes
+// comes back as a lower clock. Uncapped is available for measuring, where
+// throwing frames away is the point.
 choose_present_mode :: proc(modes: []vk.PresentModeKHR) -> vk.PresentModeKHR {
-	for m in modes {
-		if m == .MAILBOX do return m
+	if settings.vsync do return .FIFO
+
+	for wanted in ([]vk.PresentModeKHR{.MAILBOX, .IMMEDIATE}) {
+		for m in modes {
+			if m == wanted do return m
+		}
 	}
-	// FIFO is the only mode guaranteed by the spec
+	// the only mode the spec guarantees
 	return .FIFO
 }
 
@@ -638,7 +742,15 @@ create_swapchain :: proc(old: vk.SwapchainKHR = {}) {
 
 	surface_format := choose_surface_format(formats)
 	present_mode := choose_present_mode(modes)
+	g.present_mode = present_mode
 	extent := choose_extent(caps)
+
+	// Without it there is nothing to stretch a smaller scene onto, so the dial
+	// has to be pinned rather than quietly produce a black screen.
+	if .TRANSFER_DST not_in caps.supportedUsageFlags && settings.render_scale < 1 {
+		log.warn("Surface cannot be blitted into; render scale pinned to 1.0")
+		settings.render_scale = 1
+	}
 
 	// one more than the minimum avoids waiting on the driver
 	image_count := caps.minImageCount + 1
@@ -654,7 +766,11 @@ create_swapchain :: proc(old: vk.SwapchainKHR = {}) {
 		imageColorSpace  = surface_format.colorSpace,
 		imageExtent      = extent,
 		imageArrayLayers = 1,
-		imageUsage       = {.COLOR_ATTACHMENT},
+		// TRANSFER_DST is what render scale blits into. Asked for whether or not
+		// it is in use right now, because acquiring it later would mean rebuilding
+		// the swapchain from inside a settings change that is already rebuilding
+		// half the renderer. COLOR_ATTACHMENT the spec guarantees; this does not.
+		imageUsage       = {.COLOR_ATTACHMENT} | ({.TRANSFER_DST} & caps.supportedUsageFlags),
 		preTransform     = caps.currentTransform,
 		compositeAlpha   = {.OPAQUE},
 		presentMode      = present_mode,
@@ -778,6 +894,10 @@ create_sync_objects :: proc() {
 	}
 }
 
+// A resize is the same operation as a settings change, and deliberately runs the
+// same code -- see rebuild_renderer. Dragging a window edge therefore exercises
+// the settings path constantly, which is the only reason to trust it on the rare
+// occasion someone actually changes a setting.
 recreate_swapchain :: proc() {
 	g.framebuffer_resized = false
 
@@ -788,26 +908,7 @@ recreate_swapchain :: proc() {
 		glfw.WaitEvents()
 	}
 
-	vk_check(vk.DeviceWaitIdle(g.device))
-
-	// colour and depth targets are sized to the swapchain, so they go along
-	destroy_render_targets()
-	destroy_swapchain_views()
-
-	// The wait above means nothing is still reading the old swapchain, so it can
-	// go as soon as the new one has taken what it needs from it.
-	old := g.swapchain
-	create_swapchain(old)
-	vk.DestroySwapchainKHR(g.device, old, nil)
-
-	get_swapchain_images()
-	create_image_views()
-	create_render_targets()
-	recreate_render_finished_semaphores()
-
-	// The window changed shape, so the field of view did too. Logging it here
-	// makes dragging the window something to read off rather than squint at.
-	log_camera_fov()
+	rebuild_renderer(true)
 }
 
 recreate_render_finished_semaphores :: proc() {

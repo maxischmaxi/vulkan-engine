@@ -62,6 +62,10 @@ Bot :: struct {
 	fire_cooldown: f32,
 	seen_time:     f32,
 	reaction:      f32,
+	// The result of this tick's line-of-sight ray, kept so the radar can read it
+	// instead of casting its own. Twelve rays per tick is a fixed cost; twelve
+	// per frame was an uncapped one.
+	sees_player:   bool,
 	strafe:        f32, // +1 or -1, which way it circles once in range
 }
 
@@ -258,6 +262,7 @@ tick_bot_combat :: proc(bot: ^Bot, dt: f32) -> bool {
 	bot.fire_cooldown = max(bot.fire_cooldown - dt, 0)
 
 	dist, visible := bot_sees_player(bot^)
+	bot.sees_player = visible
 	if !visible {
 		bot.seen_time = 0
 		return false

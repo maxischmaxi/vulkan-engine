@@ -37,6 +37,12 @@ WATCHED_KEYS := []i32 {
 	glfw.KEY_SPACE,
 	glfw.KEY_LEFT_SHIFT,
 	glfw.KEY_LEFT_CONTROL,
+	// the settings menu: open, navigate, change, close
+	glfw.KEY_TAB,
+	glfw.KEY_UP,
+	glfw.KEY_DOWN,
+	glfw.KEY_LEFT,
+	glfw.KEY_RIGHT,
 	glfw.KEY_C,
 	glfw.KEY_V,
 	glfw.KEY_R,

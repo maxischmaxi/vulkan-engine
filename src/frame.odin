@@ -17,7 +17,7 @@ Frame_Uniforms :: struct {
 	// alone, and that is what the first screen-space effect will want.
 	proj:           linalg.Matrix4f32,
 	view_proj:      linalg.Matrix4f32,
-	cascade_vp:     [SHADOW_CASCADES]linalg.Matrix4f32,
+	cascade_vp:     [SHADOW_CASCADES_MAX]linalg.Matrix4f32,
 	cascade_splits: [4]f32, // view-space distance where each cascade ends
 	// world size of one shadow texel per cascade, which is what the normal
 	// offset bias has to scale with -- a fixed offset is either useless in the
@@ -64,6 +64,15 @@ frame_data: Frame_Data
 // z from 0 to 1 and y pointing down, so the near half would be clipped away
 // and depth precision halved. This builds the Vulkan convention directly.
 //
+// Reversed-Z: the near plane maps to 1 and the far plane to 0, which is the two
+// z rows below with near and far swapped and nothing else. A float depth buffer
+// packs its mantissa near zero, and 1/z already packs precision near the eye, so
+// the conventional mapping stacks both at the near plane and starves everything
+// past a few metres. Swapping them makes the two cancel: at 100 m with the
+// current 0.05/250 frustum the smallest resolvable step goes from ~12 mm to
+// ~6 um. Everything that tests depth against this has to compare GREATER --
+// see Depth_Test in pipeline_builder.
+//
 // The half angles come in as tangents rather than as a fov plus an aspect
 // ratio, because that is the form the frustum corners are built from as well.
 // One representation means the shadow cascades cannot drift out of step with
@@ -72,8 +81,8 @@ perspective_tangents :: proc(half_w, half_h, near, far: f32) -> linalg.Matrix4f3
 	m: linalg.Matrix4f32
 	m[0, 0] = 1 / half_w
 	m[1, 1] = -1 / half_h // negative because Vulkan's y axis points down
-	m[2, 2] = far / (near - far)
-	m[2, 3] = (far * near) / (near - far)
+	m[2, 2] = near / (far - near)
+	m[2, 3] = (near * far) / (far - near)
 	m[3, 2] = -1
 	return m
 }
@@ -172,7 +181,7 @@ update_frame_uniforms :: proc(frame: u32) {
 			exposure,
 			f32(len(point_lights)),
 			f32(debug_mode),
-			1.0 / SHADOW_RESOLUTION,
+			1.0 / f32(shadow_resolution()),
 		},
 	}
 
