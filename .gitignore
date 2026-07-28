@@ -13,3 +13,4 @@ shaders/*.spv
 # them
 /assets/
 /models/
+./server
