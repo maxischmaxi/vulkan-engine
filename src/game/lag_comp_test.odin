@@ -53,7 +53,7 @@ test_rewind_hits_where_target_was :: proc(t: ^testing.T) {
 
 	rw, ok := lag_comp_begin(&hist, &gs, 10, 0)
 	testing.expect(t, ok)
-	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT)
+	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT, .Live)
 	lag_comp_end(&gs, &rw)
 
 	testing.expect(t, ev.fired)
@@ -70,7 +70,7 @@ test_no_rewind_misses_moved_target :: proc(t: ^testing.T) {
 
 	gs.pawns[1].body.position = {5, 3, 0}
 
-	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT)
+	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT, .Live)
 	testing.expect(t, ev.fired)
 	testing.expect_value(t, ev.shot.pawn, -1)
 	testing.expect_value(t, gs.pawns[1].health, PAWN_MAX_HEALTH)
@@ -111,7 +111,7 @@ test_dead_at_rewind_tick_not_hit :: proc(t: ^testing.T) {
 
 	rw, ok := lag_comp_begin(&hist, &gs, 10, 0)
 	testing.expect(t, ok)
-	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT)
+	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT, .Live)
 	lag_comp_end(&gs, &rw)
 
 	testing.expect_value(t, ev.shot.pawn, -1)
@@ -132,7 +132,7 @@ test_kill_during_rewind_survives_restore :: proc(t: ^testing.T) {
 
 	rw, ok := lag_comp_begin(&hist, &gs, 10, 0)
 	testing.expect(t, ok)
-	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT)
+	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT, .Live)
 	lag_comp_end(&gs, &rw)
 
 	testing.expect(t, ev.killed)
@@ -154,7 +154,7 @@ test_rewind_restores_crouch_hull :: proc(t: ^testing.T) {
 
 	rw, ok := lag_comp_begin(&hist, &gs, 10, 0)
 	testing.expect(t, ok)
-	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT)
+	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT, .Live)
 	lag_comp_end(&gs, &rw)
 
 	testing.expect_value(t, ev.shot.pawn, -1)

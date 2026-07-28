@@ -31,12 +31,16 @@ TDM_MODE := Game_Mode {
 }
 
 Match :: struct {
-	phase:          game.Match_Phase,
-	phase_end_tick: u32,
-	human_team:     game.Team,
-	t_score:        int,
-	ct_score:       int,
-	mode:           Game_Mode,
+	phase:            game.Match_Phase,
+	phase_end_tick:   u32,
+	// When the current phase began. A phase change takes a round trip to
+	// reach the client, so refusals are only held against it after a grace
+	// period measured from here -- see note_fire_block.
+	phase_start_tick: u32,
+	human_team:       game.Team,
+	t_score:          int,
+	ct_score:         int,
+	mode:             Game_Mode,
 }
 
 match: Match
@@ -124,6 +128,7 @@ reset_to_idle :: proc() {
 	}
 	match.phase = .Idle
 	match.phase_end_tick = 0
+	match.phase_start_tick = sv.tick
 	log.info("Server: back to idle, waiting for a join")
 }
 
@@ -131,8 +136,11 @@ reset_to_idle :: proc() {
 set_phase :: proc(phase: game.Match_Phase, end_tick: u32) {
 	match.phase = phase
 	match.phase_end_tick = end_tick
+	match.phase_start_tick = sv.tick
 	for &slot in clients {
 		if slot.state != .In_Game do continue
+		// One warning per phase per client, not one per tick.
+		slot.fire_denied_logged = false
 		queue_phase_msg(&slot)
 	}
 }

@@ -302,10 +302,13 @@ Shot_Result :: struct {
 }
 
 Fire_Events :: struct {
-	fired:  bool,
-	dry:    bool,
-	shot:   Shot_Result,
-	killed: bool,
+	fired:   bool,
+	dry:     bool,
+	shot:    Shot_Result,
+	killed:  bool,
+	// Why a trigger pull was refused, when one was made anyway. None on a tick
+	// that never asked to fire -- see tick_pawn_weapon.
+	blocked: Fire_Block,
 }
 
 refill_pawn_ammo :: proc(w: ^Pawn_Weapon) {
@@ -393,11 +396,15 @@ trace_shot :: proc(gs: ^Game_State, shooter: int, origin, dir: [3]f32, range: f3
 // trigger, the trace, the damage. Mirrors the client's frame-time version --
 // the pair must agree on the rules even though only this one deals damage on
 // a server.
+//
+// The phase has no default on purpose: every caller has to say which match it
+// is firing in, so a new one cannot silently inherit permission to shoot.
 tick_pawn_weapon :: proc(
 	gs: ^Game_State,
 	id: int,
 	input: Pawn_Input,
 	dt: f32,
+	phase: Match_Phase,
 ) -> (
 	ev: Fire_Events,
 ) {
@@ -421,9 +428,19 @@ tick_pawn_weapon :: proc(
 		}
 	}
 
-	// A corpse holds neither trigger nor magazine.
-	if !p.alive {
+	// Refuse the trigger before anything below reads it. Firing is the only
+	// thing the phase gates: the holster above and the timers keep running, so
+	// a countdown does not hand the match a frozen weapon when it ends.
+	if block := pawn_fire_block(phase, p); block != .None {
+		// Dropped rather than kept, to mirror the client's gate exactly: a
+		// trigger held through a countdown leaves no residue on either end,
+		// so the first live tick reads the same on both.
 		w.trigger_was_held = false
+		// Only a pull that was actually asked for is a refusal worth
+		// reporting; a quiet tick is not one.
+		if .Fire in input.buttons || .Fire_Pressed in input.buttons {
+			ev.blocked = block
+		}
 		return
 	}
 

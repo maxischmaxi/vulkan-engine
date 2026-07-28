@@ -172,6 +172,20 @@ finish_reload :: proc() {
 
 // -------------------------------------------------------------------- firing
 
+// The client's half of the shared firing rule, with the local context filled
+// in. Asked by both the cosmetic fire control below and by what goes on the
+// wire, so the muzzle stays dark exactly where the server would refuse the
+// shot -- and so a trigger that does reach the server means something.
+//
+// Offline there is no match to be outside of: the benchmark fires without a
+// cursor and without a connection, and measuring its muzzle flashes is the
+// whole point of it.
+local_fire_block :: proc() -> game.Fire_Block {
+	if bench_active() do return game.pawn_fire_block(.Live, player)
+	if !net_client.joined do return .Not_In_Match
+	return game.pawn_fire_block(net_client.phase, player)
+}
+
 // Fire control runs on real time rather than the fixed tick, and shots are
 // tested against the interpolated world -- what is on screen is what gets hit.
 // A server would call this lag compensation; locally it is simply the truth.
@@ -202,9 +216,12 @@ update_weapon :: proc(dt: f32, alpha: f32) {
 		}
 	}
 
-	// A corpse holds neither trigger nor magazine. The benchmark holds one
-	// without a cursor to grab.
-	if !player.alive || (!input.cursor_grabbed && !bench_active()) {
+	// A corpse holds neither trigger nor magazine, and neither does anybody
+	// still waiting for the clock to start. The cursor stays a separate
+	// question: a loose one means a menu owns the mouse, which is context
+	// rather than a rule of the match. The benchmark holds a trigger without
+	// a cursor to grab.
+	if local_fire_block() != .None || (!input.cursor_grabbed && !bench_active()) {
 		weapon_state.trigger_held = false
 		consume_fire_click()
 		return
@@ -468,9 +485,15 @@ weapon_origin :: proc() -> (origin, right, forward, up: [3]f32) {
 
 	offset.x += viewmodel.sway.x + bob_side + reload_curve * RELOAD_ROLL
 	offset.y += -kick
+	// The last term is the landing dip the camera already carries, applied
+	// again to the weapon so it settles a moment after the view does.
 	offset.z +=
-		viewmodel.sway.y + bob_rise + kick * 0.4 - reload_curve * RELOAD_DROP - swap * DRAW_DROP + // The landing dip the camera already carries, applied again to the
-			view.land_offset * 0.5// weapon so it settles a moment after the view does
+		viewmodel.sway.y +
+		bob_rise +
+		kick * 0.4 -
+		reload_curve * RELOAD_DROP -
+		swap * DRAW_DROP +
+		view.land_offset * 0.5
 
 	origin = camera.position + right * offset.x + forward * offset.y + up * offset.z
 	return

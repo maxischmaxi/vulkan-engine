@@ -33,38 +33,43 @@ Client_State :: enum u8 {
 }
 
 Client_Slot :: struct {
-	state:           Client_State,
-	endpoint:        net.Endpoint,
-	conn:            protocol.Connection,
-	client_salt:     u32,
-	server_salt:     u32,
-	last_recv:       time.Tick,
-	pawn_id:         int,
-	name:            [protocol.MAX_NAME]u8,
-	name_len:        u8,
-	team:            game.Team,
+	state:              Client_State,
+	endpoint:           net.Endpoint,
+	conn:               protocol.Connection,
+	client_salt:        u32,
+	server_salt:        u32,
+	last_recv:          time.Tick,
+	pawn_id:            int,
+	name:               [protocol.MAX_NAME]u8,
+	name_len:           u8,
+	team:               game.Team,
 	// Debug grants, kept on the slot so they survive respawns and rematches.
-	debug_god:       bool,
-	debug_infinite:  bool,
+	debug_god:          bool,
+	debug_infinite:     bool,
 	// The buy menu's choice, kept on the slot for the same reason: the next
 	// spawn reads it, whenever that is.
-	loadout:         game.Loadout,
+	loadout:            game.Loadout,
 	// The newest snapshot the client confirms holding: the delta baseline.
 	// Distinct from command_base, which keeps each command's first-delivery
 	// value for the rewind; this one always advances to the newest.
-	acked_snapshot:  u32,
+	acked_snapshot:     u32,
 	// input stream, keyed by client tick
-	commands:        [INPUT_BUFFER]game.Pawn_Input,
-	command_ticks:   [INPUT_BUFFER]u32,
+	commands:           [INPUT_BUFFER]game.Pawn_Input,
+	command_ticks:      [INPUT_BUFFER]u32,
 	// Per command: the newest snapshot the client had when it was made -- the
 	// anchor lag compensation rewinds from.
-	command_base:    [INPUT_BUFFER]u32,
-	newest_cmd_tick: u32,
-	consumed_tick:   u32, // last client tick applied to the sim
-	have_consumed:   bool,
-	last_cmd:        game.Pawn_Input,
-	last_base:       u32,
-	starve_ticks:    int,
+	command_base:       [INPUT_BUFFER]u32,
+	newest_cmd_tick:    u32,
+	consumed_tick:      u32, // last client tick applied to the sim
+	have_consumed:      bool,
+	last_cmd:           game.Pawn_Input,
+	last_base:          u32,
+	starve_ticks:       int,
+	// Anti-cheat groundwork. The client we ship strips the trigger off the
+	// wire wherever the rules refuse it, so a count here did not come from
+	// that client -- it is the signal, not the enforcement.
+	fire_denied:        int,
+	fire_denied_logged: bool,
 }
 
 clients: [MAX_CLIENTS]Client_Slot

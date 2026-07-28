@@ -71,7 +71,14 @@ build_local_input :: proc() -> game.Pawn_Input {
 	// The trigger goes on the wire too: the server's fire control is the one
 	// that deals damage, and it can only fire what it is told. Held state may
 	// be read fresh -- it spans frames on its own.
-	if glfw.GetMouseButton(g.window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS {
+	//
+	// It goes on the wire only where the rules allow it. The server asks the
+	// same rule and would refuse the shot regardless, so this changes nothing
+	// about what happens -- it is what makes a refusal on the server side mean
+	// "this client is not the one we shipped" instead of "this is a countdown".
+	may_fire := local_fire_block() == .None
+
+	if may_fire && glfw.GetMouseButton(g.window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS {
 		input_.buttons += {.Fire}
 	}
 	// Scoped in walks slower, and only the wire can make the server agree.
@@ -83,13 +90,16 @@ build_local_input :: proc() -> game.Pawn_Input {
 		intent.jump_pressed = false
 		input_.buttons += {.Jump_Pressed}
 	}
+	// Both latches clear either way. Holding a click back until the match goes
+	// live would fire it on the very first live tick, which is the countdown
+	// shot arriving late rather than not at all.
 	if intent.fire_pressed {
 		intent.fire_pressed = false
-		input_.buttons += {.Fire_Pressed}
+		if may_fire do input_.buttons += {.Fire_Pressed}
 	}
 	if intent.reload {
 		intent.reload = false
-		input_.buttons += {.Reload}
+		if may_fire do input_.buttons += {.Reload}
 	}
 	if intent.slot_change {
 		intent.slot_change = false

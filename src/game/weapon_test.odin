@@ -45,7 +45,7 @@ test_fire_edge_damages_target :: proc(t: ^testing.T) {
 		buttons     = {.Fire_Pressed},
 		weapon_slot = -1,
 	}
-	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT)
+	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT, .Live)
 
 	testing.expect(t, ev.fired)
 	testing.expect(t, ev.shot.hit)
@@ -68,11 +68,11 @@ test_fire_held_automatic_fires :: proc(t: ^testing.T) {
 		buttons     = {.Fire},
 		weapon_slot = -1,
 	}
-	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT)
+	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT, .Live)
 	testing.expect(t, ev.fired)
 
 	// and the very next tick sits inside the fire interval
-	ev = tick_pawn_weapon(&gs, 0, input, TICK_DT)
+	ev = tick_pawn_weapon(&gs, 0, input, TICK_DT, .Live)
 	testing.expect(t, !ev.fired)
 }
 
@@ -87,7 +87,7 @@ test_fire_kills_through_armor_math :: proc(t: ^testing.T) {
 		buttons     = {.Fire_Pressed},
 		weapon_slot = -1,
 	}
-	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT)
+	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT, .Live)
 
 	testing.expect(t, ev.killed)
 	testing.expect(t, !gs.pawns[1].alive)
@@ -122,7 +122,7 @@ test_loadout_slot_lookup :: proc(t: ^testing.T) {
 	input := Pawn_Input {
 		weapon_slot = 0,
 	}
-	_ = tick_pawn_weapon(&gs, 0, input, TICK_DT)
+	_ = tick_pawn_weapon(&gs, 0, input, TICK_DT, .Live)
 	testing.expect_value(t, gs.pawns[0].weapon.index, WEAPON_GLOCK)
 }
 
@@ -141,7 +141,7 @@ test_awp_one_shot_through_full_armor :: proc(t: ^testing.T) {
 		buttons     = {.Fire_Pressed},
 		weapon_slot = -1,
 	}
-	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT)
+	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT, .Live)
 	testing.expect(t, ev.killed)
 	testing.expect(t, !gs.pawns[1].alive)
 }

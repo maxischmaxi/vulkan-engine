@@ -76,6 +76,29 @@ rewind_target :: proc(base: u32) -> (u32, bool) {
 	return clamp(t, lo, sv.tick - 1), true
 }
 
+// A phase change takes a round trip to reach the client, so commands built
+// under the old phase keep arriving for a moment afterwards. Half a second of
+// slack, well past any playable ping, keeps an honest client out of the count.
+FIRE_DENY_GRACE_TICKS :: 32
+
+// Anti-cheat groundwork rather than anti-cheat: the trigger is already refused
+// by the time this runs, and all this does is notice who kept pulling it.
+//
+// Only the phase is counted. Death travels to the client the same way, but
+// orders of magnitude more often, so counting it would bury the one signal
+// that means something under the noise of ordinary dying.
+@(private = "file")
+note_fire_block :: proc(slot: ^Client_Slot, ev: game.Fire_Events) {
+	if ev.blocked != .Not_In_Match do return
+	if sv.tick - match.phase_start_tick < FIRE_DENY_GRACE_TICKS do return
+
+	slot.fire_denied += 1
+	if !slot.fire_denied_logged {
+		slot.fire_denied_logged = true
+		log.warnf("Server: client {} pulled the trigger in {}", slot.pawn_id, match.phase)
+	}
+}
+
 sim_tick :: proc(dt: f32) {
 	for &f in fired_this_tick do f = false
 	for &n in pending_damage_count do n = 0
@@ -88,55 +111,70 @@ sim_tick :: proc(dt: f32) {
 		cmd, base := consume_command(&slot)
 		p.prev_position = p.body.position
 
+		// The head turns in every phase and in every state: looking around is
+		// not an act of play. pawn_move writes these same two fields on the
+		// live path below, so doing it here costs the live path nothing.
+		p.yaw = cmd.yaw
+		p.pitch = cmd.pitch
+
 		if !p.alive {
 			p.respawn_in -= dt
 			if p.respawn_in <= 0 && match.phase == .Live {
 				respawn_human(&slot)
+				continue
 			}
+			// A corpse still holsters for the next life and its timers still
+			// run down; fire control refuses the trigger on its own.
+			note_fire_block(
+				&slot,
+				game.tick_pawn_weapon(&sv.gs, slot.pawn_id, cmd, dt, match.phase),
+			)
 			continue
 		}
 
-		#partial switch match.phase {
-		case .Live:
-			game.pawn_move(&sv.gs, p, cmd, dt)
+		if match.phase != .Live {
+			// Countdown and Post: the feet are frozen, the holster is not.
+			// Nothing here can fire, so the rewind is skipped outright.
+			note_fire_block(
+				&slot,
+				game.tick_pawn_weapon(&sv.gs, slot.pawn_id, cmd, dt, match.phase),
+			)
+			continue
+		}
 
-			// Wrap every tick, not just firing ones -- whether the trigger
-			// lands is unknowable before the fire control ran, and moving 16
-			// records back and forth is trivial.
-			rewind_tick, want := rewind_target(base)
-			rw: game.Rewind
-			rewound := false
-			if want {
-				rw, rewound = game.lag_comp_begin(&history, &sv.gs, rewind_tick, slot.pawn_id)
-			}
-			ev := game.tick_pawn_weapon(&sv.gs, slot.pawn_id, cmd, dt)
-			if rewound do game.lag_comp_end(&sv.gs, &rw)
+		game.pawn_move(&sv.gs, p, cmd, dt)
 
-			if ev.fired && ev.shot.hit && ev.shot.pawn >= 0 {
-				// The nominal weapon damage, pre-armor: a cosmetic intensity,
-				// not the bookkept loss.
-				queue_damage(p.body.position, ev.shot.pawn, game.WEAPONS[p.weapon.index].damage)
-			}
-			if ev.fired {
-				fired_this_tick[slot.pawn_id] = true
-				lag_stats.fires += 1
-				if rewound {
-					lag_stats.rewound += 1
-					lag_stats.age_sum += int(sv.tick - rewind_tick)
-				}
-			}
-			if ev.killed do on_pawn_killed(slot.pawn_id, ev.shot.pawn)
+		// Wrap every tick, not just firing ones -- whether the trigger lands
+		// is unknowable before the fire control ran, and moving 16 records
+		// back and forth is trivial.
+		rewind_tick, want := rewind_target(base)
+		rw: game.Rewind
+		rewound := false
+		if want {
+			rw, rewound = game.lag_comp_begin(&history, &sv.gs, rewind_tick, slot.pawn_id)
+		}
+		ev := game.tick_pawn_weapon(&sv.gs, slot.pawn_id, cmd, dt, match.phase)
+		if rewound do game.lag_comp_end(&sv.gs, &rw)
 
-			// A fall through the world is a death, not an exploit.
-			if p.body.position.z < -50 {
-				game.kill_pawn(p)
-				on_pawn_killed(-1, slot.pawn_id)
+		if ev.fired && ev.shot.hit && ev.shot.pawn >= 0 {
+			// The nominal weapon damage, pre-armor: a cosmetic intensity, not
+			// the bookkept loss.
+			queue_damage(p.body.position, ev.shot.pawn, game.WEAPONS[p.weapon.index].damage)
+		}
+		if ev.fired {
+			fired_this_tick[slot.pawn_id] = true
+			lag_stats.fires += 1
+			if rewound {
+				lag_stats.rewound += 1
+				lag_stats.age_sum += int(sv.tick - rewind_tick)
 			}
+		}
+		if ev.killed do on_pawn_killed(slot.pawn_id, ev.shot.pawn)
 
-		case:
-			// Countdown and Post: the head turns, the feet are frozen.
-			p.yaw = cmd.yaw
-			p.pitch = cmd.pitch
+		// A fall through the world is a death, not an exploit.
+		if p.body.position.z < -50 {
+			game.kill_pawn(p)
+			on_pawn_killed(-1, slot.pawn_id)
 		}
 	}
 
@@ -362,8 +400,10 @@ log_server_stats :: proc() {
 	last = time.tick_now()
 
 	connected := 0
+	denied := 0
 	for &slot in clients {
 		if slot.state != .Empty do connected += 1
+		denied += slot.fire_denied
 	}
 	if connected == 0 && match.phase == .Idle do return
 
@@ -383,4 +423,9 @@ log_server_stats :: proc() {
 		lag_stats.fires,
 		avg_age,
 	)
+	// Only when there is something to say: on a clean server this line never
+	// appears, which is what makes it worth reading when it does.
+	if denied > 0 {
+		log.warnf("Server: {} trigger pull(s) refused outside a live match", denied)
+	}
 }
