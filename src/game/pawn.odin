@@ -71,6 +71,9 @@ Pawn :: struct {
 	// must fire on the landing tick on both ends of a connection, so the
 	// credit has to live where both ends simulate it.
 	jump_buffer:   f32,
+	// What this pawn carries. The buy menu writes it (via the server), spawn
+	// applies it; init_pawn leaves it alone the way it leaves team alone.
+	loadout:       Loadout,
 	// The server's fire control state. The client keeps its own cosmetic copy
 	// and never reads this locally.
 	weapon:        Pawn_Weapon,

@@ -46,6 +46,9 @@ Client_Slot :: struct {
 	// Debug grants, kept on the slot so they survive respawns and rematches.
 	debug_god:       bool,
 	debug_infinite:  bool,
+	// The buy menu's choice, kept on the slot for the same reason: the next
+	// spawn reads it, whenever that is.
+	loadout:         game.Loadout,
 	// The newest snapshot the client confirms holding: the delta baseline.
 	// Distinct from command_base, which keeps each command's first-delivery
 	// value for the rewind; this one always advances to the newest.
@@ -118,6 +121,10 @@ handle_packet :: proc(ep: net.Endpoint, data: []u8) {
 		case .Debug_Flags:
 			if flags, fok := protocol.read_debug_flags(&payload); fok {
 				apply_debug_flags(slot, flags)
+			}
+		case .Loadout:
+			if m, lok := protocol.read_loadout(&payload); lok {
+				handle_loadout(slot, m)
 			}
 		case:
 			log.warnf("Server: unexpected reliable message {}", msg.msg_id)

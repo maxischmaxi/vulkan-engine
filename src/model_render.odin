@@ -37,16 +37,16 @@ Model_Batch :: struct {
 }
 
 Model_Renderer :: struct {
-	pipeline:         Pipeline,
-	static_buffer:    vk.Buffer,
-	static_memory:    vk.DeviceMemory,
-	static_batches:   []Model_Batch,
-	static_count:     u32,
-	view_buffers:     [MAX_FRAMES_IN_FLIGHT]vk.Buffer,
-	view_memories:    [MAX_FRAMES_IN_FLIGHT]vk.DeviceMemory,
-	view_mapped:      [MAX_FRAMES_IN_FLIGHT]rawptr,
-	view_batches:     [dynamic]Model_Batch,
-	view_instances:   [dynamic]Model_Instance,
+	pipeline:       Pipeline,
+	static_buffer:  vk.Buffer,
+	static_memory:  vk.DeviceMemory,
+	static_batches: []Model_Batch,
+	static_count:   u32,
+	view_buffers:   [MAX_FRAMES_IN_FLIGHT]vk.Buffer,
+	view_memories:  [MAX_FRAMES_IN_FLIGHT]vk.DeviceMemory,
+	view_mapped:    [MAX_FRAMES_IN_FLIGHT]rawptr,
+	view_batches:   [dynamic]Model_Batch,
+	view_instances: [dynamic]Model_Instance,
 }
 
 model_renderer: Model_Renderer
@@ -131,19 +131,19 @@ create_model_pipeline :: proc() {
 
 	model_renderer.pipeline = build_pipeline(
 		{
-			name = "models",
-			vert_spv = MODEL_VERT_CODE,
+			name           = "models",
+			vert_spv       = MODEL_VERT_CODE,
 			// The map's own fragment shader: a model surface is a world surface
 			// that arrived from a file.
-			frag_spv = WORLD_FRAG_CODE,
-			bindings = bindings[:],
-			attributes = attributes[:],
-			set_layouts = {descriptors.frame_layout, descriptors.material_layout},
+			frag_spv       = WORLD_FRAG_CODE,
+			bindings       = bindings[:],
+			attributes     = attributes[:],
+			set_layouts    = {descriptors.frame_layout, descriptors.material_layout},
 			push_constants = push,
-			color_formats = {g.swapchain_format},
-			depth_format = g.depth_format,
-			samples = g.msaa_samples,
-			spec = shadow_spec_constants(),
+			color_formats  = {g.swapchain_format},
+			depth_format   = g.depth_format,
+			samples        = g.msaa_samples,
+			spec           = shadow_spec_constants(),
 		},
 	)
 }
@@ -188,10 +188,7 @@ build_static_models :: proc(placements: []Model_Placement) {
 		for j in i ..< len(placements) {
 			if used[j] || placements[j].mesh != placements[i].mesh do continue
 			used[j] = true
-			append(
-				&instances,
-				Model_Instance{model = placements[j].model, params = {1, 0, 0, 0}},
-			)
+			append(&instances, Model_Instance{model = placements[j].model, params = {1, 0, 0, 0}})
 			count += 1
 		}
 
@@ -253,11 +250,7 @@ upload_model_instances :: proc(frame: u32) {
 // ------------------------------------------------------------------- drawing
 
 @(private = "file")
-draw_batches :: proc(
-	cmd: vk.CommandBuffer,
-	instance_buffer: vk.Buffer,
-	batches: []Model_Batch,
-) {
+draw_batches :: proc(cmd: vk.CommandBuffer, instance_buffer: vk.Buffer, batches: []Model_Batch) {
 	buffers := []vk.Buffer{mesh_store.vertex_buffer, instance_buffer}
 	offsets := []vk.DeviceSize{0, 0}
 	vk.CmdBindVertexBuffers(cmd, 0, 2, raw_data(buffers), raw_data(offsets))

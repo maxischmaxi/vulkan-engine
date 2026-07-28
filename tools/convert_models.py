@@ -31,6 +31,9 @@ from pathlib import Path
 import bpy
 from mathutils import Matrix, Vector
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import gun_palette
+
 ROOT = Path(bpy.path.abspath("//")) if bpy.data.filepath else Path.cwd()
 ASSETS = ROOT / "assets"
 OUT = ROOT / "models"
@@ -48,10 +51,6 @@ ATLAS_TILES = {
     "projectiles": (0.5, 0.5),
 }
 ATLAS_SCALE = 0.5
-
-# The throwing knife measures 23 cm tip to pommel in its own file; anything
-# imported gets normalised to a real-world length rather than trusted.
-KNIFE_LENGTH = 0.23
 
 # Last frame of the pistol scene's draw animation, where the hand has arrived at
 # the held position and stays. Everything in that scene starts from a lowered
@@ -79,50 +78,72 @@ RETRO_MATERIALS = {
     "Rifle_01_MI": ("retro_guns", "rifle"),
     "Pistol_01_MI": ("retro_guns", "pistol"),
     "Projectiles_MI": ("retro_guns", "projectiles"),
-    "ThrowingKnifeMaterial": ("throwing_knife", None),
 }
 
-VIEWMODELS = [
-    {
-        "name": "view_rifle",
-        "blend": "retro/blend/FP_Arms_Rifle_01_Anims.blend",
-        "actions": {"Arms_Armature": "Arms_BasePose", "Rifle_01_Armature": "Rifle_BasePose"},
-    },
-    {
-        "name": "view_pistol",
-        # The gun in this scene is a linked Pistol_Mesh, which only resolves
-        # because extract_models.sh puts Pistol_01.blend in the same directory --
-        # without it the scene loads as arms holding nothing.
-        "blend": "retro/blend/FP_Arms_Pistol_01_Anims.blend",
-        # Unlike the rifle scene, frame 1 here is the weapon lowered: every
-        # action starts from it. The held pose is where the draw ends, so that
-        # is the frame to bake.
-        "actions": {"Arms_Armature": "Arms_Draw"},
-        "frame": PISTOL_HELD_FRAME,
-    },
-    {
-        "name": "view_knife",
-        # No knife arms pose exists; the pistol pose is the closest thing to a
-        # fist the pack has. The tweak below turns the blade out of the palm.
-        "blend": "retro/blend/FP_Arms_Pistol_01_Anims.blend",
-        "actions": {"Arms_Armature": "Arms_Draw"},
-        "frame": PISTOL_HELD_FRAME,
-        # the hand is holding a knife now, so the scene's pistol has to go
-        "exclude": ("Pistol_Mesh",),
+# The two arms scenes every gun viewmodel starts from. The rifle scene's own
+# gun is a single oddly named mesh (ChargeHandle_Mesh is the whole rifle);
+# excluding it leaves two-handed arms ready for an attached gun. The pistol
+# scene's gun is a linked Pistol_Mesh, which only resolves because
+# extract_models.sh puts Pistol_01.blend in the same directory.
+#
+# Unlike the rifle scene, frame 1 in the pistol scene is the weapon lowered:
+# every action starts from it. The held pose is where the draw ends, so that is
+# the frame to bake.
+RIFLE_ARMS = {
+    "blend": "retro/blend/FP_Arms_Rifle_01_Anims.blend",
+    "actions": {"Arms_Armature": "Arms_BasePose"},
+    "exclude": ("ChargeHandle_Mesh",),
+}
+PISTOL_ARMS = {
+    "blend": "retro/blend/FP_Arms_Pistol_01_Anims.blend",
+    "actions": {"Arms_Armature": "Arms_Draw"},
+    "frame": PISTOL_HELD_FRAME,
+    "exclude": ("Pistol_Mesh",),
+}
+
+
+def gun(name, arms, stem, length, tweak_euler=(0.0, 0.0, 0.0), tweak_offset=(0.0, 0.0, 0.0)):
+    """A viewmodel spec: the arms scene holding one gun-pack FBX, colours from
+    the shared palette swatches. `length` is the real-world size the import is
+    normalised to, metres; the tweaks turn the import into the grip."""
+    return {
+        "name": name,
+        **arms,
         "attach": {
-            "fbx": "knife/throwing_knife.fbx",
-            # Given as the length it should end up, not as a factor: the FBX
-            # importer's unit handling depends on the scene it lands in, and a
-            # measured target survives that.
-            "length": KNIFE_LENGTH,
-            # The blade lies flat in XY and points down +X. Standing it fully
-            # upright turns it edge-on to the camera -- three millimetres of
-            # steel, invisible -- so it is tilted instead, and turned across the
-            # body the way a knife is actually carried.
-            "tweak_euler": (0.0, -40.0, 75.0),
-            "tweak_offset": (4.0, 0.0, 2.0),
+            "fbx": f"guns/fbx/{stem}.fbx",
+            "length": length,
+            "tweak_euler": tweak_euler,
+            "tweak_offset": tweak_offset,
         },
-    },
+    }
+
+
+# Offsets are in the hand frame, which sits axis-aligned with the world here:
+# x forward, y left, z up, scene units (cm). The rifle hand hangs 25 cm under
+# the eye line, so every long gun gets lifted toward it; the short ones also
+# move forward or the camera looks straight down onto their top rail.
+VIEWMODELS = [
+    # Some pack models are saved tilted (the preview shows them at jaunty
+    # angles); the Y euler levels the barrel again. Positive Y pitches the
+    # muzzle down. Stocks reach behind the grip, so the long guns move forward
+    # or the stock ends up inside the camera.
+    gun("view_ak", RIFLE_ARMS, "AssaultRifle_1", 0.88,
+        tweak_euler=(0.0, 6.0, 0.0), tweak_offset=(12.0, 0.0, 2.0)),
+    gun("view_m4", RIFLE_ARMS, "AssaultRifle2_1", 0.84,
+        tweak_euler=(0.0, 5.0, 0.0), tweak_offset=(20.0, 0.0, 4.0)),
+    gun("view_awp", RIFLE_ARMS, "SniperRifle_1", 1.23, tweak_offset=(0.0, 0.0, 10.0)),
+    gun("view_mac10", RIFLE_ARMS, "SubmachineGun_2", 0.50, tweak_offset=(12.0, 0.0, 8.0)),
+    gun("view_mp9", RIFLE_ARMS, "SubmachineGun_4", 0.35,
+        tweak_euler=(0.0, 14.0, 0.0), tweak_offset=(14.0, 0.0, 8.0)),
+    gun("view_nova", RIFLE_ARMS, "Shotgun_1", 1.05,
+        tweak_euler=(0.0, -12.0, 0.0), tweak_offset=(10.0, 0.0, 8.0)),
+    gun("view_glock", PISTOL_ARMS, "Pistol_4", 0.19),
+    gun("view_usp", PISTOL_ARMS, "Pistol_5", 0.24),
+    gun("view_deagle", PISTOL_ARMS, "Pistol_6", 0.27),
+    # The bayonet points down +X with the edge vertical; a slight tilt keeps
+    # the blade readable instead of edge-on.
+    gun("view_knife", PISTOL_ARMS, "Bayonet", 0.30,
+        tweak_euler=(0.0, -30.0, 35.0), tweak_offset=(6.0, 0.0, 4.0)),
 ]
 
 
@@ -256,16 +277,18 @@ class Builder:
         mesh = evaluated.to_mesh()
         try:
             mesh.calc_loop_triangles()
-            if not mesh.uv_layers.active:
-                print(f"    warn: {obj.name} has no UVs, skipped")
-                return
-            mesh.calc_tangents()
+            # The gun-pack meshes carry no UVs at all; their materials map to
+            # palette swatches instead, with a constant UV per loop. Tangents
+            # can only be computed where UVs exist.
+            has_uv = mesh.uv_layers.active is not None
+            if has_uv:
+                mesh.calc_tangents()
 
             world = obj.matrix_world
             # Non-uniform scale would skew normals; these rigs have none, but the
             # inverse transpose costs nothing and removes the assumption.
             normal_matrix = world.to_3x3().inverted_safe().transposed()
-            uvs = mesh.uv_layers.active.data
+            uvs = mesh.uv_layers.active.data if has_uv else None
 
             slots = []
             for material in mesh.materials:
@@ -285,24 +308,38 @@ class Builder:
                 if slot is None:
                     continue
                 index, tile = slot
+                is_swatch = isinstance(tile, tuple)
+                if not is_swatch and not has_uv:
+                    print(f"    warn: {obj.name} has no UVs for {tile!r}, face skipped")
+                    continue
                 for loop_index in tri.loops:
                     loop = mesh.loops[loop_index]
                     pos = self.convert(world @ mesh.vertices[loop.vertex_index].co)
                     normal = Vector(self.convert_dir(normal_matrix @ loop.normal)).normalized()
-                    tangent = Vector(self.convert_dir(world.to_3x3() @ loop.tangent)).normalized()
 
-                    u, v = uvs[loop_index].uv
-                    # Blender's v runs up the image, the engine's runs down it
-                    uv = (u, 1.0 - v)
-                    if tile is not None:
-                        ox, oy = ATLAS_TILES[tile]
-                        uv = (uv[0] * ATLAS_SCALE + ox, uv[1] * ATLAS_SCALE + oy)
+                    if is_swatch:
+                        # Constant UV at the swatch centre; the palette normal
+                        # map is flat, so the tangent only has to be valid.
+                        uv = tile[1]
+                        tangent = fallback_tangent(normal)
+                        sign = 1.0
+                    else:
+                        tangent = Vector(
+                            self.convert_dir(world.to_3x3() @ loop.tangent)
+                        ).normalized()
+                        sign = loop.bitangent_sign
+                        u, v = uvs[loop_index].uv
+                        # Blender's v runs up the image, the engine's runs down it
+                        uv = (u, 1.0 - v)
+                        if tile is not None:
+                            ox, oy = ATLAS_TILES[tile]
+                            uv = (uv[0] * ATLAS_SCALE + ox, uv[1] * ATLAS_SCALE + oy)
 
                     self.add(
                         pos,
                         (normal.x, normal.y, normal.z),
                         (tangent.x, tangent.y, tangent.z),
-                        loop.bitangent_sign,
+                        sign,
                         uv,
                         index,
                     )
@@ -391,6 +428,14 @@ def collada_sources(mesh, ns):
             if inp.get("semantic") == "POSITION":
                 out["#" + vertices.get("id")] = out[inp.get("source")]
     return out
+
+
+def fallback_tangent(normal):
+    """A unit tangent for UV-less swatch geometry: any stable direction not
+    parallel to the normal, Gram-Schmidt orthogonalised."""
+    axis = Vector((1.0, 0.0, 0.0)) if abs(normal.x) < 0.9 else Vector((0.0, 0.0, 1.0))
+    t = axis - normal * normal.dot(axis)
+    return t.normalized() if t.length > 1e-8 else Vector((0.0, 1.0, 0.0))
 
 
 def triangle_tangent(positions, uvs):
@@ -497,13 +542,22 @@ def build_viewmodel(spec):
     print(f"{spec['name']}:")
     open_blend(spec["blend"])
     apply_actions(spec.get("actions", {}), spec.get("frame", 1))
+
+    # The gun-pack material names (Black, Metal, ...) never collide with the
+    # retro names, so the swatch map simply rides along in every scene.
+    material_map = dict(RETRO_MATERIALS)
+    for index, (mat_name, _) in enumerate(gun_palette.swatches(ASSETS)):
+        material_map[mat_name] = (
+            gun_palette.engine_material(mat_name),
+            ("swatch", gun_palette.swatch_uv(index)),
+        )
     if "attach" in spec:
         attach_weapon(spec["attach"])
 
     builder = Builder("viewmodel", bpy.context.scene.unit_settings.scale_length)
     for obj in exportable_meshes(spec.get("exclude", ())):
         before = len(builder.vertices)
-        builder.add_object(obj, RETRO_MATERIALS)
+        builder.add_object(obj, material_map)
         # Per object, in engine view space: this is where a weapon that ends up
         # inside a fist or behind the camera shows itself.
         added = [v[0] for v in builder.vertices[before:]]

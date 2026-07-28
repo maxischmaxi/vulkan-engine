@@ -21,6 +21,7 @@ Weapon_State :: struct {
 	hit_killed:   bool, // the last hit was fatal, which the marker colours differently
 	reload_left:  f32, // seconds until the magazine is topped up
 	draw_left:    f32, // seconds left of the swap the weapon is drawn out of
+	zoom_active:  bool, // scoped in; the camera lens follows this
 	shots:        int,
 	hits:         int,
 }
@@ -33,8 +34,8 @@ MUZZLE_FLASH_TIME :: 0.045
 HIT_MARKER_TIME :: 0.18
 RECOIL_RECOVERY :: 9.0
 
-// Number keys, in slot order.
-SLOT_KEYS := [game.WEAPON_SLOTS]i32{glfw.KEY_1, glfw.KEY_2, glfw.KEY_3, glfw.KEY_4, glfw.KEY_5}
+// Number keys, in slot order: primary, secondary, knife.
+SLOT_KEYS := [game.WEAPON_SLOTS]i32{glfw.KEY_1, glfw.KEY_2, glfw.KEY_3}
 
 current_weapon :: proc() -> game.Weapon {
 	return game.WEAPONS[weapon_state.index]
@@ -54,17 +55,47 @@ refill_all_ammo :: proc() {
 	weapon_state.reload_left = 0
 }
 
-// What a fresh loadout starts on: the first slot, or whatever --weapon named.
-// Respawning goes through here too, so the flag survives dying -- which is the
-// only reason it is usable for looking at a viewmodel while the bots shoot back.
-default_weapon_index :: proc() -> int {
-	if cli.weapon != "" {
-		for weapon, i in game.WEAPONS {
-			if weapon.name == cli.weapon do return i
+// The loadout a life starts with before any buying: the team default, bent by
+// --weapon for screenshot runs, and a full kit in the benchmark.
+seed_loadout :: proc() -> game.Loadout {
+	// The cli flag rather than bench_active(): this runs from the startup init,
+	// before the bench itself is up.
+	team := scene.chosen_team
+	loadout := game.default_loadout(team)
+	if cli.bench > 0 {
+		loadout = {
+			primary   = game.WEAPON_AK,
+			secondary = game.WEAPON_USP,
+			armor     = true,
 		}
-		log.warnf("No weapon named {:q}", cli.weapon)
 	}
-	return max(game.weapon_in_slot(0), 0)
+	if cli.weapon != "" {
+		index := -1
+		for weapon, i in game.WEAPONS {
+			if weapon.name == cli.weapon do index = i
+		}
+		switch {
+		case index < 0:
+			log.warnf("No weapon named {:q}", cli.weapon)
+		case index == game.WEAPON_KNIFE:
+		// always owned; default_weapon_index holds it up
+		case cli.bench <= 0 && !game.weapon_allowed(index, team):
+			log.warnf("Weapon {:q} is not for team {}", cli.weapon, team)
+		case game.WEAPONS[index].slot == 0:
+			loadout.primary = i8(index)
+		case:
+			loadout.secondary = i8(index)
+		}
+	}
+	return loadout
+}
+
+// What a fresh life holds, from the loadout. Respawning goes through here too,
+// so --weapon survives dying -- which is the only reason it is usable for
+// looking at a viewmodel while the bots shoot back.
+default_weapon_index :: proc() -> int {
+	if cli.weapon == "knife" do return game.WEAPON_KNIFE
+	return game.loadout_spawn_index(player.loadout)
 }
 
 init_weapons :: proc() {
@@ -75,8 +106,26 @@ init_weapons :: proc() {
 	log.infof("Weapons: {} ({} selected)", game.WEAPON_COUNT, current_weapon().name)
 }
 
+// The scope, a toggle on weapons that have one. Zoom is a lens fact: the
+// projection, the light culling and the shadow cascades all read the camera's
+// fov, so setting it here is the whole render-side job. The wire side rides
+// build_local_input as a held button.
+weapon_toggle_zoom :: proc() {
+	if current_weapon().zoom_fov <= 0 do return
+	weapon_state.zoom_active = !weapon_state.zoom_active
+	camera.fov_horizontal = weapon_state.zoom_active ? current_weapon().zoom_fov : DEFAULT_FOV
+}
+
+// Anything that takes the weapon out of the hands drops the scope with it.
+reset_zoom :: proc() {
+	if !weapon_state.zoom_active do return
+	weapon_state.zoom_active = false
+	camera.fov_horizontal = DEFAULT_FOV
+}
+
 select_weapon :: proc(index: int) {
 	if index < 0 || index >= game.WEAPON_COUNT do return
+	reset_zoom()
 	if index == weapon_state.index do return
 
 	weapon_state.index = index
@@ -143,9 +192,14 @@ update_weapon :: proc(dt: f32, alpha: f32) {
 		}
 	}
 
-	for key, slot in SLOT_KEYS {
-		if !key_pressed(key) do continue
-		if index := game.weapon_in_slot(slot); index >= 0 do select_weapon(index)
+	// While the buy menu is up, number keys navigate it, not the holster.
+	if !buy_menu.open {
+		for key, slot in SLOT_KEYS {
+			if !key_pressed(key) do continue
+			if index := game.loadout_weapon_in_slot(player.loadout, slot); index >= 0 {
+				select_weapon(index)
+			}
+		}
 	}
 
 	// A corpse holds neither trigger nor magazine. The benchmark holds one
@@ -415,14 +469,8 @@ weapon_origin :: proc() -> (origin, right, forward, up: [3]f32) {
 	offset.x += viewmodel.sway.x + bob_side + reload_curve * RELOAD_ROLL
 	offset.y += -kick
 	offset.z +=
-		viewmodel.sway.y +
-		bob_rise +
-		kick * 0.4 -
-		reload_curve * RELOAD_DROP -
-		swap * DRAW_DROP +
-		// The landing dip the camera already carries, applied again to the
-		// weapon so it settles a moment after the view does
-		view.land_offset * 0.5
+		viewmodel.sway.y + bob_rise + kick * 0.4 - reload_curve * RELOAD_DROP - swap * DRAW_DROP + // The landing dip the camera already carries, applied again to the
+			view.land_offset * 0.5// weapon so it settles a moment after the view does
 
 	origin = camera.position + right * offset.x + forward * offset.y + up * offset.z
 	return
@@ -436,6 +484,9 @@ muzzle_world_position :: proc() -> [3]f32 {
 
 // The weapon mesh, plus the one part of it still made of blocks.
 submit_viewmodel :: proc() {
+	// Scoped in, the scope overlay is the whole picture.
+	if weapon_state.zoom_active do return
+
 	weapon := current_weapon()
 	origin, right, forward, up := weapon_origin()
 

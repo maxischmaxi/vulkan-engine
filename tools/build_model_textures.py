@@ -12,9 +12,9 @@ Three sets come out of this:
                 separate layers would cost four times the VRAM for textures that
                 are mostly empty, and the pack ships no normal or roughness maps
                 at all -- those are written flat.
-  ThrowingKnife the one asset with a real PBR set, downsampled from 4096.
   PropPalette   the 12x12 palette the Collada props are mapped onto, blown up
                 with nearest so the colour fields stay flat.
+  GunPalette    one swatch per gun-pack material name; see gun_palette.py.
 
 Run through `just models`; convert_models.py assumes the atlas layout below.
 """
@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 
 from PIL import Image
+
+import gun_palette
 
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "assets"
@@ -114,18 +116,6 @@ def build_retro_weapons():
     )
 
 
-def build_knife():
-    src = ASSETS / "knife"
-    albedo = fit(load(src / "throwing_knife_albedo.png"), LAYER).convert("RGB")
-    normal = fit(load(src / "throwing_knife_normal.png"), LAYER).convert("RGB")
-    rough = fit(load(src / "throwing_knife_roughness.png"), LAYER).convert("L")
-    ao = fit(load(src / "throwing_knife_ao.png"), LAYER).convert("L")
-    write(
-        "ThrowingKnife",
-        {"Color": albedo, "NormalGL": normal, "Roughness": rough, "AmbientOcclusion": ao},
-    )
-
-
 def build_prop_palette():
     # Yellow is the warmest of the five and the only one that sits in dust2's
     # palette; the others would need the material tint to fight them back.
@@ -145,13 +135,40 @@ def build_prop_palette():
     )
 
 
+def build_gun_palette():
+    # One flat-colour swatch per (gun, material) across the roster; the mesh
+    # UVs point at swatch centres, exactly like the prop palette. Colour comes
+    # from the MTL Kd values, which are linear -- the albedo array is sRGB, so
+    # they are encoded here or every gun renders near-black.
+    if not (ASSETS / "guns" / "obj").exists():
+        sys.exit("assets/guns missing -- run tools/extract_models.sh first")
+    grid = gun_palette.GRID
+    # Unused cells stay mid-grey: a wrong UV then reads as grey, not as a
+    # neighbouring material's colour.
+    color = Image.new("RGB", (grid, grid), (128, 128, 128))
+    rough = Image.new("L", (grid, grid), 190)
+    for index, (mat_name, rgb) in enumerate(gun_palette.swatches(ASSETS)):
+        srgb = tuple(round(gun_palette.linear_to_srgb(c) * 255) for c in rgb)
+        color.putpixel((index % grid, index // grid), srgb)
+        rough.putpixel((index % grid, index // grid), gun_palette.roughness_byte(mat_name))
+    write(
+        "GunPalette",
+        {
+            "Color": color.resize((LAYER, LAYER), Image.NEAREST),
+            "NormalGL": flat_normal(LAYER),
+            "Roughness": rough.resize((LAYER, LAYER), Image.NEAREST),
+            "AmbientOcclusion": constant(LAYER, 255),
+        },
+    )
+
+
 def main():
     if not ASSETS.exists():
         sys.exit("assets/ missing -- run tools/extract_models.sh first")
     print(f"model textures at {LAYER}x{LAYER}:")
     build_retro_weapons()
-    build_knife()
     build_prop_palette()
+    build_gun_palette()
 
 
 if __name__ == "__main__":

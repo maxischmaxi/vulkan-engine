@@ -15,6 +15,8 @@ Input :: struct {
 	// A click that starts and ends between two frames is invisible to polling.
 	// Latching the press means the shot still happens.
 	fire_clicked:       bool,
+	// The right button, latched the same way: the scope toggle.
+	zoom_clicked:       bool,
 	// Where the visible cursor is, in framebuffer pixels -- the space the HUD
 	// draws in. Only meaningful while the cursor is loose; menus read this.
 	cursor_x, cursor_y: f32,
@@ -59,6 +61,13 @@ WATCHED_KEYS := []i32 {
 	glfw.KEY_3,
 	glfw.KEY_4,
 	glfw.KEY_5,
+	glfw.KEY_6,
+	glfw.KEY_7,
+	glfw.KEY_8,
+	glfw.KEY_9,
+	// the buy menu: open, back out
+	glfw.KEY_B,
+	glfw.KEY_0,
 	glfw.KEY_F1,
 	glfw.KEY_F2,
 	glfw.KEY_F3,
@@ -99,6 +108,11 @@ init_input :: proc() {
 		proc "c" (window: glfw.WindowHandle, button, action, mods: i32) {
 			context = g.odin_context
 			if action != glfw.PRESS do return
+			if button == glfw.MOUSE_BUTTON_RIGHT {
+				// The scope toggle. Loose-cursor right clicks mean nothing.
+				if input.cursor_grabbed do input.zoom_clicked = true
+				return
+			}
 			if button != glfw.MOUSE_BUTTON_LEFT do return
 
 			input.click = true
@@ -167,6 +181,7 @@ grab_cursor :: proc(grab: bool) {
 	input.mouse_dy = 0
 	input.have_last = false
 	input.fire_clicked = false
+	input.zoom_clicked = false
 	input.click = false
 }
 
@@ -192,6 +207,13 @@ consume_mouse_delta :: proc() -> (dx, dy: f32) {
 consume_fire_click :: proc() -> bool {
 	clicked := input.fire_clicked
 	input.fire_clicked = false
+	return clicked
+}
+
+// The right button's latch: the scope toggle.
+consume_zoom_click :: proc() -> bool {
+	clicked := input.zoom_clicked
+	input.zoom_clicked = false
 	return clicked
 }
 

@@ -34,7 +34,7 @@ CLI_USAGE :: `Options:
   --gpu-timing  measure each pass on the GPU and show it in the overlay
   --bench=N     run the fixed camera path for N frames, print one line, exit
   --join=TEAM   skip the menu and join the local server as t or ct
-  --weapon=NAME start holding a weapon by name, e.g. rifle, pistol, knife
+  --weapon=NAME start holding a weapon by name, e.g. ak, glock, awp, knife
   --no-light-cull  shade every light in every tile, to measure the culling
   --no-depth-prepass  shade the world without the depth-only first pass
   --help        print this`

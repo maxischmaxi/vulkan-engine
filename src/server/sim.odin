@@ -4,6 +4,7 @@ import "../game"
 import "../physics"
 import "../protocol"
 import "core:log"
+import "core:math"
 import "core:math/rand"
 import "core:time"
 
@@ -14,6 +15,42 @@ import "core:time"
 
 // Muzzle cues for the snapshot: which pawns fired during this tick.
 fired_this_tick: [game.MAX_PAWNS]bool
+
+// Directional hit cues for the snapshot's datagram: what hit each pawn this
+// tick. Cleared each sim_tick like fired_this_tick (both assume
+// SNAPSHOT_DIVISOR == 1; a divisor > 1 must move the clear to the flush).
+MAX_DAMAGE_EVENTS :: 8
+
+Damage_Event :: struct {
+	direction: f32, // world yaw degrees, victim toward attacker
+	amount:    u8,
+}
+
+pending_damage: [game.MAX_PAWNS][MAX_DAMAGE_EVENTS]Damage_Event
+pending_damage_count: [game.MAX_PAWNS]int
+
+// Records a landed hit for the victim's next snapshot datagram. God-mode
+// victims took nothing (damage_pawn no-ops), so they get no cue either.
+queue_damage :: proc(attacker_position: [3]f32, victim: int, amount: int) {
+	v := &sv.gs.pawns[victim]
+	if v.god do return
+	n := &pending_damage_count[victim]
+	if n^ >= MAX_DAMAGE_EVENTS do return
+
+	delta := [2]f32 {
+		attacker_position.x - v.body.position.x,
+		attacker_position.y - v.body.position.y,
+	}
+	direction := f32(0)
+	if abs(delta.x) > 0.001 || abs(delta.y) > 0.001 {
+		direction = math.to_degrees(math.atan2(delta.y, delta.x))
+	}
+	pending_damage[victim][n^] = {
+		direction = direction,
+		amount    = u8(clamp(amount, 0, 255)),
+	}
+	n^ += 1
+}
 
 history: game.Lag_History
 
@@ -41,6 +78,7 @@ rewind_target :: proc(base: u32) -> (u32, bool) {
 
 sim_tick :: proc(dt: f32) {
 	for &f in fired_this_tick do f = false
+	for &n in pending_damage_count do n = 0
 
 	for &slot in clients {
 		if slot.state != .In_Game do continue
@@ -74,6 +112,11 @@ sim_tick :: proc(dt: f32) {
 			ev := game.tick_pawn_weapon(&sv.gs, slot.pawn_id, cmd, dt)
 			if rewound do game.lag_comp_end(&sv.gs, &rw)
 
+			if ev.fired && ev.shot.hit && ev.shot.pawn >= 0 {
+				// The nominal weapon damage, pre-armor: a cosmetic intensity,
+				// not the bookkept loss.
+				queue_damage(p.body.position, ev.shot.pawn, game.WEAPONS[p.weapon.index].damage)
+			}
 			if ev.fired {
 				fired_this_tick[slot.pawn_id] = true
 				lag_stats.fires += 1
@@ -117,9 +160,15 @@ spawn_human :: proc(slot: ^Client_Slot) {
 	p.team = slot.team
 	p.god = slot.debug_god
 	p.infinite_ammo = slot.debug_infinite
-	game.refill_pawn_ammo(&p.weapon)
-	p.weapon.index = 0
-	log.infof("Server: spawned client {} on {} at {}", client_index(slot), slot.team, position)
+	apply_loadout_to_pawn(p, slot.loadout)
+	log.infof(
+		"Server: spawned client {} on {} at {} holding {} (armor {})",
+		client_index(slot),
+		slot.team,
+		position,
+		game.WEAPONS[p.weapon.index].name,
+		p.armor,
+	)
 }
 
 // A dev affordance, applied loudly: every grant is one log line, and the
@@ -167,8 +216,7 @@ respawn_human :: proc(slot: ^Client_Slot) {
 	p.team = slot.team
 	p.god = slot.debug_god
 	p.infinite_ammo = slot.debug_infinite
-	game.refill_pawn_ammo(&p.weapon)
-	p.weapon.index = 0
+	apply_loadout_to_pawn(p, slot.loadout)
 }
 
 // T starts in T-spawn, CT in CT-spawn -- the two rooms the map already names.
@@ -282,6 +330,17 @@ send_snapshots :: proc() {
 		buf: [protocol.MTU]u8
 		w := protocol.writer(buf[:])
 		protocol.connection_begin_packet(&slot.conn, &w)
+		// Damage cues first: the client must register the heading before the
+		// snapshot's health drop is reconciled -- see reconcile in predict.odin.
+		if slot.state == .In_Game {
+			for e in pending_damage[slot.pawn_id][:pending_damage_count[slot.pawn_id]] {
+				protocol.write_u8(&w, u8(protocol.Msg_Id.Damage))
+				protocol.write_damage(
+					&w,
+					{tick = sv.tick, direction = e.direction, amount = e.amount},
+				)
+			}
+		}
 		protocol.write_u8(&w, u8(protocol.Msg_Id.Snapshot))
 		protocol.write_snapshot(&w, s, base)
 		if w.overflow {

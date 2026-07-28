@@ -1,6 +1,7 @@
 package main
 
 import "core:log"
+import "core:math"
 import "core:math/rand"
 import "core:net"
 import "core:time"
@@ -53,6 +54,10 @@ Net_Client :: struct {
 	snap_bytes:         int, // their payload bytes, for the average
 	kills_seen:         u8,
 	kills_synced:       bool, // first private block seeds kills_seen without a marker
+	// Damage message bookkeeping: the health-drop fallback in reconcile only
+	// fires when no Damage message covered the drop -- see predict.odin.
+	last_damage_tick:   u32,
+	last_health_tick:   u32,
 }
 
 net_client: Net_Client
@@ -211,6 +216,9 @@ handle_server_packet :: proc(data: []u8) {
 				net_fail("PROTOCOL FAILURE")
 				return
 			}
+			// the seed loadout ships right behind the join, so --weapon runs
+			// spawn armed and the slot never holds a stale default
+			net_send_loadout(seed_loadout())
 			// debug toggles flipped before connecting still have to arrive
 			if debug.god_mode || debug.infinite_ammo {
 				net_send_debug_flags()
@@ -257,6 +265,10 @@ handle_server_packet :: proc(data: []u8) {
 		case .Snapshot:
 			if s, sok := read_snapshot_msg(&r); sok {
 				handle_snapshot(s)
+			}
+		case .Damage:
+			if m, mok := protocol.read_damage(&r); mok {
+				handle_damage(m)
 			}
 		case .Server_Disconnect:
 			net_fail("SERVER CLOSED THE CONNECTION")
@@ -365,6 +377,16 @@ handle_snapshot :: proc(s: protocol.Snapshot) {
 }
 
 @(private = "file")
+handle_damage :: proc(m: protocol.Damage_Msg) {
+	if m.tick > net_client.last_damage_tick {
+		net_client.last_damage_tick = m.tick
+	}
+	rad := math.to_radians(m.direction)
+	register_hit({math.cos(rad), math.sin(rad)}, int(m.amount))
+	log.debugf("NET: damage {} from {:.0f} deg at tick {}", m.amount, m.direction, m.tick)
+}
+
+@(private = "file")
 send_connect_request :: proc() {
 	scratch: protocol.Connection
 	protocol.connection_init(&scratch, 0)
@@ -396,6 +418,33 @@ net_send :: proc(data: []u8) {
 	if _, err := net.send_udp(net_client.socket, data, net_client.server_ep); err != nil {
 		log.warnf("NET: send error {}", err)
 	}
+}
+
+// Mirrors the buy choice to the server, which applies it on the next spawn --
+// or immediately during the countdown. Reliable: a buy must not be lost.
+net_send_loadout :: proc(l: game.Loadout) {
+	if !net_client.got_accept do return
+	if !protocol.queue_reliable_msg(
+		&net_client.conn,
+		.Loadout,
+		protocol.write_loadout,
+		protocol.Loadout_Msg{primary = l.primary, secondary = l.secondary, armor = l.armor},
+	) {
+		net_fail("PROTOCOL FAILURE")
+		return
+	}
+	log.infof(
+		"NET: loadout sent primary={} secondary={} armor={}",
+		loadout_slot_name(l.primary),
+		loadout_slot_name(l.secondary),
+		l.armor,
+	)
+}
+
+@(private = "file")
+loadout_slot_name :: proc(index: i8) -> string {
+	if index < 0 || int(index) >= game.WEAPON_COUNT do return "none"
+	return game.WEAPONS[index].name
 }
 
 // Mirrors the local debug toggles to the server, which owns the simulation

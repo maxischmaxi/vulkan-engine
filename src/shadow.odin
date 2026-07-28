@@ -454,7 +454,14 @@ record_shadow_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
 
 		if model_renderer.static_count > 0 {
 			vk.CmdBindPipeline(cmd, .GRAPHICS, shadow.model_pipe.pipeline)
-			vk.CmdPushConstants(cmd, shadow.model_pipe.layout, {.VERTEX}, 0, size_of(u32), &cascade)
+			vk.CmdPushConstants(
+				cmd,
+				shadow.model_pipe.layout,
+				{.VERTEX},
+				0,
+				size_of(u32),
+				&cascade,
+			)
 			bind_frame_set(cmd, shadow.model_pipe.layout, frame)
 			record_model_shadow_draw(cmd)
 		}

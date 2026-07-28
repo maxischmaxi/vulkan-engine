@@ -152,60 +152,73 @@ MATERIALS := []Material {
 	// Skin and gunmetal share one atlas layer and differ only here.
 	{
 		// arms
-		tint = {1, 1, 1, 1},
-		layer = 10,
-		uv_scale = 1.0,
+		tint          = {1, 1, 1, 1},
+		layer         = 10,
+		uv_scale      = 1.0,
 		roughness_mul = 1.05,
-		metallic = 0,
-		normal_scale = 1.0,
-		saturation = 1.0,
+		metallic      = 0,
+		normal_scale  = 1.0,
+		saturation    = 1.0,
 	},
 	{
 		// rifle, pistol and the rounds in their magazines
-		tint = {1, 1, 1, 1},
-		layer = 10,
-		uv_scale = 1.0,
+		tint          = {1, 1, 1, 1},
+		layer         = 10,
+		uv_scale      = 1.0,
 		roughness_mul = 0.8,
 		// Not fully metallic: the retro textures paint their own highlights, and
 		// a metallic of 1 would drop the diffuse term those rely on.
-		metallic = 0.45,
-		normal_scale = 1.0,
-		saturation = 1.0,
-	},
-	{
-		// the throwing knife, the one asset with a real PBR set
-		tint = {1, 1, 1, 1},
-		layer = 11,
-		uv_scale = 1.0,
-		roughness_mul = 1.0,
-		metallic = 0.9,
-		normal_scale = 1.0,
-		saturation = 1.0,
+		metallic      = 0.45,
+		normal_scale  = 1.0,
+		saturation    = 1.0,
 	},
 	{
 		// Props, mapped onto the flat colour palette they were authored against.
 		// The palette is a bright toy-box green and yellow; pulled toward the
 		// map's sandstone the same way the world textures are, or the crates
 		// read as belonging to a different game.
-		tint = {0.92, 0.82, 0.62, 1},
-		layer = 12,
-		uv_scale = 1.0,
+		tint          = {0.92, 0.82, 0.62, 1},
+		layer         = 11,
+		uv_scale      = 1.0,
 		roughness_mul = 1.0,
-		metallic = 0,
-		normal_scale = 1.0,
-		saturation = 0.55,
+		metallic      = 0,
+		normal_scale  = 1.0,
+		saturation    = 0.55,
+	},
+	// The gun pack's swatch palette. Roughness varies per swatch inside the
+	// texture, so the two entries only split metal from dielectric.
+	{
+		// gun_matte: polymer, wood, glass
+		tint          = {1, 1, 1, 1},
+		layer         = 12,
+		uv_scale      = 1.0,
+		roughness_mul = 1.0,
+		metallic      = 0,
+		normal_scale  = 1.0,
+		saturation    = 1.0,
+	},
+	{
+		// gun_metal: bare metal parts
+		tint          = {1, 1, 1, 1},
+		layer         = 12,
+		uv_scale      = 1.0,
+		roughness_mul = 1.0,
+		metallic      = 0.6,
+		normal_scale  = 1.0,
+		saturation    = 1.0,
 	},
 }
 
 // Model materials are appended past the map's, so game.Material_ID keeps meaning
 // "something a map is authored in" and these stay a client-side detail. The
-// order has to match the four entries at the end of MATERIALS above; the load
+// order has to match the model entries at the end of MATERIALS above; the load
 // checks it.
 MODEL_MAT_RETRO_ARMS :: u32(len(game.Material_ID))
 MODEL_MAT_RETRO_GUNS :: MODEL_MAT_RETRO_ARMS + 1
-MODEL_MAT_KNIFE :: MODEL_MAT_RETRO_ARMS + 2
-MODEL_MAT_PROP_PALETTE :: MODEL_MAT_RETRO_ARMS + 3
-MODEL_MATERIAL_COUNT :: 4
+MODEL_MAT_PROP_PALETTE :: MODEL_MAT_RETRO_ARMS + 2
+MODEL_MAT_GUN_MATTE :: MODEL_MAT_RETRO_ARMS + 3
+MODEL_MAT_GUN_METAL :: MODEL_MAT_RETRO_ARMS + 4
+MODEL_MATERIAL_COUNT :: 5
 
 // Everything behind descriptor set 1: the material table and the texture arrays
 // it indexes into. None of it changes after load.

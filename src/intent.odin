@@ -33,6 +33,9 @@ gather_player_intent :: proc() {
 	if key_pressed(glfw.KEY_SPACE) do intent.jump_pressed = true
 	if input.fire_clicked do intent.fire_pressed = true
 	if key_pressed(glfw.KEY_R) do intent.reload = true
+	// The scope toggles here, at frame rate: waiting for a tick would add a
+	// perceptible stutter to the lens.
+	if consume_zoom_click() do weapon_toggle_zoom()
 	for key, slot in SLOT_KEYS {
 		if key_pressed(key) {
 			intent.slot_change = true
@@ -70,6 +73,10 @@ build_local_input :: proc() -> game.Pawn_Input {
 	// be read fresh -- it spans frames on its own.
 	if glfw.GetMouseButton(g.window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS {
 		input_.buttons += {.Fire}
+	}
+	// Scoped in walks slower, and only the wire can make the server agree.
+	if weapon_state.zoom_active {
+		input_.buttons += {.Zoom}
 	}
 
 	if intent.jump_pressed {

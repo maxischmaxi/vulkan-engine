@@ -30,8 +30,8 @@ TEXTURE_SETS := []string {
 	// blit_layer never comes into play. Everything else about them -- four maps,
 	// one directory, one layer -- is the same deal as an ambientCG set.
 	"RetroWeapons",
-	"ThrowingKnife",
 	"PropPalette",
+	"GunPalette",
 }
 
 TEXTURE_DIR :: "textures"

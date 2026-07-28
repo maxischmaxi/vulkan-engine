@@ -102,6 +102,28 @@ read_debug_flags :: proc(r: ^Reader) -> (m: Debug_Flags, ok: bool) {
 	return m, !r.error
 }
 
+// The buy menu's choice: what the next spawn carries, applied immediately
+// during the countdown. Validation is the server's job; the wire only moves
+// three bytes.
+Loadout_Msg :: struct {
+	primary:   i8, // WEAPONS index, -1 = none
+	secondary: i8,
+	armor:     bool,
+}
+
+write_loadout :: proc(w: ^Writer, m: Loadout_Msg) {
+	write_u8(w, transmute(u8)m.primary)
+	write_u8(w, transmute(u8)m.secondary)
+	write_u8(w, m.armor ? 1 : 0)
+}
+
+read_loadout :: proc(r: ^Reader) -> (m: Loadout_Msg, ok: bool) {
+	m.primary = transmute(i8)read_u8(r)
+	m.secondary = transmute(i8)read_u8(r)
+	m.armor = read_u8(r) != 0
+	return m, !r.error
+}
+
 Disconnect :: struct {
 	reason: Disconnect_Reason,
 }
@@ -155,6 +177,31 @@ read_kill :: proc(r: ^Reader) -> (m: Kill, ok: bool) {
 	m.killer = read_u8(r)
 	m.victim = read_u8(r)
 	m.weapon = read_u8(r)
+	return m, !r.error
+}
+
+// One landed hit on the receiving client's own pawn. Unreliable, written into
+// the same datagram as that tick's snapshot and BEFORE it, so the receiver
+// registers the heading before reconciliation sees the health drop. Loss is
+// covered by the client's directionless health-drop fallback.
+Damage_Msg :: struct {
+	tick:      u32, // server tick the hit landed on
+	// World-space yaw degrees from victim toward attacker, same frame as the
+	// camera yaw (0 = +X east, counter-clockwise). Rides the yaw quantizer.
+	direction: f32,
+	amount:    u8,
+}
+
+write_damage :: proc(w: ^Writer, m: Damage_Msg) {
+	write_u32(w, m.tick)
+	write_u16(w, quantize_yaw(m.direction))
+	write_u8(w, m.amount)
+}
+
+read_damage :: proc(r: ^Reader) -> (m: Damage_Msg, ok: bool) {
+	m.tick = read_u32(r)
+	m.direction = dequantize_yaw(read_u16(r))
+	m.amount = read_u8(r)
 	return m, !r.error
 }
 

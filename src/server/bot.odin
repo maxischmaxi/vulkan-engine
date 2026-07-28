@@ -207,6 +207,7 @@ tick_bot_combat :: proc(pawn_id: int, p: ^game.Pawn, brain: ^Bot_Brain, dt: f32)
 	// traced shot replaces this once bots hold real weapons.
 	chance := BOT_ACCURACY * clamp(1 - dist / BOT_VIEW_RANGE, 0.25, 1)
 	if rand.float32(sv.gs.rng) < chance {
+		queue_damage(p.body.position, target_id, BOT_DAMAGE)
 		if game.damage_pawn(target, BOT_DAMAGE) {
 			sv.gs.pawns[pawn_id].kills += 1
 			on_pawn_killed(pawn_id, target_id)

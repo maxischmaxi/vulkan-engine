@@ -15,7 +15,7 @@ package protocol
 //     connection.odin (join, match phases, kills, disconnects)
 
 PROTOCOL_MAGIC :: u16(0xB0F5)
-PROTOCOL_VERSION :: u8(2)
+PROTOCOL_VERSION :: u8(4)
 
 // Well under every real-world MTU, so a packet is never fragmented. The worst
 // snapshot today is ~400 bytes; this is headroom, not a target.
@@ -57,6 +57,7 @@ Msg_Id :: enum u8 {
 	Join              = 0x04, // reliable
 	Disconnect        = 0x05,
 	Debug_Flags       = 0x06, // reliable; a dev affordance a hardened server refuses
+	Loadout           = 0x07, // reliable; a buy must not be lost
 	// server -> client
 	Connect_Accept    = 0x10,
 	Connect_Deny      = 0x11,
@@ -64,6 +65,7 @@ Msg_Id :: enum u8 {
 	Match_Phase       = 0x13, // reliable
 	Kill              = 0x14, // reliable
 	Server_Disconnect = 0x15,
+	Damage            = 0x16, // unreliable, victim only
 }
 
 Deny_Reason :: enum u8 {

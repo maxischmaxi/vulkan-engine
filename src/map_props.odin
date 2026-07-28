@@ -113,7 +113,10 @@ place_map_props :: proc() {
 			// long axis already matches needs no rotating
 			append(
 				&placements,
-				Model_Placement{mesh = name, model = fit_transform(mesh, brush.min, brush.max, false)},
+				Model_Placement {
+					mesh = name,
+					model = fit_transform(mesh, brush.min, brush.max, false),
+				},
 			)
 			continue
 		}
@@ -124,11 +127,7 @@ place_map_props :: proc() {
 			counts[axis] = max(1, int(size[axis] / tile[axis] + 0.5))
 		}
 
-		cell := [3]f32 {
-			size.x / f32(counts[0]),
-			size.y / f32(counts[1]),
-			size.z / f32(counts[2]),
-		}
+		cell := [3]f32{size.x / f32(counts[0]), size.y / f32(counts[1]), size.z / f32(counts[2])}
 
 		for ix in 0 ..< counts[0] {
 			for iy in 0 ..< counts[1] {

@@ -24,17 +24,80 @@ PLAYER_RESPAWN_DELAY :: 3.0
 // return fire, long enough to notice at 64 ticks a second.
 DAMAGE_FLASH_TIME :: 0.6
 
-// Feedback the HUD reads: how much red is left, and the world-space heading
-// from the player toward whatever last hit them.
+// How many hit directions the indicator can show at once.
+DAMAGE_SLOTS :: 4
+
+// cos 30 degrees: a repeat hit within this cone refreshes its slot instead of
+// spawning a duplicate.
+DAMAGE_MERGE_COS :: 0.866
+
+Damage_Hit :: struct {
+	dir:       [2]f32, // world-space unit vector, victim toward attacker
+	time_left: f32,
+	strength:  f32, // peak intensity 0..1, from the damage amount
+}
+
+// Feedback the damage indicator reads: up to DAMAGE_SLOTS directional hits,
+// plus a directionless flash for hits whose heading is unknown (lost damage
+// datagram, shot from directly above or below).
 Player_Fx :: struct {
-	damage_flash: f32,
-	damage_dir:   [2]f32,
+	hits:  [DAMAGE_SLOTS]Damage_Hit,
+	flash: f32,
 }
 
 player_fx: Player_Fx
 
+// 10 damage ~ 0.65, 25 ~ 0.88, 40+ saturates. Tunable.
+@(private = "file")
+hit_strength :: proc(amount: int) -> f32 {
+	return clamp(0.5 + f32(amount) / 66.0, 0.5, 1.0)
+}
+
+// The one entry point for every damage cue, local or networked. `world_delta`
+// points from the victim toward the attacker in the ground plane; a degenerate
+// delta becomes the directionless flash.
+register_hit :: proc(world_delta: [2]f32, amount: int) {
+	if amount <= 0 do return
+	if linalg.length(world_delta) < 0.001 {
+		player_fx.flash = DAMAGE_FLASH_TIME
+		return
+	}
+	dir := linalg.normalize(world_delta)
+	strength := hit_strength(amount)
+
+	// The same attacker hitting again refreshes their slot. Newest heading
+	// wins -- the attacker may be strafing.
+	for &hit in player_fx.hits {
+		if hit.time_left <= 0 do continue
+		if linalg.dot(hit.dir, dir) >= DAMAGE_MERGE_COS {
+			hit.dir = dir
+			hit.time_left = DAMAGE_FLASH_TIME
+			hit.strength = max(hit.strength, strength)
+			return
+		}
+	}
+	// A free slot if one exists, else evict the most faded.
+	best := &player_fx.hits[0]
+	for &hit in player_fx.hits[1:] {
+		if hit.time_left < best.time_left do best = &hit
+	}
+	best^ = {
+		dir       = dir,
+		time_left = DAMAGE_FLASH_TIME,
+		strength  = strength,
+	}
+}
+
+decay_player_fx :: proc(dt: f32) {
+	for &hit in player_fx.hits do hit.time_left = max(hit.time_left - dt, 0)
+	player_fx.flash = max(player_fx.flash - dt, 0)
+}
+
 init_player :: proc() {
 	game.init_pawn(player, game.SPAWN_POSITION, game.SPAWN_YAW)
+	// The session's starting kit; online the server's word replaces it, offline
+	// it is simply what respawns hand back.
+	player.loadout = seed_loadout()
 	player_fx = {}
 
 	// after the stance is settled, so the eye starts where it belongs instead of
@@ -59,6 +122,7 @@ respawn_player :: proc() {
 	player_fx = {}
 	init_view()
 
+	reset_zoom()
 	refill_all_ammo()
 	select_weapon(default_weapon_index())
 	intent = {}
@@ -71,15 +135,7 @@ damage_player :: proc(amount: int, from: [3]f32) {
 	if debug.god_mode do return
 
 	killed := game.damage_pawn(player, amount)
-	player_fx.damage_flash = DAMAGE_FLASH_TIME
-
-	// Straight-line heading in the ground plane. A shot from directly above or
-	// below leaves the old direction standing, which is better than a zero
-	// vector pointing the indicator at nothing.
-	delta := [2]f32{from.x - player.body.position.x, from.y - player.body.position.y}
-	if linalg.length(delta) > 0.001 {
-		player_fx.damage_dir = linalg.normalize(delta)
-	}
+	register_hit({from.x - player.body.position.x, from.y - player.body.position.y}, amount)
 
 	if killed {
 		player.respawn_in = PLAYER_RESPAWN_DELAY
@@ -91,7 +147,7 @@ damage_player :: proc(amount: int, from: [3]f32) {
 // how fast the machine renders. The moving itself is the shared pawn_move's job.
 tick_player :: proc(dt: f32) {
 	player.prev_position = player.body.position
-	player_fx.damage_flash = max(player_fx.damage_flash - dt, 0)
+	decay_player_fx(dt)
 
 	// Dead players do not move, jump or duck. The camera stays where it fell, so
 	// the respawn is the only thing that puts it back.

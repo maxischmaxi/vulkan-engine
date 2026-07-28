@@ -21,6 +21,10 @@ camera: Camera
 // means a sensitivity value here means the same thing it does in-game.
 CS_DEGREES_PER_COUNT :: 0.022
 
+// The unscoped lens; scoped weapons narrow fov_horizontal from here and turn
+// slower with it, so a flick covers the same screen distance either way.
+DEFAULT_FOV :: f32(90)
+
 // Looking straight up or down would make the view matrix degenerate, since
 // forward would be parallel to the world up axis.
 MAX_PITCH :: 89.0
@@ -30,7 +34,7 @@ init_camera :: proc() {
 		position       = game.SPAWN_POSITION + {0, 0, game.EYE_HEIGHT},
 		yaw            = game.SPAWN_YAW,
 		pitch          = 0,
-		fov_horizontal = 90,
+		fov_horizontal = DEFAULT_FOV,
 		near           = 0.05,
 		far            = 250,
 		sensitivity    = 2.0,
@@ -39,7 +43,7 @@ init_camera :: proc() {
 }
 
 camera_apply_mouse :: proc(dx, dy: f32) {
-	scale := camera.sensitivity * CS_DEGREES_PER_COUNT
+	scale := camera.sensitivity * CS_DEGREES_PER_COUNT * (camera.fov_horizontal / DEFAULT_FOV)
 	camera.yaw -= dx * scale
 	camera.pitch -= dy * scale
 	camera.pitch = clamp(camera.pitch, -MAX_PITCH, MAX_PITCH)

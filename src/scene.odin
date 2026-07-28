@@ -96,6 +96,7 @@ enter_scene :: proc(next: Scene) {
 reset_match :: proc() {
 	init_player()
 	init_weapons()
+	buy_reset(player.loadout)
 	clear_decals()
 
 	// The startup init spawned local pawns for the benchmark; a networked
@@ -128,6 +129,7 @@ update_scene :: proc() {
 scene_handle_esc :: proc() {
 	if !key_pressed(glfw.KEY_ESCAPE) do return
 	if settings_ui.open do return
+	if buy_menu.open do return // the buy menu consumes its own ESC
 
 	switch scene.current {
 	case .Menu:

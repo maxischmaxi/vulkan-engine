@@ -14,12 +14,26 @@ import "../physics"
 // server carries the string and never touches it.
 Weapon_Model :: string
 
+// The buy menu's page a weapon appears on. None means not buyable -- the knife
+// is always owned.
+Buy_Category :: enum u8 {
+	None,
+	Pistol,
+	Heavy,
+	SMG,
+	Rifle,
+}
+
+Team_Mask :: bit_set[Team;u8]
+
 Weapon :: struct {
 	name:          string,
 	model:         Weapon_Model,
-	// Which number key draws it. Sparse on purpose: the HUD lists every slot,
-	// including the ones nothing occupies yet.
+	// Which number key draws it: 0 primary, 1 secondary, 2 knife.
 	slot:          int,
+	category:      Buy_Category,
+	teams:         Team_Mask, // who may buy it; set explicitly on every entry
+	price:         int, // display only -- everything is free, like casual deathmatch
 	damage:        int,
 	// Rounds in a full magazine and the most that can be carried behind it.
 	// A melee weapon leaves both at zero and skips ammo entirely.
@@ -31,6 +45,7 @@ Weapon :: struct {
 	fire_interval: f32, // seconds between shots
 	automatic:     bool,
 	range:         f32,
+	zoom_fov:      f32, // horizontal degrees while scoped; 0 = no scope
 	// The models come out of scenes built around a camera at the origin, so the
 	// artist's own composition is the default and this only corrects it.
 	//
@@ -42,47 +57,31 @@ Weapon :: struct {
 	recoil_kick:   f32, // metres the weapon jumps back
 }
 
+// Indices into WEAPONS, by name. The knife sits at 0 so a zeroed weapon index
+// is always something every pawn owns.
+WEAPON_KNIFE :: 0
+WEAPON_GLOCK :: 1
+WEAPON_USP :: 2
+WEAPON_DEAGLE :: 3
+WEAPON_MAC10 :: 4
+WEAPON_MP9 :: 5
+WEAPON_NOVA :: 6
+WEAPON_AK :: 7
+WEAPON_M4 :: 8
+WEAPON_AWP :: 9
+
 // A fixed array rather than a slice, so len(WEAPONS) is a constant and the ammo
-// table below can be sized from it.
+// table below can be sized from it. Order must match the constants above.
+// Stats approximate counter-strike's; prices are the classic ones and purely
+// cosmetic. muzzle values are read off the converter's per-object bounds.
 WEAPONS := [?]Weapon {
-	{
-		name          = "rifle",
-		model         = "view_rifle",
-		slot          = 0,
-		// Three hits kill a bot at full health, which is what makes the damage
-		// number visible in play rather than only in the table.
-		damage        = 34,
-		mag_size      = 30,
-		reserve_max   = 90,
-		reload_time   = 2.4,
-		// The front edge of the barrel, read off the model's own bounds -- the
-		// converter prints them per object for exactly this.
-		muzzle        = {0.08, 0.75, -0.06},
-		fire_interval = 0.092, // about 650 rounds per minute
-		automatic     = true,
-		range         = 200,
-		view_offset   = {0, 0, 0},
-		recoil_kick   = 0.035,
-	},
-	{
-		name          = "pistol",
-		model         = "view_pistol",
-		slot          = 1,
-		damage        = 26,
-		mag_size      = 12,
-		reserve_max   = 60,
-		reload_time   = 1.9,
-		muzzle        = {0.075, 0.50, -0.12},
-		fire_interval = 0.15,
-		automatic     = false,
-		range         = 120,
-		view_offset   = {0, 0, 0},
-		recoil_kick   = 0.028,
-	},
 	{
 		name          = "knife",
 		model         = "view_knife",
 		slot          = 2,
+		category      = .None,
+		teams         = {.T, .CT},
+		price         = 0,
 		damage        = 55,
 		melee         = true,
 		fire_interval = 0.4,
@@ -93,13 +92,179 @@ WEAPONS := [?]Weapon {
 		view_offset   = {0, 0, 0},
 		recoil_kick   = 0.06, // the swing, not a recoil
 	},
+	{
+		name          = "glock",
+		model         = "view_glock",
+		slot          = 1,
+		category      = .Pistol,
+		teams         = {.T},
+		price         = 0, // the starting pistol
+		damage        = 28,
+		mag_size      = 20,
+		reserve_max   = 120,
+		reload_time   = 2.2,
+		muzzle        = {0.075, 0.47, -0.12},
+		fire_interval = 0.15,
+		automatic     = false,
+		range         = 120,
+		view_offset   = {0, 0, 0},
+		recoil_kick   = 0.028,
+	},
+	{
+		name          = "usp",
+		model         = "view_usp",
+		slot          = 1,
+		category      = .Pistol,
+		teams         = {.CT},
+		price         = 0, // the starting pistol
+		damage        = 33,
+		mag_size      = 12,
+		reserve_max   = 24,
+		reload_time   = 2.2,
+		muzzle        = {0.075, 0.51, -0.13},
+		fire_interval = 0.17,
+		automatic     = false,
+		range         = 120,
+		view_offset   = {0, 0, 0},
+		recoil_kick   = 0.030,
+	},
+	{
+		name = "deagle",
+		model = "view_deagle",
+		slot = 1,
+		category = .Pistol,
+		teams = {.T, .CT},
+		price = 700,
+		damage = 58,
+		mag_size = 7,
+		reserve_max = 35,
+		reload_time = 2.2,
+		muzzle = {0.075, 0.55, -0.14},
+		fire_interval = 0.22,
+		automatic = false,
+		range = 150,
+		view_offset = {0, 0, 0},
+		recoil_kick = 0.050,
+	},
+	{
+		name = "mac10",
+		model = "view_mac10",
+		slot = 0,
+		category = .SMG,
+		teams = {.T},
+		price = 1050,
+		damage = 26,
+		mag_size = 30,
+		reserve_max = 100,
+		reload_time = 2.6,
+		muzzle = {0.09, 0.54, -0.13},
+		fire_interval = 0.075,
+		automatic = true,
+		range = 100,
+		view_offset = {0, 0, 0},
+		recoil_kick = 0.030,
+	},
+	{
+		name = "mp9",
+		model = "view_mp9",
+		slot = 0,
+		category = .SMG,
+		teams = {.CT},
+		price = 1250,
+		damage = 24,
+		mag_size = 30,
+		reserve_max = 120,
+		reload_time = 2.1,
+		muzzle = {0.09, 0.56, -0.13},
+		fire_interval = 0.07,
+		automatic = true,
+		range = 100,
+		view_offset = {0.04, -0.02, -0.03},
+		recoil_kick = 0.030,
+	},
+	{
+		name          = "nova",
+		model         = "view_nova",
+		slot          = 0,
+		category      = .Heavy,
+		teams         = {.T, .CT},
+		price         = 1050,
+		// One tight slug for now rather than pellets; the short range is what
+		// stands in for falloff until a deterministic spread exists.
+		damage        = 80,
+		mag_size      = 8,
+		reserve_max   = 32,
+		reload_time   = 2.9,
+		muzzle        = {0.09, 0.97, -0.15},
+		fire_interval = 0.9,
+		automatic     = false,
+		range         = 40,
+		view_offset   = {0, 0, 0},
+		recoil_kick   = 0.060,
+	},
+	{
+		name          = "ak",
+		model         = "view_ak",
+		slot          = 0,
+		category      = .Rifle,
+		teams         = {.T},
+		price         = 2700,
+		damage        = 36,
+		mag_size      = 30,
+		reserve_max   = 90,
+		reload_time   = 2.4,
+		muzzle        = {0.09, 0.99, -0.15},
+		fire_interval = 0.1, // 600 rounds per minute
+		automatic     = true,
+		range         = 200,
+		view_offset   = {0.04, -0.03, -0.05},
+		recoil_kick   = 0.040,
+	},
+	{
+		name          = "m4",
+		model         = "view_m4",
+		slot          = 0,
+		category      = .Rifle,
+		teams         = {.CT},
+		price         = 3100,
+		damage        = 33,
+		mag_size      = 30,
+		reserve_max   = 90,
+		reload_time   = 3.1,
+		muzzle        = {0.09, 0.75, -0.15},
+		fire_interval = 0.09, // 666 rounds per minute
+		automatic     = true,
+		range         = 200,
+		view_offset   = {0.04, -0.03, -0.05},
+		recoil_kick   = 0.035,
+	},
+	{
+		name          = "awp",
+		model         = "view_awp",
+		slot          = 0,
+		category      = .Rifle,
+		teams         = {.T, .CT},
+		price         = 4750,
+		// 200 through ARMOR_ABSORB 0.5 against a full vest: 100 absorbed, 100
+		// taken -- the one-shot body kill an awp is for.
+		damage        = 200,
+		mag_size      = 5,
+		reserve_max   = 30,
+		reload_time   = 3.7,
+		muzzle        = {0.09, 1.04, -0.15},
+		fire_interval = 1.5, // the bolt cycle
+		automatic     = false,
+		range         = 250,
+		zoom_fov      = 30,
+		view_offset   = {0.04, -0.02, -0.05},
+		recoil_kick   = 0.080,
+	},
 }
 
 WEAPON_COUNT :: len(WEAPONS)
 
-// The highest number key the HUD offers. Slots past the last weapon are drawn
-// empty rather than hidden, so the loadout has visible room to grow.
-WEAPON_SLOTS :: 5
+// The number keys: 1 primary, 2 secondary, 3 knife.
+WEAPON_SLOTS :: 3
 
 // Long enough that an empty magazine reads as a failure to fire rather than as
 // the game dropping the click.
@@ -113,15 +278,6 @@ SWITCH_COOLDOWN :: 0.25
 Weapon_Ammo :: struct {
 	mag:     int,
 	reserve: int,
-}
-
-// The weapon occupying a slot, or -1. Slots are sparse, so callers ask rather
-// than indexing.
-weapon_in_slot :: proc(slot: int) -> int {
-	for weapon, i in WEAPONS {
-		if weapon.slot == slot do return i
-	}
-	return -1
 }
 
 // ------------------------------------------------- per-pawn, tick-based core
@@ -259,7 +415,8 @@ tick_pawn_weapon :: proc(
 	}
 
 	if input.weapon_slot >= 0 {
-		if index := weapon_in_slot(int(input.weapon_slot)); index >= 0 {
+		// Which weapon a slot key means depends on what this pawn carries.
+		if index := loadout_weapon_in_slot(p.loadout, int(input.weapon_slot)); index >= 0 {
 			select_pawn_weapon(w, index)
 		}
 	}

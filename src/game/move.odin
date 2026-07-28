@@ -22,6 +22,7 @@ UNITS_PER_METRE :: 1.0 / UNIT
 WALK_SPEED :: 250 * UNIT // 6.35 m/s
 SLOW_FACTOR :: 0.52 // holding shift, counter-strike's walk
 CROUCH_FACTOR :: 0.34 // ducked
+ZOOM_FACTOR :: 0.4 // scoped in, roughly counter-strike's awp walk
 NOCLIP_SPEED :: 22.0
 
 GRAVITY :: 800 * UNIT // 20.3 m/s^2
@@ -75,6 +76,7 @@ Button :: enum u8 {
 	Fire, // held
 	Fire_Pressed, // the edge, for semi-automatics
 	Reload,
+	Zoom, // held while scoped; slows the walk on both ends of the wire
 }
 
 Buttons :: bit_set[Button;u16]
@@ -140,6 +142,9 @@ wish_move :: proc(p: ^Pawn, input: Pawn_Input) -> (dir: [3]f32, speed: f32) {
 		speed *= CROUCH_FACTOR
 	} else if .Slow in input.buttons {
 		speed *= SLOW_FACTOR
+	}
+	if .Zoom in input.buttons {
+		speed *= ZOOM_FACTOR
 	}
 	return
 }

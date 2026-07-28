@@ -15,8 +15,14 @@ lag_range :: proc() -> (gs: Game_State) {
 	}
 	gs.grid = physics.grid_build(gs.collision)
 
-	// shooter at the origin looking east, target five metres down the ray
+	// shooter at the origin looking east, target five metres down the ray;
+	// the shooter carries the ak so the fire tests reach that far
 	init_pawn(&gs.pawns[0], {0, 0, 0}, 0)
+	gs.pawns[0].loadout = {
+		primary   = WEAPON_AK,
+		secondary = WEAPON_GLOCK,
+	}
+	gs.pawns[0].weapon.index = WEAPON_AK
 	refill_pawn_ammo(&gs.pawns[0].weapon)
 	init_pawn(&gs.pawns[1], {5, 0, 0}, 0)
 	return
@@ -118,7 +124,7 @@ test_kill_during_rewind_survives_restore :: proc(t: ^testing.T) {
 	gs := lag_range()
 	defer destroy_lag_range(&gs)
 	gs.pawns[1].armor = 0
-	gs.pawns[1].health = WEAPONS[0].damage // exactly one rifle hit
+	gs.pawns[1].health = WEAPONS[WEAPON_AK].damage // exactly one rifle hit
 
 	hist: Lag_History
 	lag_history_record(&hist, &gs, 10)

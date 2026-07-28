@@ -11,13 +11,18 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
 retro=RetroWeaponPack_V1.zip
-knife=ThrowingKnife.zip
 props=Models.zip
 palettes=Palettes.zip
 psx=psx-first-person-arms-free-game-assets.zip
+guns=UltimateGunPackByQuaternius.zip
 
+# An archive may be deleted once its assets are on disk; a re-run then keeps
+# what is extracted. Only a pack missing both archive and assets is an error.
 need() {
-    [ -e "$1" ] || { echo "missing $1 -- put the archive in the project root" >&2; exit 1; }
+    [ -e "$1" ] || [ -e "$2" ] || {
+        echo "missing $1 -- put the archive in the project root" >&2
+        exit 1
+    }
 }
 
 # unzip -j drops the paths; -o overwrites so a re-run is idempotent
@@ -27,29 +32,41 @@ pull() {
     unzip -joq "$archive" "$@" -d "$out"
 }
 
-need "$retro"; need "$knife"; need "$props"; need "$palettes"
+need "$retro" assets/retro/blend
+need "$props" assets/props/models
+need "$palettes" assets/props/palettes
+need "$guns" assets/guns/obj
 
 # The blend files are the good source: arms and gun sit in one scene, already
 # posed and animated. The FBX are the fallback for anything the blend lacks.
-pull "$retro" assets/retro/blend \
-    "Assets/RetroWeaponsPack/FP_Arms/BlendFiles/FP_Arms_Rifle_01_Anims.blend" \
-    "Assets/RetroWeaponsPack/FP_Arms/BlendFiles/FP_Arms_Pistol_01_Anims.blend" \
-    "Assets/RetroWeaponsPack/Guns/Pistol_01/BlendFile/Pistol_01.blend" \
-    "Assets/RetroWeaponsPack/Guns/Rifle_01/BlendFile/Rifle_01.blend"
+if [ -e "$retro" ]; then
+    pull "$retro" assets/retro/blend \
+        "Assets/RetroWeaponsPack/FP_Arms/BlendFiles/FP_Arms_Rifle_01_Anims.blend" \
+        "Assets/RetroWeaponsPack/FP_Arms/BlendFiles/FP_Arms_Pistol_01_Anims.blend" \
+        "Assets/RetroWeaponsPack/Guns/Pistol_01/BlendFile/Pistol_01.blend" \
+        "Assets/RetroWeaponsPack/Guns/Rifle_01/BlendFile/Rifle_01.blend"
 
-pull "$retro" assets/retro/textures \
-    "Assets/RetroWeaponsPack/FP_Arms/Texture/FPS_Arms_Albedo.png" \
-    "Assets/RetroWeaponsPack/Guns/Rifle_01/Textures/Rifle_01_Albedo.png" \
-    "Assets/RetroWeaponsPack/Guns/Pistol_01/Textures/Pistol_01_Albedo.png" \
-    "Assets/RetroWeaponsPack/Guns/AdditionalMeshes/Projectiles/Texture/Projectiles_Albedo.png"
+    pull "$retro" assets/retro/textures \
+        "Assets/RetroWeaponsPack/FP_Arms/Texture/FPS_Arms_Albedo.png" \
+        "Assets/RetroWeaponsPack/Guns/Rifle_01/Textures/Rifle_01_Albedo.png" \
+        "Assets/RetroWeaponsPack/Guns/Pistol_01/Textures/Pistol_01_Albedo.png" \
+        "Assets/RetroWeaponsPack/Guns/AdditionalMeshes/Projectiles/Texture/Projectiles_Albedo.png"
 
-pull "$retro" assets/retro/fx \
-    "Assets/RetroWeaponsPack/FX/Textures/MuzzleFlash.png"
+    pull "$retro" assets/retro/fx \
+        "Assets/RetroWeaponsPack/FX/Textures/MuzzleFlash.png"
+fi
 
-pull "$knife" assets/knife "ThrowingKnife/*"
+[ -e "$props" ] && pull "$props" assets/props/models "Models/*.dae"
+[ -e "$palettes" ] && pull "$palettes" assets/props/palettes "Palettes/*.png"
 
-pull "$props" assets/props/models "Models/*.dae"
-pull "$palettes" assets/props/palettes "Palettes/*.png"
+# The whole gun pack lands on disk; the converter reads only the roster FBX,
+# and gun_palette.py reads the MTL files for the material colours.
+if [ -e "$guns" ]; then
+    pull "$guns" assets/guns/fbx "FBX/*.fbx"
+    pull "$guns" assets/guns/obj "OBJ/*.obj" "OBJ/*.mtl"
+    pull "$guns" assets/guns/blend "Blends/*.blend"
+    pull "$guns" assets/guns "Preview.jpg"
+fi
 
 # Not used by the converter -- unpacked because the archive was handed over with
 # the rest, and a second set of arms is worth having on disk.

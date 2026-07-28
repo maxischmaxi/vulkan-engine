@@ -77,10 +77,10 @@ build_hud :: proc() {
 		return
 	}
 
-	if hud.visible {
-		// Damage first, so everything else is legible on top of it.
-		draw_damage_feedback(width, height)
+	// Under the HUD and outside the F12 gate, like the crosshair it replaces.
+	if weapon_state.zoom_active do draw_scope(width, height)
 
+	if hud.visible {
 		draw_minimap(margin, margin, HUD_MINIMAP_SIZE * scale)
 		draw_status(width, margin)
 		draw_health(margin, height - margin)
@@ -97,11 +97,38 @@ build_hud :: proc() {
 		draw_countdown(width, height)
 	}
 
-	// The pause overlay outlives F12: its buttons must stay reachable.
+	// The pause overlay outlives F12: its buttons must stay reachable, and so
+	// must the buy menu's rows.
 	if scene.paused do draw_pause_overlay(width, height)
+	draw_buy_menu(width, height)
 
 	// Last, so it sits over everything -- it is modal while it is open.
 	draw_settings_ui()
+}
+
+// The scope: black bars boxing a centred circle-less square, a hairline cross
+// where the render pass's crosshair would be. Quads only.
+@(private = "file")
+draw_scope :: proc(width, height: f32) {
+	scale := hud_scale()
+	view := min(width, height)
+	half := view * 0.5
+	cx := width * 0.5
+	cy := height * 0.5
+
+	black := [4]f32{0, 0, 0, 1}
+	if cx - half > 0 {
+		hud_rect(0, 0, cx - half, height, black)
+		hud_rect(cx + half, 0, width - (cx + half), height, black)
+	}
+	if cy - half > 0 {
+		hud_rect(cx - half, 0, view, cy - half, black)
+		hud_rect(cx - half, cy + half, view, height - (cy + half), black)
+	}
+
+	line := max(1, 1 * scale)
+	hud_rect(cx - half, cy - line * 0.5, view, line, {0, 0, 0, 0.9})
+	hud_rect(cx - line * 0.5, cy - half, line, view, {0, 0, 0, 0.9})
 }
 
 // ------------------------------------------------------------------- panels
@@ -316,7 +343,7 @@ draw_slots :: proc(center, bottom: f32) {
 	total: f32
 
 	for slot in 0 ..< game.WEAPON_SLOTS {
-		index := game.weapon_in_slot(slot)
+		index := game.loadout_weapon_in_slot(player.loadout, slot)
 		labels[slot] =
 			index >= 0 ? fmt.tprintf("{} {}", slot + 1, game.WEAPONS[index].name) : fmt.tprintf("{}", slot + 1)
 		widths[slot] = hud_text_width(labels[slot], size) + 2 * pad
@@ -328,7 +355,7 @@ draw_slots :: proc(center, bottom: f32) {
 	y := bottom - height
 
 	for slot in 0 ..< game.WEAPON_SLOTS {
-		index := game.weapon_in_slot(slot)
+		index := game.loadout_weapon_in_slot(player.loadout, slot)
 		active := index == weapon_state.index
 
 		background := active ? [4]f32{0.85, 0.88, 0.92, 0.90} : HUD_PANEL
@@ -423,45 +450,6 @@ draw_weapon_prompt :: proc(center_x, center_y: f32) {
 
 	prompt := ammo.reserve > 0 ? "PRESS R TO RELOAD" : "OUT OF AMMO"
 	hud_text_shadow(center_x, y, prompt, HUD_TEXT_SMALL * scale, HUD_BAD, .Center)
-}
-
-// Red at the edges plus a wedge pointing at whoever fired. The wedge is the part
-// that matters: without sound, the direction of the shot is information the
-// player has no other way to get.
-@(private = "file")
-draw_damage_feedback :: proc(width, height: f32) {
-	if player_fx.damage_flash <= 0 do return
-
-	scale := hud_scale()
-	strength := player_fx.damage_flash / DAMAGE_FLASH_TIME
-
-	band := 90 * scale
-	edge := [4]f32{0.75, 0.05, 0.05, strength * 0.45}
-	hud_rect(0, 0, width, band, edge)
-	hud_rect(0, height - band, width, band, edge)
-	hud_rect(0, band, band, height - 2 * band, edge)
-	hud_rect(width - band, band, band, height - 2 * band, edge)
-
-	if player_fx.damage_dir == {} do return
-
-	// Relative to where the player is looking, not to the world: the indicator
-	// has to move when the view turns.
-	relative :=
-		math.atan2(player_fx.damage_dir.y, player_fx.damage_dir.x) - math.to_radians(camera.yaw)
-
-	// Straight ahead is up the screen, and the screen's y axis points down.
-	heading := [2]f32{-math.sin(relative), -math.cos(relative)}
-	center := [2]f32{width * 0.5, height * 0.5}
-	position := center + heading * 130 * scale
-
-	hud_rect_rotated(
-		position.x,
-		position.y,
-		46 * scale,
-		9 * scale,
-		-relative,
-		{0.95, 0.22, 0.20, strength},
-	)
 }
 
 @(private = "file")

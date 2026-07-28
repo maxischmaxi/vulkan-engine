@@ -42,11 +42,11 @@ Mesh_Header :: struct {
 // The bounds are in model space, which is what the prop placement measures
 // against when it fits a crate model into a brush.
 Mesh :: struct {
-	first_index:  u32,
-	index_count:  u32,
-	base_vertex:  i32,
-	bounds_min:   [3]f32,
-	bounds_max:   [3]f32,
+	first_index: u32,
+	index_count: u32,
+	base_vertex: i32,
+	bounds_min:  [3]f32,
+	bounds_max:  [3]f32,
 }
 
 Mesh_Store :: struct {
@@ -73,10 +73,12 @@ mesh_material_index :: proc(name: string) -> (u32, bool) {
 		return MODEL_MAT_RETRO_ARMS, true
 	case "retro_guns":
 		return MODEL_MAT_RETRO_GUNS, true
-	case "throwing_knife":
-		return MODEL_MAT_KNIFE, true
 	case "prop_palette":
 		return MODEL_MAT_PROP_PALETTE, true
+	case "gun_matte":
+		return MODEL_MAT_GUN_MATTE, true
+	case "gun_metal":
+		return MODEL_MAT_GUN_METAL, true
 	}
 	return 0, false
 }
@@ -159,8 +161,15 @@ load_mesh :: proc(name: string) -> bool {
 // Everything the client draws as a mesh. Props are listed by the placement code
 // that picks between them; adding one here is what makes it available.
 MESH_FILES := []string {
-	"view_rifle",
-	"view_pistol",
+	"view_ak",
+	"view_m4",
+	"view_awp",
+	"view_mac10",
+	"view_mp9",
+	"view_nova",
+	"view_glock",
+	"view_usp",
+	"view_deagle",
 	"view_knife",
 	"prop_crate_01",
 	"prop_crate_02",
@@ -213,9 +222,7 @@ create_mesh_store :: proc() {
 		len(MESH_FILES),
 		len(mesh_store.vertices),
 		len(mesh_store.indices) / 3,
-		f64(
-			len(mesh_store.vertices) * size_of(Vertex) + len(mesh_store.indices) * size_of(u32),
-		) /
+		f64(len(mesh_store.vertices) * size_of(Vertex) + len(mesh_store.indices) * size_of(u32)) /
 		(1024 * 1024),
 	)
 

@@ -68,6 +68,7 @@ handle_join :: proc(slot: ^Client_Slot, team: game.Team) {
 
 	slot.state = .In_Game
 	slot.team = team
+	slot.loadout = game.default_loadout(team)
 	match.human_team = team
 	match.t_score = 0
 	match.ct_score = 0

@@ -254,6 +254,7 @@ create_all_pipelines :: proc() {
 	create_decal_pipeline()
 	create_hud_pipeline()
 	create_hud_quad_pipeline()
+	create_damage_pipeline()
 }
 
 destroy_all_pipelines :: proc() {
@@ -270,6 +271,7 @@ destroy_all_pipelines :: proc() {
 	destroy_pipeline(decal_renderer.pipeline)
 	destroy_pipeline(hud_renderer.quad_pipeline)
 	destroy_pipeline(hud_renderer.pipeline)
+	destroy_pipeline(damage_renderer.pipeline)
 }
 
 // ------------------------------------------------------------------ storage

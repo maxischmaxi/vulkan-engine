@@ -389,12 +389,25 @@ draw_crosshair :: proc(cmd: vk.CommandBuffer, push: Crosshair_Push) {
 }
 
 record_hud_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
+	// Damage feedback under everything, and deliberately outside the F12 gate:
+	// it is gameplay information like the crosshair, not HUD chrome. Unlike
+	// the crosshair it stays while dead -- the killing blow's heading is
+	// exactly what the death screen should still show.
+	if scene_playing() && !scene.paused {
+		record_damage_indicator(cmd)
+	}
+
 	record_hud_quads(cmd, frame)
 
 	// The crosshair belongs to the weapon, not the overlay: hiding the HUD for a
 	// screenshot should not take away what you are aiming with. Dying should --
-	// and so should any screen that is not the game itself.
-	if scene_playing() && !scene.paused && player.alive {
+	// and so should any screen that is not the game itself, the buy menu
+	// included.
+	if scene_playing() &&
+	   !scene.paused &&
+	   player.alive &&
+	   !buy_menu.open &&
+	   !weapon_state.zoom_active {
 		record_crosshair(cmd)
 	}
 }

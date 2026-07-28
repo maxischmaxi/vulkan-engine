@@ -35,7 +35,7 @@ predictor: Predictor
 // too, or the two simulations would disagree by construction.
 predict_tick :: proc(dt: f32) {
 	player.prev_position = player.body.position
-	player_fx.damage_flash = max(player_fx.damage_flash - dt, 0)
+	decay_player_fx(dt)
 
 	cmd := build_local_input()
 	// Predict with the exact angles the server will decode off the wire.
@@ -136,6 +136,7 @@ reconcile :: proc(s: ^protocol.Snapshot) {
 	if was_alive && !player.alive {
 		player.respawn_in = PLAYER_RESPAWN_DELAY
 		player.body.velocity = {}
+		reset_zoom() // dead eyes do not stay scoped
 		log.infof("NET: died ({} deaths)", player.deaths)
 	}
 	if !was_alive && player.alive {
@@ -144,14 +145,26 @@ reconcile :: proc(s: ^protocol.Snapshot) {
 		player.prev_position = own.position
 		player.body.velocity = s.has_private ? s.private.velocity : {}
 		player.crouching = false
+		player_fx = {} // no indicator carried over from the last life
 		init_view()
+		// The buy menu's pending loadout is confirmed by now -- the reliable
+		// channel delivered it before the server could spawn us -- and the
+		// weapon in hand is the server's word, not a local guess.
+		player.loadout = buy_menu.pending
 		refill_all_ammo()
-		select_weapon(default_weapon_index())
+		select_weapon(int(own.weapon))
+		log.infof("NET: respawned holding {} (armor {})", current_weapon().name, player.armor)
 	}
 	if player.health < old_health && player.alive {
-		player_fx.damage_flash = DAMAGE_FLASH_TIME
-		player_fx.damage_dir = {} // the wire carries no attacker heading yet
+		// The Damage message carries the heading and rides the same datagram
+		// as this snapshot, written before it -- so if it arrived, the tick
+		// below is already newer. The health drop is only the lost-datagram
+		// fallback.
+		if net_client.last_damage_tick <= net_client.last_health_tick {
+			register_hit({}, old_health - player.health)
+		}
 	}
+	net_client.last_health_tick = s.server_tick
 
 	if !player.alive do return
 

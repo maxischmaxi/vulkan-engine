@@ -267,6 +267,7 @@ update :: proc() {
 	handle_hotkeys()
 	update_debug()
 	update_settings_ui()
+	update_buy_menu()
 
 	// Before the tick loop, so a snapshot that just arrived is reconciled
 	// first and the new ticks predict on top of corrected state.
@@ -330,6 +331,7 @@ handle_hotkeys :: proc() {
 	if scene_playing() &&
 	   !scene.paused &&
 	   !settings_ui.open &&
+	   !buy_menu.open &&
 	   !input.cursor_grabbed &&
 	   consume_click() {
 		grab_cursor(true)

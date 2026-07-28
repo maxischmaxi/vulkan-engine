@@ -107,6 +107,35 @@ test_input_roundtrip :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+test_damage_roundtrip :: proc(t: ^testing.T) {
+	step := f32(360.0 / 65536.0)
+	for direction in ([]f32{0, 90.5, 271.25, -45}) {
+		m := Damage_Msg {
+			tick      = 123456,
+			direction = direction,
+			amount    = 23,
+		}
+		buf: [16]u8
+		w := writer(buf[:])
+		write_damage(&w, m)
+		testing.expect(t, !w.overflow)
+		testing.expect_value(t, w.off, 7)
+
+		r := reader(buf[:w.off])
+		got, ok := read_damage(&r)
+		testing.expect(t, ok)
+		testing.expect_value(t, got.tick, m.tick)
+		testing.expect_value(t, got.amount, m.amount)
+		// the angle comes back wrapped onto [0, 360), within one quantizer step
+		wrapped := direction
+		for wrapped < 0 do wrapped += 360
+		diff := abs(got.direction - wrapped)
+		if diff > 180 do diff = 360 - diff
+		testing.expect(t, diff <= step, "damage direction off by more than one step")
+	}
+}
+
 // header 17 + present 2: the fixed cost of every snapshot on the wire
 SNAP_FIXED_BYTES :: 19
 
@@ -324,6 +353,23 @@ test_debug_flags_roundtrip :: proc(t: ^testing.T) {
 		write_debug_flags(&w, m)
 		r := reader(buf[:w.off])
 		got, ok := read_debug_flags(&r)
+		testing.expect(t, ok)
+		testing.expect_value(t, got, m)
+	}
+}
+
+@(test)
+test_loadout_roundtrip :: proc(t: ^testing.T) {
+	for m in ([]Loadout_Msg {
+			{primary = -1, secondary = 1, armor = false},
+			{primary = 9, secondary = 3, armor = true},
+		}) {
+		buf: [8]u8
+		w := writer(buf[:])
+		write_loadout(&w, m)
+		testing.expect_value(t, w.off, 3)
+		r := reader(buf[:w.off])
+		got, ok := read_loadout(&r)
 		testing.expect(t, ok)
 		testing.expect_value(t, got, m)
 	}
