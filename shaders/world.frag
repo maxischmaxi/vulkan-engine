@@ -27,7 +27,8 @@ layout(std430, set = 1, binding = 0) readonly buffer Materials {
 
 layout(set = 1, binding = 1) uniform sampler2DArray albedo_maps;
 layout(set = 1, binding = 2) uniform sampler2DArray normal_maps;
-layout(set = 1, binding = 3) uniform sampler2DArray orm_maps; // r=occlusion g=roughness b=metallic
+// r=occlusion g=roughness; BC5 has no third channel, metallic is per-material
+layout(set = 1, binding = 3) uniform sampler2DArray orm_maps;
 
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_normal;
@@ -35,6 +36,7 @@ layout(location = 2) in vec4 v_tangent;
 layout(location = 3) in vec2 v_uv;
 layout(location = 4) in flat uint v_material;
 layout(location = 5) in float v_view_depth;
+layout(location = 6) in flat float v_receive_shadow;
 
 layout(location = 0) out vec4 out_color;
 
@@ -50,7 +52,7 @@ void main() {
     float luma = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
     albedo = mix(vec3(luma), albedo, m.saturation) * m.tint.rgb;
 
-    vec3 orm = texture(orm_maps, layer_uv).rgb;
+    vec2 orm = texture(orm_maps, layer_uv).rg;
     float occlusion = orm.r;
     float roughness = clamp(orm.g * m.roughness_mul, 0.04, 1.0);
     float metallic = clamp(m.metallic, 0.0, 1.0);
@@ -62,7 +64,12 @@ void main() {
     vec3 t = normalize(v_tangent.xyz);
     vec3 b = cross(n_geom, t) * v_tangent.w;
 
-    vec3 n_ts = texture(normal_maps, layer_uv).xyz * 2.0 - 1.0;
+    // z is reconstructed rather than read: the normal array is BC5, which
+    // stores only two channels. For an uncompressed unit normal the two paths
+    // agree, so the RGBA8 fallback needs no shader of its own.
+    vec3 n_ts;
+    n_ts.xy = texture(normal_maps, layer_uv).xy * 2.0 - 1.0;
+    n_ts.z = sqrt(max(1.0 - dot(n_ts.xy, n_ts.xy), 0.0));
     n_ts.y = -n_ts.y;
     n_ts.xy *= m.normal_scale;
 
@@ -86,7 +93,7 @@ void main() {
     vec3 color = light_surface(
         v_world_pos, n, n_geom, v,
         albedo, roughness, metallic, occlusion,
-        v_view_depth, true
+        v_view_depth, v_receive_shadow > 0.5
     );
 
     if (mode == 1) {

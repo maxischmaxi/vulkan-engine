@@ -3,6 +3,7 @@ package main
 import "core:log"
 import "core:math/linalg"
 import "core:mem"
+import "game"
 import vk "vendor:vulkan"
 
 // Everything made of coloured blocks: the bots walking the map and the weapon in
@@ -117,15 +118,15 @@ build_box_mesh :: proc() -> (verts: [24]Prop_Vertex, indices: [36]u32) {
 
 	v := 0
 	i := 0
-	for face in Face {
-		basis := FACE_BASES[face]
+	for face in game.Face {
+		basis := game.FACE_BASES[face]
 
-		cube := Brush {
+		cube := game.Brush {
 			min = mn,
 			max = mx,
 		}
-		origin := face_origin(cube, face)
-		u_len, v_len := face_extent(cube, face)
+		origin := game.face_origin(cube, face)
+		u_len, v_len := game.face_extent(cube, face)
 
 		corners := [4][3]f32 {
 			origin + basis.v_dir * v_len,
@@ -372,13 +373,16 @@ record_prop_shadow_draw :: proc(cmd: vk.CommandBuffer, frame: u32) {
 	vk.CmdDrawIndexed(cmd, prop_renderer.index_count, count, 0, 0, 0)
 }
 
-// The weapon. Its own projection, and the depth buffer is cleared first so it
-// can never intersect the world.
+prop_view_instance_count :: proc() -> u32 {
+	return u32(len(prop_renderer.view))
+}
+
+// What is left of the viewmodel that is still made of blocks -- the muzzle
+// flash. Its own projection; the depth buffer was cleared by the caller, which
+// owns the whole viewmodel block.
 record_viewmodel_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
 	count := u32(len(prop_renderer.view))
 	if count == 0 do return
-
-	clear_viewmodel_depth(cmd)
 
 	vk.CmdBindPipeline(cmd, .GRAPHICS, prop_renderer.pipeline.pipeline)
 	bind_frame_set(cmd, prop_renderer.pipeline.layout, frame)
@@ -401,7 +405,6 @@ record_viewmodel_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
 // This is how Source keeps a viewmodel out of walls: not by pushing the near
 // plane around, but by giving the weapon its own depth range. Self-occlusion
 // within the weapon still works, which a plain depth_compare = ALWAYS would lose.
-@(private = "file")
 clear_viewmodel_depth :: proc(cmd: vk.CommandBuffer) {
 	// 0 is the far plane under reversed-Z, the same value the pass began with
 	attachment := vk.ClearAttachment {

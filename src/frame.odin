@@ -29,13 +29,17 @@ Frame_Uniforms :: struct {
 	ambient_sky:    [4]f32,
 	ambient_ground: [4]f32,
 	params:         [4]f32, // exposure, point light count, debug mode, shadow texel size
+	light_grid:     [4]u32, // tiles across, log2 of tile size in pixels, 0, 0
 }
 
-#assert(size_of(Frame_Uniforms) == 512)
+// 544, not 528: Matrix4f32 is 32-byte aligned, so the struct's tail pads out.
+// The shader block ends at 528 and never reads the padding.
+#assert(size_of(Frame_Uniforms) == 544)
 #assert(offset_of(Frame_Uniforms, cascade_vp) == 192)
 #assert(offset_of(Frame_Uniforms, cascade_splits) == 384)
 #assert(offset_of(Frame_Uniforms, cascade_texel) == 400)
 #assert(offset_of(Frame_Uniforms, params) == 496)
+#assert(offset_of(Frame_Uniforms, light_grid) == 512)
 
 Debug_Mode :: enum i32 {
 	None     = 0,
@@ -43,6 +47,9 @@ Debug_Mode :: enum i32 {
 	Albedo   = 2,
 	Normals  = 3,
 	Lighting = 4, // lighting without albedo
+	// Not a shader branch like the others: record_scene_pass swaps the world
+	// pipeline for an additive one and skips everything else.
+	Overdraw = 5,
 }
 
 debug_mode: Debug_Mode
@@ -127,9 +134,13 @@ create_frame_data :: proc() {
 			),
 		)
 	}
+
+	// same lifecycle as the light buffers, and descriptor set 0 points at both
+	create_light_tiles()
 }
 
 destroy_frame_data :: proc() {
+	destroy_light_tiles()
 	for i in 0 ..< MAX_FRAMES_IN_FLIGHT {
 		vk.UnmapMemory(g.device, frame_data.light_memories[i])
 		destroy_buffer(frame_data.light_buffers[i], frame_data.light_memories[i])
@@ -184,6 +195,9 @@ update_frame_uniforms :: proc(frame: u32) {
 			1.0 / f32(shadow_resolution()),
 		},
 	}
+
+	tiles, _, tile_shift := light_tile_grid()
+	ubo.light_grid = {tiles.x, tile_shift, 0, 0}
 
 	mem.copy(frame_data.uniform_mapped[frame], &ubo, size_of(ubo))
 }

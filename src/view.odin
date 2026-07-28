@@ -1,6 +1,7 @@
 package main
 
 import "core:math"
+import "game"
 
 // Everything between the player's feet and the eye the camera renders from.
 //
@@ -13,7 +14,7 @@ import "core:math"
 // None of this reaches the simulation. Shots still leave from wherever the eye
 // is, so the smoothing changes what you see, never whether you hit.
 
-// A stair is climbed in a single tick, leaving the eye up to a full STEP_HEIGHT
+// A stair is climbed in a single tick, leaving the eye up to a full game.STEP_HEIGHT
 // behind. It walks back up at a constant rate: 3.8 m/s clears the tallest step
 // in about 120 ms, fast enough not to read as lag, slow enough to kill the jolt.
 STEP_SMOOTH_SPEED :: f32(3.8)
@@ -63,7 +64,7 @@ init_view :: proc() {
 // it was and owe the difference.
 view_note_step :: proc(delta_z: f32) {
 	if delta_z == 0 do return
-	view.step_offset = clamp(view.step_offset - delta_z, -STEP_HEIGHT, STEP_HEIGHT)
+	view.step_offset = clamp(view.step_offset - delta_z, -game.STEP_HEIGHT, game.STEP_HEIGHT)
 }
 
 // Leaving the ground voids whatever the eye still owed a stair. A jump taken off

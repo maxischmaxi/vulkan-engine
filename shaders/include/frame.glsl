@@ -35,6 +35,7 @@ layout(set = 0, binding = 0) uniform FrameUniforms {
     vec4 ambient_sky;
     vec4 ambient_ground;
     vec4 params; // exposure, point light count, debug mode, shadow texel size in uv
+    uvec4 light_grid; // tiles across, log2 of tile size in pixels, 0, 0
 } frame;
 
 struct PointLight {
@@ -49,5 +50,17 @@ layout(std430, set = 0, binding = 1) readonly buffer Lights {
 };
 
 layout(set = 0, binding = 2) uniform sampler2DArrayShadow shadow_maps;
+
+// One 64-bit mask per screen tile: bit i set means light i can reach the tile.
+// Written by the CPU every frame (src/light_tiles.odin); with culling off every
+// bit up to the light count is set, so the shader path never changes shape.
+layout(std430, set = 0, binding = 3) readonly buffer LightTiles {
+    uvec2 light_tiles[];
+};
+
+uvec2 tile_light_mask(vec2 frag_coord) {
+    uvec2 tile = uvec2(frag_coord) >> frame.light_grid.y;
+    return light_tiles[tile.y * frame.light_grid.x + tile.x];
+}
 
 #endif

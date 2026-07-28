@@ -2,6 +2,7 @@ package main
 
 import "core:log"
 import "core:slice"
+import "game"
 import "physics"
 
 // What a map has to satisfy before anything is allowed to stand in it.
@@ -13,7 +14,7 @@ import "physics"
 // because the floor tying it into the site was never laid. Geometry written as
 // numbers fails as numbers, so it is worth testing as numbers.
 //
-// Debug builds only. The spawn checks read world_collision, so they have to run
+// Debug builds only. The spawn checks read gs.collision, so they have to run
 // after bake_world; the face check takes the clipper's output directly.
 
 // The clearance a stance needs to be considered free, and how far under a point
@@ -26,17 +27,17 @@ verify_spawn_areas :: proc() {
 	when !ODIN_DEBUG do return
 
 	probe := physics.Body {
-		radius = PLAYER_RADIUS,
-		height = PLAYER_HEIGHT,
+		radius = game.PLAYER_RADIUS,
+		height = game.PLAYER_HEIGHT,
 	}
 	failed := 0
 
-	for area, i in MAP_SPAWN_AREAS {
+	for area, i in game.MAP_SPAWN_AREAS {
 		center := [2]f32{(area.min.x + area.max.x) * 0.5, (area.min.y + area.max.y) * 0.5}
 
 		z, found := physics.ground_below(
 			{center.x, center.y, area.floor + BOT_PROBE_UP},
-			world_collision,
+			gs.collision,
 			BOT_PROBE_UP + CHECK_DROP,
 		)
 		if !found {
@@ -47,7 +48,7 @@ verify_spawn_areas :: proc() {
 
 		if physics.overlaps_any(
 			physics.body_aabb_at(probe, {center.x, center.y, z + 0.01}),
-			world_collision,
+			gs.collision,
 		) {
 			log.errorf("Map: room {} at {} is filled in -- nothing fits there", i, center)
 			failed += 1
@@ -55,10 +56,10 @@ verify_spawn_areas :: proc() {
 	}
 
 	if failed > 0 {
-		log.errorf("Map: {} of {} rooms unusable", failed, len(MAP_SPAWN_AREAS))
+		log.errorf("Map: {} of {} rooms unusable", failed, len(game.MAP_SPAWN_AREAS))
 		return
 	}
-	log.infof("Map: {} rooms verified", len(MAP_SPAWN_AREAS))
+	log.infof("Map: {} rooms verified", len(game.MAP_SPAWN_AREAS))
 }
 
 // The clipper's contract, checked rather than trusted: no two visible faces may
@@ -75,23 +76,23 @@ verify_spawn_areas :: proc() {
 // This panics where the spawn checks only log. A failure here is a bug in
 // map_clip, not a mistake in the map, and a guarantee that lets the build
 // continue is not a guarantee.
-verify_face_partition :: proc(faces: []Baked_Face) {
+verify_face_partition :: proc(faces: []game.Baked_Face) {
 	when !ODIN_DEBUG do return
 
-	sorted := make([]Baked_Face, len(faces), context.temp_allocator)
+	sorted := make([]game.Baked_Face, len(faces), context.temp_allocator)
 	copy(sorted, faces)
-	slice.sort_by(sorted, plane_less)
+	slice.sort_by(sorted, game.plane_less)
 
 	found := 0
 	for i in 0 ..< len(sorted) {
 		for j in i + 1 ..< len(sorted) {
 			// Sorted, so once either differs no later face can match this one
 			// either. Anchoring the coordinate on i rather than on j-1 is what
-			// makes every pair within PLANE_EPS get compared.
+			// makes every pair within game.PLANE_EPS get compared.
 			if sorted[j].face != sorted[i].face do break
-			if sorted[j].coord - sorted[i].coord > PLANE_EPS do break
+			if sorted[j].coord - sorted[i].coord > game.PLANE_EPS do break
 
-			area := face_overlap_area(sorted[i], sorted[j])
+			area := game.face_overlap_area(sorted[i], sorted[j])
 			if area <= 0 do continue
 
 			found += 1
@@ -120,11 +121,11 @@ verify_player_spawn :: proc() {
 	when !ODIN_DEBUG do return
 
 	probe := physics.Body {
-		position = SPAWN_POSITION,
-		radius   = PLAYER_RADIUS,
-		height   = PLAYER_HEIGHT,
+		position = game.SPAWN_POSITION,
+		radius   = game.PLAYER_RADIUS,
+		height   = game.PLAYER_HEIGHT,
 	}
-	if physics.overlaps_any(physics.body_aabb(probe), world_collision) {
-		log.errorf("Map: the player spawn at {} is inside geometry", SPAWN_POSITION)
+	if physics.overlaps_any(physics.body_aabb(probe), gs.collision) {
+		log.errorf("Map: the player spawn at {} is inside geometry", game.SPAWN_POSITION)
 	}
 }

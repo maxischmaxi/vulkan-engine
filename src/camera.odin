@@ -3,6 +3,7 @@ package main
 import "core:log"
 import "core:math"
 import "core:math/linalg"
+import "game"
 
 // Yaw turns around world Z, pitch around the camera's own right axis.
 // yaw = 0 looks east (+X), yaw = 90 looks north (+Y).
@@ -26,8 +27,8 @@ MAX_PITCH :: 89.0
 
 init_camera :: proc() {
 	camera = Camera {
-		position       = SPAWN_POSITION + {0, 0, EYE_HEIGHT},
-		yaw            = SPAWN_YAW,
+		position       = game.SPAWN_POSITION + {0, 0, game.EYE_HEIGHT},
+		yaw            = game.SPAWN_YAW,
 		pitch          = 0,
 		fov_horizontal = 90,
 		near           = 0.05,
@@ -55,22 +56,19 @@ camera_apply_mouse :: proc(dx, dy: f32) {
 	}
 }
 
+// All three delegate to the game package's basis math: the simulation steers
+// by the same formulas, and prediction only works if the two can never drift.
 camera_forward :: proc() -> [3]f32 {
-	yaw := math.to_radians(camera.yaw)
-	pitch := math.to_radians(camera.pitch)
-	cp := math.cos(pitch)
-	return {cp * math.cos(yaw), cp * math.sin(yaw), math.sin(pitch)}
+	return game.view_forward(camera.yaw, camera.pitch)
 }
 
 // Horizontal only: walking must not drive you into the floor when looking down.
 camera_forward_flat :: proc() -> [3]f32 {
-	yaw := math.to_radians(camera.yaw)
-	return {math.cos(yaw), math.sin(yaw), 0}
+	return game.yaw_forward_flat(camera.yaw)
 }
 
 camera_right :: proc() -> [3]f32 {
-	yaw := math.to_radians(camera.yaw)
-	return {math.sin(yaw), -math.cos(yaw), 0}
+	return game.yaw_right(camera.yaw)
 }
 
 camera_view :: proc() -> linalg.Matrix4f32 {
@@ -144,11 +142,16 @@ camera_view_projection :: proc() -> linalg.Matrix4f32 {
 	return camera_projection() * camera_view()
 }
 
-// The weapon gets a narrower field of view than the world, the way every
-// shooter since Quake has done it: at the player's 90 degrees a first-person
-// weapon looks stretched and enormous at the screen edge. 60 is what
-// counter-strike defaults to, in the same 4:3 horizontal convention.
-VIEWMODEL_FOV :: 60.0
+// The lens the viewmodel is composed through. Counter-strike's 60 is the usual
+// choice, and it was right while the weapon was blocks positioned by hand -- but
+// the imported models come out of scenes framed by an 18 mm lens on a 36 mm
+// sensor, which is 90 degrees, and they are posed relative to that camera rather
+// than to a grip offset.
+//
+// Rendering them through anything narrower is a zoom: the same weapon, magnified,
+// with the near arm filling the screen. Matching the lens they were built for is
+// what puts them back where the artist framed them.
+VIEWMODEL_FOV :: 90.0
 
 // Its own near plane too -- the weapon sits centimetres from the eye, well
 // inside the world's 5 cm near plane.

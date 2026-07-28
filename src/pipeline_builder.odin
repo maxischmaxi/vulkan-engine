@@ -41,6 +41,7 @@ Depth_Test :: enum {
 Blend_Mode :: enum {
 	Opaque, // zero value
 	Alpha,
+	Additive, // src + dst, the overdraw heatmap's accumulation
 }
 
 Pipeline_Desc :: struct {
@@ -57,6 +58,10 @@ Pipeline_Desc :: struct {
 	cull:           Cull_Mode,
 	depth_test:     Depth_Test,
 	no_depth_write: bool,
+	// Declares the colour attachment without touching it. A depth-only pipeline
+	// inside a colour-attached rendering block still has to match the block's
+	// attachment count, it just must not write.
+	no_color_write: bool,
 	blend:          Blend_Mode,
 	depth_bias:     bool,
 	extra_dynamic:  []vk.DynamicState,
@@ -223,7 +228,7 @@ build_pipeline :: proc(desc: Pipeline_Desc) -> Pipeline {
 	}
 
 	color_blend_attachment := vk.PipelineColorBlendAttachmentState {
-		colorWriteMask = {.R, .G, .B, .A},
+		colorWriteMask = desc.no_color_write ? {} : {.R, .G, .B, .A},
 	}
 	if desc.blend == .Alpha {
 		color_blend_attachment.blendEnable = true
@@ -232,6 +237,15 @@ build_pipeline :: proc(desc: Pipeline_Desc) -> Pipeline {
 		color_blend_attachment.colorBlendOp = .ADD
 		color_blend_attachment.srcAlphaBlendFactor = .ONE
 		color_blend_attachment.dstAlphaBlendFactor = .ONE_MINUS_SRC_ALPHA
+		color_blend_attachment.alphaBlendOp = .ADD
+	}
+	if desc.blend == .Additive {
+		color_blend_attachment.blendEnable = true
+		color_blend_attachment.srcColorBlendFactor = .ONE
+		color_blend_attachment.dstColorBlendFactor = .ONE
+		color_blend_attachment.colorBlendOp = .ADD
+		color_blend_attachment.srcAlphaBlendFactor = .ONE
+		color_blend_attachment.dstAlphaBlendFactor = .ONE
 		color_blend_attachment.alphaBlendOp = .ADD
 	}
 

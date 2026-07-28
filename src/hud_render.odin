@@ -392,8 +392,9 @@ record_hud_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
 	record_hud_quads(cmd, frame)
 
 	// The crosshair belongs to the weapon, not the overlay: hiding the HUD for a
-	// screenshot should not take away what you are aiming with. Dying should.
-	if player.alive {
+	// screenshot should not take away what you are aiming with. Dying should --
+	// and so should any screen that is not the game itself.
+	if scene_playing() && !scene.paused && player.alive {
 		record_crosshair(cmd)
 	}
 }

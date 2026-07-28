@@ -15,6 +15,12 @@ Input :: struct {
 	// A click that starts and ends between two frames is invisible to polling.
 	// Latching the press means the shot still happens.
 	fire_clicked:       bool,
+	// Where the visible cursor is, in framebuffer pixels -- the space the HUD
+	// draws in. Only meaningful while the cursor is loose; menus read this.
+	cursor_x, cursor_y: f32,
+	// Latched like fire_clicked, but regardless of grab state, so a menu click
+	// between two frames is not lost either.
+	click:              bool,
 	// Edge detection. Both maps are snapshots taken once per frame rather than
 	// sampled on demand: an earlier version updated prev_keys inside
 	// key_pressed, so the second caller asking about the same key in one frame
@@ -86,19 +92,19 @@ init_input :: proc() {
 		input.have_last = true
 	})
 
-	// Clicking back into the window re-grabs after ESC released the cursor.
+	// Grabbing back after ESC is not decided here: whoever owns the current
+	// screen (game vs menu) decides what a click means, in handle_hotkeys.
 	glfw.SetMouseButtonCallback(
 		g.window,
 		proc "c" (window: glfw.WindowHandle, button, action, mods: i32) {
 			context = g.odin_context
 			if action != glfw.PRESS do return
+			if button != glfw.MOUSE_BUTTON_LEFT do return
 
-			// The click that takes the cursor back is not a shot.
-			if !input.cursor_grabbed {
-				grab_cursor(true)
-				return
-			}
-			if button == glfw.MOUSE_BUTTON_LEFT do input.fire_clicked = true
+			input.click = true
+			// A shot needs the cursor: a loose-cursor click belongs to whatever
+			// UI is up, never to the trigger.
+			if input.cursor_grabbed do input.fire_clicked = true
 		},
 	)
 
@@ -127,6 +133,23 @@ poll_keys :: proc() {
 	}
 }
 
+// Snapshots the visible cursor for menus. Polled rather than taken from the
+// motion callback: the callback exists for deltas and deliberately ignores the
+// loose cursor, and a menu does not care about sub-frame motion anyway.
+poll_cursor :: proc() {
+	if input.cursor_grabbed do return
+
+	x, y := glfw.GetCursorPos(g.window)
+	ww, wh := glfw.GetWindowSize(g.window)
+	fw, fh := glfw.GetFramebufferSize(g.window)
+	// Window and framebuffer size differ under a scaled compositor; the HUD
+	// draws in framebuffer pixels, so the cursor converts to that space here.
+	if ww > 0 && wh > 0 {
+		input.cursor_x = f32(x) * f32(fw) / f32(ww)
+		input.cursor_y = f32(y) * f32(fh) / f32(wh)
+	}
+}
+
 grab_cursor :: proc(grab: bool) {
 	input.cursor_grabbed = grab
 	glfw.SetInputMode(g.window, glfw.CURSOR, grab ? glfw.CURSOR_DISABLED : glfw.CURSOR_NORMAL)
@@ -138,11 +161,13 @@ grab_cursor :: proc(grab: bool) {
 	}
 
 	// A fresh grab restarts the delta chain, otherwise the first frame back
-	// gets the jump from wherever the cursor was released.
+	// gets the jump from wherever the cursor was released. The click latch
+	// resets too, so the click that changed the grab never leaks through.
 	input.mouse_dx = 0
 	input.mouse_dy = 0
 	input.have_last = false
 	input.fire_clicked = false
+	input.click = false
 }
 
 key_down :: proc(key: i32) -> bool {
@@ -167,6 +192,13 @@ consume_mouse_delta :: proc() -> (dx, dy: f32) {
 consume_fire_click :: proc() -> bool {
 	clicked := input.fire_clicked
 	input.fire_clicked = false
+	return clicked
+}
+
+// The menu counterpart of consume_fire_click: any left press, any grab state.
+consume_click :: proc() -> bool {
+	clicked := input.click
+	input.click = false
 	return clicked
 }
 

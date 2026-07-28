@@ -1,6 +1,7 @@
 package main
 
 import "core:log"
+import "game"
 import "vendor:glfw"
 
 // Everything the game does only because a developer is watching. Two questions
@@ -51,12 +52,21 @@ DEBUG_ACTIONS := []Debug_Action {
 	{glfw.KEY_F7, "F7", "REFILL AMMO", debug_refill_ammo, nil},
 	{glfw.KEY_F8, "F8", "FULL HEAL", debug_full_heal, nil},
 	{glfw.KEY_F9, "F9", "KILL BOTS", debug_kill_bots, nil},
-	{glfw.KEY_F10, "F10", "GOD MODE", proc() {
+	{
+		glfw.KEY_F10,
+		"F10",
+		"GOD MODE",
+		proc() {
 			debug.god_mode = !debug.god_mode
+			// online the server owns health, so it has to hear about this
+			net_send_debug_flags()
 			log.infof("God mode {}", debug.god_mode ? "on" : "off")
-		}, proc() -> bool {return debug.god_mode}},
+		},
+		proc() -> bool {return debug.god_mode},
+	},
 	{glfw.KEY_F11, "F11", "INFINITE AMMO", proc() {
 			debug.infinite_ammo = !debug.infinite_ammo
+			net_send_debug_flags()
 			log.infof("Infinite ammo {}", debug.infinite_ammo ? "on" : "off")
 		}, proc() -> bool {return debug.infinite_ammo}},
 }
@@ -74,6 +84,7 @@ DEBUG_VIEWS := []Debug_View {
 	{glfw.KEY_F3, .Albedo},
 	{glfw.KEY_F4, .Normals},
 	{glfw.KEY_F5, .Lighting},
+	{glfw.KEY_F12, .Overdraw},
 }
 
 init_debug :: proc() {
@@ -87,10 +98,10 @@ init_debug :: proc() {
 
 // Runs once per frame, right after the keyboard snapshot.
 update_debug :: proc() {
-	if clock.frame_dt > 0 {
+	if game.clock.frame_dt > 0 {
 		// Exponentially smoothed: 1/dt straight off the clock flickers too fast
 		// to read a digit of.
-		instant := 1.0 / clock.frame_dt
+		instant := 1.0 / game.clock.frame_dt
 		debug.fps = debug.fps <= 0 ? instant : debug.fps + (instant - debug.fps) * 0.1
 	}
 
@@ -131,8 +142,8 @@ debug_refill_ammo :: proc() {
 
 debug_full_heal :: proc() {
 	if !player.alive do respawn_player()
-	player.health = PLAYER_MAX_HEALTH
-	player.armor = PLAYER_MAX_ARMOR
+	player.health = game.PAWN_MAX_HEALTH
+	player.armor = game.PAWN_MAX_ARMOR
 	log.info("Healed")
 }
 
@@ -141,24 +152,24 @@ debug_full_heal :: proc() {
 // keypress. It reads the same list the bots spawn from, so it cannot point at a
 // room the map no longer has.
 debug_teleport :: proc() {
-	if len(MAP_SPAWN_AREAS) == 0 do return
+	if len(game.MAP_SPAWN_AREAS) == 0 do return
 
-	debug.teleport_index = (debug.teleport_index + 1) % len(MAP_SPAWN_AREAS)
-	area := MAP_SPAWN_AREAS[debug.teleport_index]
+	debug.teleport_index = (debug.teleport_index + 1) % len(game.MAP_SPAWN_AREAS)
+	area := game.MAP_SPAWN_AREAS[debug.teleport_index]
 
 	// Half a metre up, so the drop settles the player onto whatever is actually
 	// there rather than wedging them into it.
 	teleport_player(
 		{(area.min.x + area.max.x) * 0.5, (area.min.y + area.max.y) * 0.5, area.floor + 0.5},
 	)
-	log.infof("Room {} of {}", debug.teleport_index + 1, len(MAP_SPAWN_AREAS))
+	log.infof("Room {} of {}", debug.teleport_index + 1, len(game.MAP_SPAWN_AREAS))
 }
 
 debug_kill_bots :: proc() {
 	killed := 0
-	for &bot in bots {
-		if !bot.alive do continue
-		kill_bot(&bot)
+	for i in 0 ..< BOT_COUNT {
+		if !bot_pawn(i).alive do continue
+		kill_bot(i)
 		killed += 1
 	}
 	log.infof("Killed {} bots", killed)

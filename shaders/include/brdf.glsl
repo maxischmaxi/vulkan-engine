@@ -1,6 +1,10 @@
 #ifndef BRDF_GLSL
 #define BRDF_GLSL
 
+// Subgroup ops are core since Vulkan 1.1 and the engine already requires 1.3
+// for dynamic rendering, so this adds no hardware requirement.
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
 #include "frame.glsl"
 
 // Cook-Torrance with a metallic/roughness workflow -- the same model glTF,
@@ -49,26 +53,49 @@ vec3 shade(vec3 n, vec3 v, vec3 l, vec3 radiance, vec3 albedo, float metallic, f
     return (diffuse + specular) * radiance * n_dot_l;
 }
 
-// Every point light in the buffer. Inverse square with the UE4 windowing term,
-// so a light reaches exactly zero at its radius instead of trailing off forever
-// and costing the whole screen.
+// One point light. Inverse square with the UE4 windowing term, so a light
+// reaches exactly zero at its radius instead of trailing off forever and
+// costing the whole screen.
+vec3 point_light_shade(
+    int i, vec3 world_pos, vec3 n, vec3 v, vec3 albedo, float metallic, float alpha
+) {
+    vec3 to_light = lights[i].position - world_pos;
+    float dist2 = dot(to_light, to_light);
+    float dist = sqrt(dist2);
+    if (dist >= lights[i].radius) return vec3(0.0);
+
+    float falloff = clamp(1.0 - pow(dist / lights[i].radius, 4.0), 0.0, 1.0);
+    float attenuation = falloff * falloff / max(dist2, 1e-4);
+
+    vec3 radiance = lights[i].color * lights[i].intensity * attenuation;
+    return shade(n, v, to_light / dist, radiance, albedo, metallic, alpha);
+}
+
+// Every point light whose bit survives this tile's mask, in index order -- the
+// same order the old walk over the whole buffer used, so the float sum cannot
+// drift from it. A light the mask culled would have shaded to zero through the
+// radius check anyway, which is what makes the culling invisible.
+//
+// The subgroupOr is a measured 25 %: it unions the masks across the wave, which
+// proves to the compiler that the light index is uniform, and lights[i] becomes
+// scalar loads again the way the plain counted loop compiled. Without it the
+// masked loop was slower than no culling at all on RADV. The union can only add
+// lights a neighbouring pixel needed, and those shade to zero.
 vec3 point_lights_contribution(
     vec3 world_pos, vec3 n, vec3 v, vec3 albedo, float metallic, float alpha
 ) {
     vec3 sum = vec3(0.0);
-    int count = int(frame.params.y);
+    uvec2 mask = subgroupOr(tile_light_mask(gl_FragCoord.xy));
 
-    for (int i = 0; i < count; i++) {
-        vec3 to_light = lights[i].position - world_pos;
-        float dist2 = dot(to_light, to_light);
-        float dist = sqrt(dist2);
-        if (dist >= lights[i].radius) continue;
-
-        float falloff = clamp(1.0 - pow(dist / lights[i].radius, 4.0), 0.0, 1.0);
-        float attenuation = falloff * falloff / max(dist2, 1e-4);
-
-        vec3 radiance = lights[i].color * lights[i].intensity * attenuation;
-        sum += shade(n, v, to_light / dist, radiance, albedo, metallic, alpha);
+    while (mask.x != 0u) {
+        int i = findLSB(mask.x);
+        mask.x &= mask.x - 1u;
+        sum += point_light_shade(i, world_pos, n, v, albedo, metallic, alpha);
+    }
+    while (mask.y != 0u) {
+        int i = findLSB(mask.y) + 32;
+        mask.y &= mask.y - 1u;
+        sum += point_light_shade(i, world_pos, n, v, albedo, metallic, alpha);
     }
     return sum;
 }

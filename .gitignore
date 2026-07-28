@@ -8,3 +8,8 @@ shaders/*.spv
 # ambientCG archives and the textures extracted from them by `just textures`
 *.zip
 /textures/
+
+# model archives unpacked by `just models`, and what the converter bakes out of
+# them
+/assets/
+/models/

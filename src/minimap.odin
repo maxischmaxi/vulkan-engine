@@ -2,6 +2,7 @@ package main
 
 import "core:log"
 import "core:math"
+import "game"
 
 // The radar. Generated from the same brushes the map is built out of, so it can
 // never disagree with the level -- there is no image to redraw when a wall
@@ -39,8 +40,9 @@ Minimap_Cell :: struct {
 	color:    [4]f32,
 }
 
-// What the player knows about one bot, which is not the same as where it is.
+// What the player knows about one enemy, which is not the same as where it is.
 Minimap_Contact :: struct {
+	active:   bool,
 	position: [2]f32,
 	age:      f32, // seconds since last seen; at MINIMAP_MEMORY it is forgotten
 }
@@ -52,7 +54,7 @@ Minimap :: struct {
 
 minimap: Minimap
 
-init_minimap :: proc(brushes: []Brush) {
+init_minimap :: proc(brushes: []game.Brush) {
 	minimap.cells = make([dynamic]Minimap_Cell, 0, len(brushes))
 
 	for b in brushes {
@@ -105,19 +107,43 @@ minimap_color :: proc(material: Material_ID) -> [4]f32 {
 // the radar agree with what the AI knows, which is the more defensible rule --
 // a bot that cannot see you should not be on your radar.
 update_minimap :: proc(dt: f32) {
-	for &contact, i in minimap.contacts {
-		bot := bots[i]
-		if !bot.alive || !player.alive {
-			contact.age = MINIMAP_MEMORY
-			continue
+	// The benchmark's local bots keep the line-of-sight rule; the AI casts the
+	// ray anyway and the radar reads its answer.
+	if bench_active() {
+		for &contact, i in minimap.contacts {
+			pawn := bot_pawn(i)
+			contact.active = pawn.alive
+			if !pawn.alive || !player.alive {
+				contact.age = MINIMAP_MEMORY
+				continue
+			}
+			if brains[i].sees_player {
+				contact.position = {pawn.body.position.x, pawn.body.position.y}
+				contact.age = 0
+				continue
+			}
+			contact.age = min(contact.age + dt, MINIMAP_MEMORY)
 		}
+		return
+	}
 
-		if bot.sees_player {
-			contact.position = {bot.body.position.x, bot.body.position.y}
-			contact.age = 0
-			continue
+	// Online the radar reads the snapshot: living enemies, always. A server-
+	// side visibility rule is future work; against bots omniscience is a
+	// kindness, not a cheat.
+	count := 0
+	for i in 0 ..< remote.drawn_count {
+		d := &remote.drawn[i]
+		if d.team == net_client.team do continue
+		if count >= len(minimap.contacts) do break
+		minimap.contacts[count] = {
+			active   = true,
+			position = {d.position.x, d.position.y},
+			age      = 0,
 		}
-		contact.age = min(contact.age + dt, MINIMAP_MEMORY)
+		count += 1
+	}
+	for i in count ..< len(minimap.contacts) {
+		minimap.contacts[i].active = false
 	}
 }
 
@@ -193,23 +219,12 @@ draw_minimap_cells :: proc(view: Minimap_View) {
 draw_minimap_contacts :: proc(view: Minimap_View) {
 	dot := max(3, math.round(4 * hud_scale()))
 
-	for contact, i in minimap.contacts {
-		if !bots[i].alive do continue
+	for contact in minimap.contacts {
+		if !contact.active do continue
+		if contact.age >= MINIMAP_MEMORY do continue
+		alpha := 1 - contact.age / MINIMAP_MEMORY
 
-		position := contact.position
-		alpha: f32 = 1
-
-		if debug_active() {
-			// A radar that only reports what you can already see is no help
-			// while working on the bots themselves.
-			position = {bots[i].body.position.x, bots[i].body.position.y}
-			alpha = contact.age <= 0.001 ? 1 : 0.4
-		} else {
-			if contact.age >= MINIMAP_MEMORY do continue
-			alpha = 1 - contact.age / MINIMAP_MEMORY
-		}
-
-		screen := minimap_to_screen(view, position)
+		screen := minimap_to_screen(view, contact.position)
 		hud_rect(
 			screen.x - dot * 0.5,
 			screen.y - dot * 0.5,

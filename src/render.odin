@@ -13,8 +13,17 @@ SKY_COLOR :: [4]f32{0.42, 0.55, 0.75, 1.0}
 // after the tick loop, before recording.
 build_frame :: proc(alpha: f32) {
 	prop_begin_frame()
-	submit_bots(alpha)
-	submit_viewmodel()
+	model_begin_frame()
+	// The world stays up behind the menu; the actors in it do not. Networked
+	// play draws the server's entities; the benchmark draws its local bots.
+	if scene_playing() {
+		if bench_active() {
+			submit_bots(alpha)
+		} else {
+			submit_remote_entities()
+		}
+		submit_viewmodel()
+	}
 	build_hud()
 }
 
@@ -30,8 +39,13 @@ record_frame :: proc(cmd: vk.CommandBuffer, image_index, frame: u32) {
 
 	// Fills the cascades and leaves them in SHADER_READ_ONLY. There is one
 	// shadow image shared by both frames in flight, so its barrier also
-	// serialises this pass against the previous frame's sampling -- cheap enough
-	// here, and the alternative is another 100 MB of VRAM.
+	// serialises this pass against the previous frame's sampling.
+	//
+	// Double-buffering the image to remove that wait has been tried and
+	// measured: on the RADV iGPU the shadow raster then overlaps the previous
+	// frame's fragment-bound world pass, the two fight over bandwidth, and the
+	// frame gets 10 % slower (14.4 -> 15.7 ms at High); on a discrete GPU it
+	// changes nothing. The serialisation stays because it wins.
 	record_shadow_pass(cmd, frame)
 	gpu_timer_mark(cmd, frame, .Shadow)
 
@@ -122,21 +136,47 @@ record_scene_pass :: proc(cmd: vk.CommandBuffer, image_index, frame: u32) {
 	vk.CmdBeginRendering(cmd, &rendering_info)
 	set_full_viewport(cmd, extent)
 
+	// The overdraw view replaces the whole scene: the heatmap is only readable
+	// when nothing opaque draws over it. The timer marks still run so the
+	// query indices stay in step.
+	if debug_mode == .Overdraw {
+		record_world_overdraw(cmd, frame)
+		gpu_timer_mark(cmd, frame, .World)
+		gpu_timer_mark(cmd, frame, .Props)
+		gpu_timer_mark(cmd, frame, .Decals)
+		gpu_timer_mark(cmd, frame, .Viewmodel)
+		vk.CmdEndRendering(cmd)
+		return
+	}
+
 	// Order matters: opaque geometry first so depth is complete, then blended
 	// decals against it, then the weapon on a cleared depth buffer.
 	record_world_pass(cmd, frame)
 	gpu_timer_mark(cmd, frame, .World)
 
 	record_prop_pass(cmd, frame)
+	record_model_pass(cmd, frame)
 	gpu_timer_mark(cmd, frame, .Props)
 
 	record_decal_pass(cmd, frame)
 	gpu_timer_mark(cmd, frame, .Decals)
 
-	record_viewmodel_pass(cmd, frame)
+	record_viewmodel_block(cmd, frame)
 	gpu_timer_mark(cmd, frame, .Viewmodel)
 
 	vk.CmdEndRendering(cmd)
+}
+
+// The weapon, on a depth buffer of its own. Both halves of it draw here: the
+// mesh the player sees, and whatever is still made of blocks -- currently the
+// muzzle flash. One clear, then both, so they occlude each other correctly.
+@(private = "file")
+record_viewmodel_block :: proc(cmd: vk.CommandBuffer, frame: u32) {
+	if len(model_renderer.view_batches) == 0 && prop_view_instance_count() == 0 do return
+
+	clear_viewmodel_depth(cmd)
+	record_view_model_draws(cmd, frame)
+	record_viewmodel_pass(cmd, frame)
 }
 
 // The HUD in its own block, at the window's own size. Text upscaled from a
@@ -287,7 +327,10 @@ draw_frame :: proc() {
 	cpu_zone(.Upload)
 	update_frame_uniforms(frame)
 	update_light_buffer(frame)
+	update_light_tiles(frame)
+	upload_world_order(frame)
 	upload_prop_instances(frame)
+	upload_model_instances(frame)
 	upload_decals(frame)
 	upload_hud_quads(frame)
 

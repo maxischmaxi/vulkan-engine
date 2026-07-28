@@ -25,6 +25,13 @@ TEXTURE_SETS := []string {
 	"Rock030",
 	"Rock051",
 	"Bamboo001B",
+	// Written by `just models` rather than downloaded: model textures are not
+	// tileable, so they are baked at exactly the layer size and the tiling in
+	// blit_layer never comes into play. Everything else about them -- four maps,
+	// one directory, one layer -- is the same deal as an ambientCG set.
+	"RetroWeapons",
+	"ThrowingKnife",
+	"PropPalette",
 }
 
 TEXTURE_DIR :: "textures"
@@ -387,27 +394,51 @@ create_texture_arrays :: proc() {
 		ALBEDO_FORMAT,
 		material_system.mip_levels,
 	)
-	material_system.normal = upload_texture_array(
-		normal_pixels,
-		u32(width),
-		u32(height),
-		u32(layers),
-		NORMAL_FORMAT,
-		material_system.mip_levels,
-	)
-	material_system.orm = upload_texture_array(
-		orm_pixels,
-		u32(width),
-		u32(height),
-		u32(layers),
-		ORM_FORMAT,
-		material_system.mip_levels,
-	)
 
+	// Normal and ORM only carry two channels the shader reads, so they compress
+	// to BC5 at a quarter the footprint -- see texture_bc.odin. Albedo stays
+	// uncompressed: encoding colour well is a different problem.
+	if g.bc_enabled {
+		material_system.normal = upload_texture_array_bc5(
+			normal_pixels,
+			u32(width),
+			u32(height),
+			u32(layers),
+			material_system.mip_levels,
+		)
+		material_system.orm = upload_texture_array_bc5(
+			orm_pixels,
+			u32(width),
+			u32(height),
+			u32(layers),
+			material_system.mip_levels,
+		)
+	} else {
+		material_system.normal = upload_texture_array(
+			normal_pixels,
+			u32(width),
+			u32(height),
+			u32(layers),
+			NORMAL_FORMAT,
+			material_system.mip_levels,
+		)
+		material_system.orm = upload_texture_array(
+			orm_pixels,
+			u32(width),
+			u32(height),
+			u32(layers),
+			ORM_FORMAT,
+			material_system.mip_levels,
+		)
+	}
+
+	// mips add roughly a third on top of level 0
+	rgba_mb := f64(total) / (1024 * 1024) * 1.34
+	bc_mb := rgba_mb / 4
 	log.infof(
 		"Texture arrays ready: {} mip levels, {:.1f} MB VRAM, loaded in {}",
 		material_system.mip_levels,
-		f64(total * 3) / (1024 * 1024) * 1.34, // mips add roughly a third
+		g.bc_enabled ? rgba_mb + 2 * bc_mb : 3 * rgba_mb,
 		time.since(start),
 	)
 }

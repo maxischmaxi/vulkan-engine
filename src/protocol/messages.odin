@@ -1,0 +1,217 @@
+package protocol
+
+import "../game"
+
+// One struct and one write/read pair per message. The pair IS the wire format:
+// there is no schema beyond this file, and PROTOCOL_VERSION is the version of
+// this file. Message ids are written by the caller (the packet framing owns
+// them); these procs carry the payload only.
+
+MAX_NAME :: 16
+
+Connect_Request :: struct {
+	client_salt: u32,
+	name:        [MAX_NAME]u8,
+	name_len:    u8,
+}
+
+write_connect_request :: proc(w: ^Writer, m: Connect_Request) {
+	write_u32(w, m.client_salt)
+	write_u8(w, min(m.name_len, MAX_NAME))
+	name := m.name
+	write_bytes(w, name[:])
+}
+
+read_connect_request :: proc(r: ^Reader) -> (m: Connect_Request, ok: bool) {
+	m.client_salt = read_u32(r)
+	m.name_len = min(read_u8(r), MAX_NAME)
+	read_bytes(r, m.name[:])
+	return m, !r.error
+}
+
+Connect_Accept :: struct {
+	server_salt: u32,
+	server_tick: u32,
+	pawn_id:     u8,
+	tick_rate:   u8,
+	phase:       game.Match_Phase,
+}
+
+write_connect_accept :: proc(w: ^Writer, m: Connect_Accept) {
+	write_u32(w, m.server_salt)
+	write_u32(w, m.server_tick)
+	write_u8(w, m.pawn_id)
+	write_u8(w, m.tick_rate)
+	write_u8(w, u8(m.phase))
+}
+
+read_connect_accept :: proc(r: ^Reader) -> (m: Connect_Accept, ok: bool) {
+	m.server_salt = read_u32(r)
+	m.server_tick = read_u32(r)
+	m.pawn_id = read_u8(r)
+	m.tick_rate = read_u8(r)
+	m.phase = game.Match_Phase(read_u8(r))
+	return m, !r.error
+}
+
+Connect_Deny :: struct {
+	reason: Deny_Reason,
+}
+
+write_connect_deny :: proc(w: ^Writer, m: Connect_Deny) {
+	write_u8(w, u8(m.reason))
+}
+
+read_connect_deny :: proc(r: ^Reader) -> (m: Connect_Deny, ok: bool) {
+	m.reason = Deny_Reason(read_u8(r))
+	return m, !r.error
+}
+
+Join :: struct {
+	team: game.Team,
+}
+
+write_join :: proc(w: ^Writer, m: Join) {
+	write_u8(w, u8(m.team))
+}
+
+read_join :: proc(r: ^Reader) -> (m: Join, ok: bool) {
+	m.team = game.Team(read_u8(r))
+	return m, !r.error
+}
+
+// The client's debug toggles, mirrored to the server so god mode and infinite
+// ammo mean something against an authoritative simulation. Development only:
+// the message exists to be refused by a server that takes cheating seriously.
+Debug_Flags :: struct {
+	god:           bool,
+	infinite_ammo: bool,
+}
+
+write_debug_flags :: proc(w: ^Writer, m: Debug_Flags) {
+	flags: u8 = 0
+	if m.god do flags |= 1 << 0
+	if m.infinite_ammo do flags |= 1 << 1
+	write_u8(w, flags)
+}
+
+read_debug_flags :: proc(r: ^Reader) -> (m: Debug_Flags, ok: bool) {
+	flags := read_u8(r)
+	m.god = flags & (1 << 0) != 0
+	m.infinite_ammo = flags & (1 << 1) != 0
+	return m, !r.error
+}
+
+Disconnect :: struct {
+	reason: Disconnect_Reason,
+}
+
+write_disconnect :: proc(w: ^Writer, m: Disconnect) {
+	write_u8(w, u8(m.reason))
+}
+
+read_disconnect :: proc(r: ^Reader) -> (m: Disconnect, ok: bool) {
+	m.reason = Disconnect_Reason(read_u8(r))
+	return m, !r.error
+}
+
+Match_Phase_Msg :: struct {
+	phase:      game.Match_Phase,
+	// The server tick at which this phase ends (0 if open-ended). The client
+	// derives its countdown and match clocks from it.
+	param_tick: u32,
+	t_score:    u8,
+	ct_score:   u8,
+}
+
+write_match_phase :: proc(w: ^Writer, m: Match_Phase_Msg) {
+	write_u8(w, u8(m.phase))
+	write_u32(w, m.param_tick)
+	write_u8(w, m.t_score)
+	write_u8(w, m.ct_score)
+}
+
+read_match_phase :: proc(r: ^Reader) -> (m: Match_Phase_Msg, ok: bool) {
+	m.phase = game.Match_Phase(read_u8(r))
+	m.param_tick = read_u32(r)
+	m.t_score = read_u8(r)
+	m.ct_score = read_u8(r)
+	return m, !r.error
+}
+
+Kill :: struct {
+	killer: u8, // pawn id, 0xFF = the world
+	victim: u8,
+	weapon: u8,
+}
+
+write_kill :: proc(w: ^Writer, m: Kill) {
+	write_u8(w, m.killer)
+	write_u8(w, m.victim)
+	write_u8(w, m.weapon)
+}
+
+read_kill :: proc(r: ^Reader) -> (m: Kill, ok: bool) {
+	m.killer = read_u8(r)
+	m.victim = read_u8(r)
+	m.weapon = read_u8(r)
+	return m, !r.error
+}
+
+// ------------------------------------------------------------------- inputs
+
+// The redundant command block: the newest command plus up to INPUT_REDUNDANCY-1
+// older ones, oldest first, covering ticks newest_tick-count+1 .. newest_tick.
+// The server takes the ones it has not seen; a lost packet costs nothing until
+// the redundancy itself is exceeded.
+Input_Msg :: struct {
+	// Newest snapshot tick the client has received -- the future baseline for
+	// delta compression, and a health signal today.
+	last_snapshot_tick: u32,
+	newest_tick:        u32,
+	count:              u8,
+	commands:           [INPUT_REDUNDANCY]game.Pawn_Input,
+}
+
+write_input :: proc(w: ^Writer, m: Input_Msg) {
+	write_u32(w, m.last_snapshot_tick)
+	write_u32(w, m.newest_tick)
+	count := min(m.count, INPUT_REDUNDANCY)
+	write_u8(w, count)
+	for i in 0 ..< count {
+		write_command(w, m.commands[i])
+	}
+}
+
+read_input :: proc(r: ^Reader) -> (m: Input_Msg, ok: bool) {
+	m.last_snapshot_tick = read_u32(r)
+	m.newest_tick = read_u32(r)
+	m.count = min(read_u8(r), INPUT_REDUNDANCY)
+	for i in 0 ..< m.count {
+		m.commands[i] = read_command(r)
+	}
+	return m, !r.error
+}
+
+// 7 bytes per command. The angles go through the quantizers, which is also why
+// the client must run its own prediction on the dequantized values.
+write_command :: proc(w: ^Writer, c: game.Pawn_Input) {
+	write_u16(w, transmute(u16)c.buttons)
+	write_u16(w, quantize_yaw(c.yaw))
+	write_u16(w, quantize_pitch(c.pitch))
+	write_u8(w, u8(c.weapon_slot))
+}
+
+read_command :: proc(r: ^Reader) -> (c: game.Pawn_Input) {
+	c.buttons = transmute(game.Buttons)read_u16(r)
+	c.yaw = dequantize_yaw(read_u16(r))
+	c.pitch = dequantize_pitch(read_u16(r))
+	c.weapon_slot = i8(read_u8(r))
+	return
+}
+
+// The exact angles prediction has to use: what the server will read back out
+// of what the client is about to send.
+wire_angles :: proc(yaw, pitch: f32) -> (f32, f32) {
+	return dequantize_yaw(quantize_yaw(yaw)), dequantize_pitch(quantize_pitch(pitch))
+}

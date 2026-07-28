@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:math"
+import "game"
 import "vendor:glfw"
 
 // What the HUD says. hud_render.odin knows how to put a rectangle on screen and
@@ -55,7 +56,7 @@ build_hud :: proc() {
 	// shipped build should be able to do too.
 	if key_pressed(glfw.KEY_F12) do hud.visible = !hud.visible
 
-	update_minimap(clock.frame_dt)
+	update_minimap(game.clock.frame_dt)
 
 	hud_begin_frame()
 	defer hud_end_frame()
@@ -63,26 +64,41 @@ build_hud :: proc() {
 	// A minimised window has a zero extent, and every layout number below would
 	// come out as zero or a division by it.
 	if g.swapchain_extent.width == 0 || g.swapchain_extent.height == 0 do return
-	if !hud.visible do return
 
 	scale := hud_scale()
 	width := f32(g.swapchain_extent.width)
 	height := f32(g.swapchain_extent.height)
 	margin := HUD_MARGIN * scale
 
-	// Damage first, so everything else is legible on top of it.
-	draw_damage_feedback(width, height)
+	// Every screen that is not gameplay draws itself and nothing of the HUD.
+	if !scene_playing() {
+		draw_scene_screens(width, height)
+		draw_settings_ui()
+		return
+	}
 
-	draw_minimap(margin, margin, HUD_MINIMAP_SIZE * scale)
-	draw_status(width, margin)
-	draw_health(margin, height - margin)
-	draw_ammo(width - margin, height - margin)
-	draw_slots(width * 0.5, height - margin)
-	draw_speed(width * 0.5, height - margin - HUD_SLOT_HEIGHT * scale)
-	draw_weapon_prompt(width * 0.5, height * 0.5)
+	if hud.visible {
+		// Damage first, so everything else is legible on top of it.
+		draw_damage_feedback(width, height)
 
-	if debug_active() do draw_debug_panel(width - margin, margin)
-	if !player.alive do draw_death_overlay(width, height)
+		draw_minimap(margin, margin, HUD_MINIMAP_SIZE * scale)
+		draw_status(width, margin)
+		draw_health(margin, height - margin)
+		draw_ammo(width - margin, height - margin)
+		draw_slots(width * 0.5, height - margin)
+		draw_speed(width * 0.5, height - margin - HUD_SLOT_HEIGHT * scale)
+		draw_weapon_prompt(width * 0.5, height * 0.5)
+
+		if debug_active() do draw_debug_panel(width - margin, margin)
+		if !player.alive do draw_death_overlay(width, height)
+	}
+
+	if !bench_active() && net_client.phase == .Countdown {
+		draw_countdown(width, height)
+	}
+
+	// The pause overlay outlives F12: its buttons must stay reachable.
+	if scene.paused do draw_pause_overlay(width, height)
 
 	// Last, so it sits over everything -- it is modal while it is open.
 	draw_settings_ui()
@@ -90,21 +106,57 @@ build_hud :: proc() {
 
 // ------------------------------------------------------------------- panels
 
-// Top centre: how long this session has been running, and how it is going.
-// The timer is where a round clock will go once rounds exist; until then it is
-// simply the clock.
+// Top centre: the match clock, the team score, how the player is doing. In
+// the benchmark there is no match, so the session clock stands in.
 @(private = "file")
 draw_status :: proc(width, margin: f32) {
 	scale := hud_scale()
 	center := width * 0.5
 
-	elapsed := int(f32(clock.tick_count) * TICK_DT)
-	timer := fmt.tprintf("{}:{:02d}", elapsed / 60, elapsed % 60)
+	seconds := int(f32(game.clock.tick_count) * game.TICK_DT)
+	if !bench_active() {
+		seconds = int(math.ceil(net_client.time_left))
+	}
+	timer := fmt.tprintf("{}:{:02d}", seconds / 60, seconds % 60)
 
 	y := margin
 	hud_text_shadow(center, y, timer, HUD_TEXT_MEDIUM * scale, HUD_WHITE, .Center)
-
 	y += HUD_TEXT_MEDIUM * scale + 6 * scale
+
+	if !bench_active() {
+		// T left, CT right, each in its team colour; the underline marks the
+		// player's own side.
+		score := fmt.tprintf("{} : {}", net_client.t_score, net_client.ct_score)
+		size := HUD_TEXT_SMALL * scale
+		score_w := hud_text_width(score, size)
+		hud_text_shadow(center, y, score, size, HUD_WHITE, .Center)
+		t_end := hud_text_shadow(
+			center - score_w * 0.5 - 14 * scale,
+			y,
+			"T",
+			size,
+			MENU_T_COLOR,
+			.Right,
+		)
+		ct_end := hud_text_shadow(
+			center + score_w * 0.5 + 14 * scale,
+			y,
+			"CT",
+			size,
+			MENU_CT_COLOR,
+		)
+		underline_w := 12 * scale
+		underline_x := scene.chosen_team == .T ? t_end - underline_w : ct_end - 2 * underline_w
+		hud_rect(
+			underline_x,
+			y + size + 2 * scale,
+			underline_w * (scene.chosen_team == .T ? 1 : 2),
+			2 * scale,
+			HUD_DIM,
+		)
+		y += size + 8 * scale
+	}
+
 	hud_text_shadow(
 		center,
 		y,
@@ -115,12 +167,28 @@ draw_status :: proc(width, margin: f32) {
 	)
 
 	y += HUD_TEXT_SMALL * scale + 4 * scale
+	enemies := bench_active() ? bots_alive() : remote_enemies_alive()
 	hud_text_shadow(
 		center,
 		y,
-		fmt.tprintf("{} ENEMIES", bots_alive()),
+		fmt.tprintf("{} ENEMIES", enemies),
 		HUD_TEXT_SMALL * scale,
 		HUD_FAINT,
+		.Center,
+	)
+}
+
+// Centre screen while the server counts the match in.
+@(private = "file")
+draw_countdown :: proc(width, height: f32) {
+	scale := hud_scale()
+	seconds := max(int(math.ceil(net_client.time_left)), 0)
+	hud_text_shadow(
+		width * 0.5,
+		height * 0.40,
+		fmt.tprintf("MATCH STARTS IN {}", seconds),
+		hud_font_size(HUD_TEXT_BIG * scale),
+		HUD_WARN,
 		.Center,
 	)
 }
@@ -140,7 +208,7 @@ draw_health :: proc(x, bottom: f32) {
 	if player.health <= HUD_LOW_HEALTH {
 		// Sine rather than a square blink: a hard flash at the moment you most
 		// need to read the number is the wrong kind of urgent.
-		pulse := 0.65 + 0.35 * math.sin(f32(clock.tick_count) * TICK_DT * 9)
+		pulse := 0.65 + 0.35 * math.sin(f32(game.clock.tick_count) * game.TICK_DT * 9)
 		color = {HUD_BAD.r, HUD_BAD.g * pulse, HUD_BAD.b * pulse, 1}
 	} else if player.health <= 50 {
 		color = HUD_WARN
@@ -243,24 +311,24 @@ draw_slots :: proc(center, bottom: f32) {
 	gap := 6 * scale
 	height := size + 2 * pad
 
-	labels: [WEAPON_SLOTS]string
-	widths: [WEAPON_SLOTS]f32
+	labels: [game.WEAPON_SLOTS]string
+	widths: [game.WEAPON_SLOTS]f32
 	total: f32
 
-	for slot in 0 ..< WEAPON_SLOTS {
-		index := weapon_in_slot(slot)
+	for slot in 0 ..< game.WEAPON_SLOTS {
+		index := game.weapon_in_slot(slot)
 		labels[slot] =
-			index >= 0 ? fmt.tprintf("{} {}", slot + 1, WEAPONS[index].name) : fmt.tprintf("{}", slot + 1)
+			index >= 0 ? fmt.tprintf("{} {}", slot + 1, game.WEAPONS[index].name) : fmt.tprintf("{}", slot + 1)
 		widths[slot] = hud_text_width(labels[slot], size) + 2 * pad
 		total += widths[slot]
 	}
-	total += gap * f32(WEAPON_SLOTS - 1)
+	total += gap * f32(game.WEAPON_SLOTS - 1)
 
 	x := center - total * 0.5
 	y := bottom - height
 
-	for slot in 0 ..< WEAPON_SLOTS {
-		index := weapon_in_slot(slot)
+	for slot in 0 ..< game.WEAPON_SLOTS {
+		index := game.weapon_in_slot(slot)
 		active := index == weapon_state.index
 
 		background := active ? [4]f32{0.85, 0.88, 0.92, 0.90} : HUD_PANEL
@@ -293,9 +361,9 @@ draw_speed :: proc(center_x, bottom: f32) {
 	// Grey while walking, white once running, green once the air has given you
 	// something the ground never would.
 	color := HUD_FAINT
-	if speed > WALK_SPEED * UNITS_PER_METRE + 12 {
+	if speed > game.WALK_SPEED * game.UNITS_PER_METRE + 12 {
 		color = HUD_GOOD
-	} else if speed > WALK_SPEED * UNITS_PER_METRE * 0.5 {
+	} else if speed > game.WALK_SPEED * game.UNITS_PER_METRE * 0.5 {
 		color = HUD_DIM
 	}
 
@@ -362,10 +430,10 @@ draw_weapon_prompt :: proc(center_x, center_y: f32) {
 // player has no other way to get.
 @(private = "file")
 draw_damage_feedback :: proc(width, height: f32) {
-	if player.damage_flash <= 0 do return
+	if player_fx.damage_flash <= 0 do return
 
 	scale := hud_scale()
-	strength := player.damage_flash / DAMAGE_FLASH_TIME
+	strength := player_fx.damage_flash / DAMAGE_FLASH_TIME
 
 	band := 90 * scale
 	edge := [4]f32{0.75, 0.05, 0.05, strength * 0.45}
@@ -374,11 +442,12 @@ draw_damage_feedback :: proc(width, height: f32) {
 	hud_rect(0, band, band, height - 2 * band, edge)
 	hud_rect(width - band, band, band, height - 2 * band, edge)
 
-	if player.damage_dir == {} do return
+	if player_fx.damage_dir == {} do return
 
 	// Relative to where the player is looking, not to the world: the indicator
 	// has to move when the view turns.
-	relative := math.atan2(player.damage_dir.y, player.damage_dir.x) - math.to_radians(camera.yaw)
+	relative :=
+		math.atan2(player_fx.damage_dir.y, player_fx.damage_dir.x) - math.to_radians(camera.yaw)
 
 	// Straight ahead is up the screen, and the screen's y axis points down.
 	heading := [2]f32{-math.sin(relative), -math.cos(relative)}

@@ -1,4 +1,4 @@
-package main
+package game
 
 // The vocabulary a map is written in. Everything the level geometry needs and
 // nothing about any particular level -- the layout itself lives in map_dust2.

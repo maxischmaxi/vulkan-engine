@@ -65,6 +65,7 @@ Shadow_Map :: struct {
 	texel_world:  [SHADOW_CASCADES_MAX]f32, // metres covered by one shadow texel
 	world_pipe:   Pipeline, // baked map geometry
 	prop_pipe:    Pipeline, // instanced boxes
+	model_pipe:   Pipeline, // imported meshes
 }
 
 shadow: Shadow_Map
@@ -216,6 +217,24 @@ create_shadow_pipelines :: proc() {
 			vert_spv = SHADOW_PROP_VERT_CODE,
 			bindings = prop_bindings[:],
 			attributes = prop_attributes[:],
+			set_layouts = {descriptors.frame_layout},
+			push_constants = cascade_push,
+			depth_format = SHADOW_FORMAT,
+			cull = .None,
+			depth_test = .Forward_Less,
+			depth_bias = true,
+		},
+	)
+
+	model_bindings := model_binding_descriptions()
+	model_attributes := model_shadow_attribute_descriptions()
+
+	shadow.model_pipe = build_pipeline(
+		{
+			name = "shadow/models",
+			vert_spv = SHADOW_MODEL_VERT_CODE,
+			bindings = model_bindings[:],
+			attributes = model_attributes[:],
 			set_layouts = {descriptors.frame_layout},
 			push_constants = cascade_push,
 			depth_format = SHADOW_FORMAT,
@@ -431,6 +450,13 @@ record_shadow_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
 			vk.CmdPushConstants(cmd, shadow.prop_pipe.layout, {.VERTEX}, 0, size_of(u32), &cascade)
 			bind_frame_set(cmd, shadow.prop_pipe.layout, frame)
 			record_prop_shadow_draw(cmd, frame)
+		}
+
+		if model_renderer.static_count > 0 {
+			vk.CmdBindPipeline(cmd, .GRAPHICS, shadow.model_pipe.pipeline)
+			vk.CmdPushConstants(cmd, shadow.model_pipe.layout, {.VERTEX}, 0, size_of(u32), &cascade)
+			bind_frame_set(cmd, shadow.model_pipe.layout, frame)
+			record_model_shadow_draw(cmd)
 		}
 
 		vk.CmdEndRendering(cmd)

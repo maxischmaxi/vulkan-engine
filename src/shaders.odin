@@ -9,9 +9,15 @@ package main
 
 WORLD_VERT_CODE :: #load("../shaders/world.vert.spv")
 WORLD_FRAG_CODE :: #load("../shaders/world.frag.spv")
+PREPASS_VERT_CODE :: #load("../shaders/prepass.vert.spv")
+OVERDRAW_FRAG_CODE :: #load("../shaders/overdraw.frag.spv")
 
 SHADOW_VERT_CODE :: #load("../shaders/shadow.vert.spv")
 SHADOW_PROP_VERT_CODE :: #load("../shaders/shadow_prop.vert.spv")
+SHADOW_MODEL_VERT_CODE :: #load("../shaders/shadow_model.vert.spv")
+
+// Imported meshes share world.frag; only the vertex stage differs.
+MODEL_VERT_CODE :: #load("../shaders/model.vert.spv")
 
 PROP_VERT_CODE :: #load("../shaders/prop.vert.spv")
 PROP_FRAG_CODE :: #load("../shaders/prop.frag.spv")

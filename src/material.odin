@@ -1,6 +1,7 @@
 package main
 
 import "core:log"
+import "game"
 import vk "vendor:vulkan"
 
 // Mirrors the std430 layout of the material SSBO. Odin arrays align to their
@@ -27,20 +28,9 @@ Material :: struct {
 #assert(offset_of(Material, normal_scale) == 32)
 #assert(offset_of(Material, saturation) == 36)
 
-// Layer indices into TEXTURE_SETS. Named so the map data reads as material
-// intent rather than array offsets.
-Material_ID :: enum u32 {
-	Wall_Main    = 0,
-	Wall_Alt     = 1,
-	Wall_Trim    = 2,
-	Ground       = 3,
-	Floor_Indoor = 4,
-	Brick        = 5,
-	Brick_Alt    = 6,
-	Rock         = 7,
-	Rock_Alt     = 8,
-	Crate        = 9,
-}
+// The enum itself lives with the map data in the game package; the material
+// system is its client-side consumer, so the short name stays usable here.
+Material_ID :: game.Material_ID
 
 // Dust2 is one palette: warm sandstone, from pale plaster down to shaded rock.
 // The ambientCG sets are nowhere near that on their own -- Rock030 averages
@@ -151,7 +141,71 @@ MATERIALS := []Material {
 		normal_scale = 1.0,
 		saturation = 0.55,
 	},
+	// ------------------------------------------------------------- models
+	//
+	// Imported geometry carries its own UVs, so uv_scale is 1 -- the world's
+	// value is metres-per-tile, which means nothing to a mesh whose UVs already
+	// span its own surface. Saturation stays at 1: these textures were painted
+	// for the object rather than pulled from a photo library, so there is no
+	// colour cast to pull out.
+	//
+	// Skin and gunmetal share one atlas layer and differ only here.
+	{
+		// arms
+		tint = {1, 1, 1, 1},
+		layer = 10,
+		uv_scale = 1.0,
+		roughness_mul = 1.05,
+		metallic = 0,
+		normal_scale = 1.0,
+		saturation = 1.0,
+	},
+	{
+		// rifle, pistol and the rounds in their magazines
+		tint = {1, 1, 1, 1},
+		layer = 10,
+		uv_scale = 1.0,
+		roughness_mul = 0.8,
+		// Not fully metallic: the retro textures paint their own highlights, and
+		// a metallic of 1 would drop the diffuse term those rely on.
+		metallic = 0.45,
+		normal_scale = 1.0,
+		saturation = 1.0,
+	},
+	{
+		// the throwing knife, the one asset with a real PBR set
+		tint = {1, 1, 1, 1},
+		layer = 11,
+		uv_scale = 1.0,
+		roughness_mul = 1.0,
+		metallic = 0.9,
+		normal_scale = 1.0,
+		saturation = 1.0,
+	},
+	{
+		// Props, mapped onto the flat colour palette they were authored against.
+		// The palette is a bright toy-box green and yellow; pulled toward the
+		// map's sandstone the same way the world textures are, or the crates
+		// read as belonging to a different game.
+		tint = {0.92, 0.82, 0.62, 1},
+		layer = 12,
+		uv_scale = 1.0,
+		roughness_mul = 1.0,
+		metallic = 0,
+		normal_scale = 1.0,
+		saturation = 0.55,
+	},
 }
+
+// Model materials are appended past the map's, so game.Material_ID keeps meaning
+// "something a map is authored in" and these stay a client-side detail. The
+// order has to match the four entries at the end of MATERIALS above; the load
+// checks it.
+MODEL_MAT_RETRO_ARMS :: u32(len(game.Material_ID))
+MODEL_MAT_RETRO_GUNS :: MODEL_MAT_RETRO_ARMS + 1
+MODEL_MAT_KNIFE :: MODEL_MAT_RETRO_ARMS + 2
+MODEL_MAT_PROP_PALETTE :: MODEL_MAT_RETRO_ARMS + 3
+MODEL_MATERIAL_COUNT :: 4
 
 // Everything behind descriptor set 1: the material table and the texture arrays
 // it indexes into. None of it changes after load.
@@ -174,6 +228,17 @@ create_material_buffer :: proc() {
 		if int(m.layer) >= len(TEXTURE_SETS) {
 			log.panicf("Material {} points at layer {}, which does not exist", i, m.layer)
 		}
+	}
+
+	// The model material constants are offsets into this table rather than
+	// entries of an enum, so this is what keeps them pointing at the right rows.
+	if len(MATERIALS) != int(MODEL_MAT_RETRO_ARMS) + MODEL_MATERIAL_COUNT {
+		log.panicf(
+			"{} materials, but {} map materials plus {} model materials were expected",
+			len(MATERIALS),
+			MODEL_MAT_RETRO_ARMS,
+			MODEL_MATERIAL_COUNT,
+		)
 	}
 
 	material_system.buffer, material_system.memory = create_device_local_buffer(

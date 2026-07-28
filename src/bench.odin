@@ -6,6 +6,7 @@ import "core:math"
 import "core:math/rand"
 import "core:os"
 import "core:slice"
+import "game"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
@@ -31,12 +32,12 @@ BENCH_WARMUP :: 120
 // simulation depend on the frame index alone, so the same frame number always
 // sees the same world.
 @(private = "file")
-BENCH_DT :: TICK_DT
+BENCH_DT :: game.TICK_DT
 
 @(private = "file")
 BENCH_SEED :: u64(0x64757374)
 
-// Where the tour goes, as indices into MAP_SPAWN_AREAS. Reading that list rather
+// Where the tour goes, as indices into game.MAP_SPAWN_AREAS. Reading that list rather
 // than holding coordinates means the path cannot point at a room the map no
 // longer has -- the same reason debug_teleport reads it.
 //
@@ -114,7 +115,7 @@ bench_pose :: proc(f: int) -> (position: [3]f32, yaw: f32) {
 
 @(private = "file")
 room_center :: proc(index: int) -> [3]f32 {
-	area := MAP_SPAWN_AREAS[index]
+	area := game.MAP_SPAWN_AREAS[index]
 	return {(area.min.x + area.max.x) * 0.5, (area.min.y + area.max.y) * 0.5, area.floor + 1.0}
 }
 
@@ -147,9 +148,9 @@ bench_step :: proc() -> int {
 	if bench.frame > bench.total do bench_report()
 
 	// The simulation runs off the frame index, not off how long any of this took.
-	clock.frame_dt = BENCH_DT
-	clock.alpha = 0
-	clock.tick_count += 1
+	game.clock.frame_dt = BENCH_DT
+	game.clock.alpha = 0
+	game.clock.tick_count += 1
 
 	position, yaw := bench_pose(bench.frame)
 	teleport_player(position)

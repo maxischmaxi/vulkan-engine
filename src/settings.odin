@@ -250,6 +250,7 @@ create_all_pipelines :: proc() {
 	create_world_pipeline()
 	create_shadow_pipelines()
 	create_prop_pipeline()
+	create_model_pipeline()
 	create_decal_pipeline()
 	create_hud_pipeline()
 	create_hud_quad_pipeline()
@@ -257,9 +258,15 @@ create_all_pipelines :: proc() {
 
 destroy_all_pipelines :: proc() {
 	destroy_pipeline(world_renderer.pipeline)
+	destroy_pipeline(world_renderer.overdraw_pipe)
+	// zero handles are legal to destroy, so this needs no flag check
+	destroy_pipeline(world_renderer.prepass_pipe)
+	world_renderer.prepass_pipe = {}
 	destroy_pipeline(shadow.world_pipe)
 	destroy_pipeline(shadow.prop_pipe)
+	destroy_pipeline(shadow.model_pipe)
 	destroy_pipeline(prop_renderer.pipeline)
+	destroy_pipeline(model_renderer.pipeline)
 	destroy_pipeline(decal_renderer.pipeline)
 	destroy_pipeline(hud_renderer.quad_pipeline)
 	destroy_pipeline(hud_renderer.pipeline)

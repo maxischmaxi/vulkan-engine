@@ -1,4 +1,4 @@
-package main
+package game
 
 // A dust2 you would recognise without mistaking it for the original. Every lane
 // the map is known for is here and in the right place relative to the others:

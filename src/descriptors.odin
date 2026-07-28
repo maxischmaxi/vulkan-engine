@@ -50,6 +50,13 @@ create_descriptor_layouts :: proc() {
 			descriptorCount = 1,
 			stageFlags = {.FRAGMENT},
 		},
+		// per-tile light masks, rewritten by the CPU every frame
+		{
+			binding = 3,
+			descriptorType = .STORAGE_BUFFER,
+			descriptorCount = 1,
+			stageFlags = {.FRAGMENT},
+		},
 	}
 
 	material_bindings := []vk.DescriptorSetLayoutBinding {
@@ -115,8 +122,8 @@ create_descriptor_layouts :: proc() {
 create_descriptor_pool :: proc() {
 	pool_sizes := []vk.DescriptorPoolSize {
 		{type = .UNIFORM_BUFFER, descriptorCount = MAX_FRAMES_IN_FLIGHT},
-		// per-frame lights, plus the one material table
-		{type = .STORAGE_BUFFER, descriptorCount = MAX_FRAMES_IN_FLIGHT + 1},
+		// per-frame lights and tile masks, plus the one material table
+		{type = .STORAGE_BUFFER, descriptorCount = 2 * MAX_FRAMES_IN_FLIGHT + 1},
 		// per-frame shadow array, the three texture arrays, the glyph atlas
 		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = MAX_FRAMES_IN_FLIGHT + 4},
 	}
@@ -187,6 +194,10 @@ write_frame_sets :: proc() {
 			imageView   = shadow.array_view,
 			imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 		}
+		tiles_info := vk.DescriptorBufferInfo {
+			buffer = light_tiles.buffers[i],
+			range  = LIGHT_TILES_BYTES,
+		}
 
 		writes := []vk.WriteDescriptorSet {
 			{
@@ -212,6 +223,14 @@ write_frame_sets :: proc() {
 				descriptorCount = 1,
 				descriptorType = .COMBINED_IMAGE_SAMPLER,
 				pImageInfo = &shadow_info,
+			},
+			{
+				sType = .WRITE_DESCRIPTOR_SET,
+				dstSet = descriptors.frame_sets[i],
+				dstBinding = 3,
+				descriptorCount = 1,
+				descriptorType = .STORAGE_BUFFER,
+				pBufferInfo = &tiles_info,
 			},
 		}
 		vk.UpdateDescriptorSets(g.device, u32(len(writes)), raw_data(writes), 0, nil)

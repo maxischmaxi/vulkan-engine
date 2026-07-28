@@ -1,8 +1,11 @@
 package main
 
 import "base:runtime"
+import "core:fmt"
 import "core:log"
 import "core:slice"
+import "core:time"
+import "game"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
@@ -64,6 +67,7 @@ Globals :: struct {
 	depth_format:               vk.Format,
 	anisotropy_enabled:         bool,
 	max_anisotropy:             f32,
+	bc_enabled:                 bool, // BC-compressed texture formats usable
 	validation_enabled:         bool,
 }
 
@@ -140,8 +144,12 @@ main :: proc() {
 	defer destroy_pipeline_cache()
 
 	// ---------------------------------------------------------------- scene
-	brushes := build_dust2()
+	brushes := game.build_dust2()
 	defer delete(brushes)
+
+	// Before the bake: the crates it claims stop being drawn as boxes, and models
+	// take their place once the meshes are loaded.
+	mark_prop_brushes(brushes)
 
 	bake_world(brushes)
 	create_world_buffers()
@@ -152,6 +160,9 @@ main :: proc() {
 	create_texture_arrays()
 	create_texture_sampler()
 	defer destroy_texture_arrays()
+
+	create_mesh_store()
+	defer destroy_mesh_store()
 
 	init_lights()
 	defer destroy_lights()
@@ -169,7 +180,11 @@ main :: proc() {
 	defer destroy_frame_data()
 
 	create_prop_renderer()
+	create_model_renderer()
 	create_decal_renderer()
+
+	// After the meshes exist, because it looks up every model it places.
+	place_map_props()
 
 	// The glyph atlas is what the HUD set points at, so it has to exist first.
 	create_hud_font()
@@ -187,6 +202,7 @@ main :: proc() {
 	defer destroy_world()
 	defer destroy_shadow_map()
 	defer destroy_prop_renderer()
+	defer destroy_model_renderer()
 	defer destroy_decal_renderer()
 	defer destroy_hud_renderer()
 
@@ -218,7 +234,11 @@ main :: proc() {
 	init_bench()
 	defer destroy_bench()
 
-	init_clock()
+	// After input and bench: it releases the cursor for the menu, unless the
+	// bench wants the game running with nobody at the controls.
+	init_scene()
+
+	game.init_clock()
 
 	for !glfw.WindowShouldClose(g.window) {
 		cpu_frame_begin()
@@ -240,42 +260,61 @@ main :: proc() {
 update :: proc() {
 	// The benchmark owns the clock and the camera, so that a frame index rather
 	// than a stopwatch decides what the world looks like.
-	steps := bench_active() ? bench_step() : advance_clock()
+	steps := bench_active() ? bench_step() : game.advance_clock()
 
 	poll_keys()
+	poll_cursor()
 	handle_hotkeys()
 	update_debug()
 	update_settings_ui()
 
-	// Aiming is never tick-quantised -- a frame of latency between the mouse
-	// moving and the view following is the one thing a shooter cannot have.
-	if input.cursor_grabbed && !bench_active() && !settings_ui.open {
-		dx, dy := consume_mouse_delta()
-		camera_apply_mouse(dx, dy)
-		gather_player_intent()
+	// Before the tick loop, so a snapshot that just arrived is reconciled
+	// first and the new ticks predict on top of corrected state.
+	net_client_pump()
+	update_scene()
+
+	if scene_playing() {
+		// Aiming is never tick-quantised -- a frame of latency between the mouse
+		// moving and the view following is the one thing a shooter cannot have.
+		if input.cursor_grabbed && !bench_active() && !settings_ui.open {
+			dx, dy := consume_mouse_delta()
+			camera_apply_mouse(dx, dy)
+			viewmodel_note_look(dx, dy)
+			gather_player_intent()
+		}
+
+		cpu_zone(.Tick)
+		if bench_active() {
+			// The benchmark keeps the whole simulation local: same numbers,
+			// no server in the measurement.
+			for _ in 0 ..< steps {
+				tick_player(game.TICK_DT)
+				tick_bots(game.TICK_DT)
+			}
+		} else {
+			for _ in 0 ..< steps {
+				predict_tick(game.TICK_DT)
+			}
+			send_pending_inputs()
+			update_remote_clock(game.clock.frame_dt)
+		}
+		cpu_zone(.Other)
+
+		sync_camera_to_player(game.clock.alpha)
+
+		// Firing runs on real time against the interpolated world, so it has to
+		// come after the camera is where the player sees it.
+		update_weapon(game.clock.frame_dt, game.clock.alpha)
 	}
-
-	cpu_zone(.Tick)
-	for _ in 0 ..< steps {
-		tick_player(TICK_DT)
-		tick_bots(TICK_DT)
-	}
-	cpu_zone(.Other)
-
-	sync_camera_to_player(clock.alpha)
-
-	// Firing runs on real time against the interpolated world, so it has to come
-	// after the camera is where the player sees it.
-	update_weapon(clock.frame_dt, clock.alpha)
-	update_transient_lights(clock.frame_dt)
+	update_transient_lights(game.clock.frame_dt)
 
 	cpu_zone(.Build_Frame)
 	update_cascades()
-	build_frame(clock.alpha)
+	build_frame(game.clock.alpha)
 	cpu_zone(.Other)
 
 	if bench_active() do return
-	log_frame_stats(clock.frame_dt)
+	log_frame_stats(game.clock.frame_dt)
 }
 
 // Only the one key that belongs to the window rather than to a feature.
@@ -283,8 +322,44 @@ update :: proc() {
 // by the module that owns it.
 @(private = "file")
 handle_hotkeys :: proc() {
-	if key_pressed(glfw.KEY_ESCAPE) && input.cursor_grabbed {
-		grab_cursor(false)
+	scene_handle_esc()
+
+	// Clicking back into the window re-grabs after the cursor came loose
+	// (focus loss, settings closed). Only mid-game: every other screen owns
+	// its clicks, and the pause overlay has buttons of its own.
+	if scene_playing() &&
+	   !scene.paused &&
+	   !settings_ui.open &&
+	   !input.cursor_grabbed &&
+	   consume_click() {
+		grab_cursor(true)
+	}
+}
+
+// Holds the frame rate to the cap, if there is one. Client-side pacing, not
+// simulation: it reads the render settings and waits on the window's event
+// queue, neither of which the shared clock may know about.
+//
+// Sleeping the whole remainder overshoots -- the OS timer's granularity is
+// coarser than a frame -- so it sleeps to a millisecond short of the deadline
+// and spins out the rest. The spin is bounded by that millisecond and only ever
+// runs on a machine with time to spare, which is the case where a busy loop
+// costs nothing anyone will feel.
+limit_frame_rate :: proc() {
+	if settings.fps_cap == 0 do return
+
+	cpu_zone(.Cap_Sleep)
+	defer cpu_zone(.Other)
+
+	target := time.Duration(f64(time.Second) / f64(settings.fps_cap))
+
+	SPIN_MARGIN :: time.Millisecond
+	for {
+		elapsed := time.tick_since(game.clock.last)
+		if elapsed >= target do return
+		if target - elapsed > SPIN_MARGIN {
+			glfw.WaitEventsTimeout(time.duration_seconds(target - elapsed - SPIN_MARGIN))
+		}
 	}
 }
 
@@ -297,8 +372,26 @@ log_frame_stats :: proc(dt: f32) {
 	frames += 1
 	if accum < 1 do return
 
+	net := ""
+	if net_client.joined {
+		age := time.duration_milliseconds(time.tick_since(net_client.last_snapshot_time))
+		snaps := net_client.snap_full + net_client.snap_delta
+		avg_bytes := snaps > 0 ? net_client.snap_bytes / snaps : 0
+		net = fmt.tprintf(
+			"  net: {} corrections, snap age {:.0f} ms, {} full {} delta avg {} B",
+			net_client.corrections,
+			age,
+			net_client.snap_full,
+			net_client.snap_delta,
+			avg_bytes,
+		)
+		net_client.snap_full = 0
+		net_client.snap_delta = 0
+		net_client.snap_bytes = 0
+	}
+
 	log.infof(
-		"{:.1f} fps ({:.2f} ms)  pos {:.1f} {:.1f} {:.1f}  {:.0f} u/s  {} hp  {} {}/{} ammo  {}/{} hits  {} bots  {} decals{}",
+		"{:.1f} fps ({:.2f} ms)  pos {:.1f} {:.1f} {:.1f}  {:.0f} u/s  {} hp  {} {}/{} ammo  {}/{} hits  {} decals{}{}",
 		f32(frames) / accum,
 		accum / f32(frames) * 1000,
 		player.body.position.x,
@@ -311,9 +404,9 @@ log_frame_stats :: proc(dt: f32) {
 		current_ammo().reserve,
 		weapon_state.hits,
 		weapon_state.shots,
-		bots_alive(),
 		decal_renderer.count,
 		player.noclip ? "  [noclip]" : "",
+		net,
 	)
 	accum = 0
 	frames = 0
@@ -625,6 +718,13 @@ create_logical_device :: proc() {
 		props: vk.PhysicalDeviceProperties
 		vk.GetPhysicalDeviceProperties(g.physical_device, &props)
 		g.max_anisotropy = props.limits.maxSamplerAnisotropy
+	}
+
+	// Block compression for the normal and ORM arrays; universal on desktop,
+	// but the loader keeps an RGBA8 path for a device that says no.
+	if supported.textureCompressionBC {
+		device_features.textureCompressionBC = true
+		g.bc_enabled = true
 	}
 
 	queue_priority := f32(1.0)
