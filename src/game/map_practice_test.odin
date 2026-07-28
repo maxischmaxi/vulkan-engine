@@ -102,3 +102,47 @@ test_practice_booth_sightline :: proc(t: ^testing.T) {
 		}
 	}
 }
+
+// Every band corner must be visible from every podium extreme: the range has
+// no walls and no cover by design, and the bots are clamped to their bands.
+// If someone adds geometry back, this is the test that says no.
+@(test)
+test_practice_corners_visible :: proc(t: ^testing.T) {
+	brushes, grid, collision := baked_dust2()
+	defer destroy_baked(brushes, &grid, collision)
+
+	// The podium footprint minus the player radius, at standing eye height.
+	eye_z := f32(PRACTICE_BOOTH_FLOOR + EYE_HEIGHT)
+	eyes := [][3]f32 {
+		{72.3, -2.7, eye_z}, // back left
+		{72.3, 2.7, eye_z}, // back right
+		{78.0, -2.7, eye_z}, // at the counter, left
+		{78.0, 2.7, eye_z}, // at the counter, right
+	}
+
+	for band in PRACTICE_BOT_AREAS {
+		corners := [][3]f32 {
+			{band.min.x, band.min.y, 0.4},
+			{band.min.x, band.max.y, 0.4},
+			{band.max.x, band.min.y, 0.4},
+			{band.max.x, band.max.y, 0.4},
+		}
+		for eye in eyes {
+			for corner in corners {
+				delta := corner - eye
+				dist := linalg.length(delta)
+				hit, ok := physics.grid_raycast(&grid, eye, delta / dist, dist)
+				if ok {
+					testing.expectf(
+						t,
+						hit.t >= dist - 0.35,
+						"corner {} hidden from {} (t={})",
+						corner,
+						eye,
+						hit.t,
+					)
+				}
+			}
+		}
+	}
+}

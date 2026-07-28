@@ -67,6 +67,22 @@ practice_band :: proc(index: int) -> []game.Spawn_Area {
 	return game.PRACTICE_BOT_AREAS[first:first + 1]
 }
 
+// The soft fence: wander is free-roaming, the range is not. A target that
+// left its band would end up beside or behind the podium, out of the
+// player's view -- and a real wall there would block shots along with the
+// walking. Returns whether the fence pushed back, so the bot can pick a new
+// heading the way it does after walking into a wall.
+@(private = "file")
+clamp_to_band :: proc(pawn: ^game.Pawn, band: game.Spawn_Area) -> bool {
+	p := &pawn.body.position
+	clamped := false
+	if p.x < band.min.x {p.x = band.min.x; clamped = true}
+	if p.x > band.max.x {p.x = band.max.x; clamped = true}
+	if p.y < band.min.y {p.y = band.min.y; clamped = true}
+	if p.y > band.max.y {p.y = band.max.y; clamped = true}
+	return clamped
+}
+
 practice_respawn_bot :: proc(index: int) {
 	respawn_bot(index, practice_band(index))
 }
@@ -92,6 +108,7 @@ tick_practice :: proc(dt: f32) {
 		brain.retarget_in -= dt
 		if brain.retarget_in <= 0 do pick_bot_direction(brain)
 		bot_wander_step(pawn, brain, dt, engaged = false)
+		if clamp_to_band(pawn, practice_band(i)[0]) do pick_bot_direction(brain)
 
 		if pawn.body.position.z < -5 do kill_bot(i, respawn_delay = 0.5)
 	}

@@ -4,17 +4,20 @@ package game
 // by teleport. Appended to the dust2 brush list so both binaries bake the same
 // world in the same order and prediction stays bit-compatible.
 //
-// The player shoots from a raised booth at the west end over a hip-high
-// counter; bots wander three bands at increasing distance. The booth is not
-// escape-proof geometry -- the practice tick teleports the player back when
-// they leave PRACTICE_BOUNDS, so the counter only has to read as a barrier.
+// The player shoots from a raised podium at the west end over a hip-high
+// counter; bots wander three bands at increasing distance. Nothing but that
+// counter stands anywhere in the range: every target must be visible from
+// every spot on the podium, so there are no booth walls and no cover. The two
+// fences that make this true are both soft -- the practice tick teleports the
+// player back into PRACTICE_BOUNDS and clamps each bot to its band, because a
+// real wall would block shots and sightlines along with the walking.
 //
 //        N (+Y)
 //   +20 ┌────────────────────────────────────────────┐
 //       │                                            │
-//    +3 │ ┌──────┐                                   │
-//       │ │BOOTH ▐ counter   NEAR    MID     FAR     │
-//    -3 │ └──────┘          ▒crates ▒       ▒        │
+//    +3 │  ────▐ counter                             │
+//       │ podium▐            NEAR    MID     FAR     │
+//    -3 │  ────▐                                     │
 //       │                                            │
 //   -20 └────────────────────────────────────────────┘
 //       70   72  78.6  82  90  92  100 102  108    110
@@ -57,17 +60,11 @@ build_practice_range :: proc(b: ^[dynamic]Brush) {
 	append(b, wall(70, -19.4, 70.6, 19.4, .Rock, PRACTICE_WALL_H)) // west
 	append(b, wall(109.4, -19.4, 110, 19.4, .Rock, PRACTICE_WALL_H)) // east
 
-	// the booth: raised floor, full-height back and sides, hip-high counter
+	// The podium and its counter -- deliberately no walls and no cover
+	// anywhere beyond this: sightlines to every band corner stay open from
+	// every spot the player can stand on.
 	add_floor(b, 72, -3, 78.3, 3, PRACTICE_BOOTH_FLOOR, .Brick)
-	append(b, wall(71.4, -3, 72, 3, .Wall_Main, PRACTICE_WALL_H)) // back
-	append(b, wall(71.4, -3.6, 78.6, -3, .Wall_Main, PRACTICE_WALL_H)) // south
-	append(b, wall(71.4, 3, 78.6, 3.6, .Wall_Main, PRACTICE_WALL_H)) // north
 	append(b, wall(78.3, -3, 78.6, 3, .Wall_Trim, PRACTICE_COUNTER_H)) // counter
-
-	// cover between the bands, so the range is not a flat gallery
-	append(b, box(90.5, -8, GROUND_Z, 92, -6.5, GROUND_Z + 1.2, .Crate))
-	append(b, box(100.4, 4, GROUND_Z, 101.9, 5.5, GROUND_Z + 1.6, .Crate))
-	append(b, box(95, 10, GROUND_Z, 96.5, 11.5, GROUND_Z + 1.0, .Crate))
 }
 
 practice_inside_bounds :: proc(p: [3]f32) -> bool {
