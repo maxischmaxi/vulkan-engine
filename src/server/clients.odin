@@ -46,6 +46,10 @@ Client_Slot :: struct {
 	// Debug grants, kept on the slot so they survive respawns and rematches.
 	debug_god:          bool,
 	debug_infinite:     bool,
+	// On the practice range: connected, simulating locally, owning no pawn.
+	// Recorded so future matchmaking can offer this client a game; today the
+	// server does nothing else with it.
+	practice:           bool,
 	// The buy menu's choice, kept on the slot for the same reason: the next
 	// spawn reads it, whenever that is.
 	loadout:            game.Loadout,
@@ -130,6 +134,10 @@ handle_packet :: proc(ep: net.Endpoint, data: []u8) {
 		case .Loadout:
 			if m, lok := protocol.read_loadout(&payload); lok {
 				handle_loadout(slot, m)
+			}
+		case .Practice:
+			if m, pok := protocol.read_practice(&payload); pok {
+				handle_practice(slot, m)
 			}
 		case:
 			log.warnf("Server: unexpected reliable message {}", msg.msg_id)

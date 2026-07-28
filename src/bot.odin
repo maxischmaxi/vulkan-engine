@@ -95,7 +95,7 @@ init_bots :: proc() {
 	verify_player_spawn()
 
 	for i in 0 ..< BOT_COUNT {
-		respawn_bot(i)
+		respawn_bot(i, game.MAP_SPAWN_AREAS)
 	}
 
 	log.infof("Bots: {} wandering", BOT_COUNT)
@@ -118,9 +118,9 @@ bot_color :: proc(index: int) -> [3]f32 {
 // The ray starts just above the room's own floor rather than above the map. A
 // map with roofs on it answers a ray from the sky with a roof, and bots would
 // spend the round patrolling the top of the tunnels.
-find_bot_spawn :: proc(probe: physics.Body) -> ([3]f32, bool) {
+find_bot_spawn :: proc(probe: physics.Body, areas: []game.Spawn_Area) -> ([3]f32, bool) {
 	for attempt in 0 ..< 64 {
-		area := game.MAP_SPAWN_AREAS[rand.int_max(len(game.MAP_SPAWN_AREAS), bot_rng)]
+		area := areas[rand.int_max(len(areas), bot_rng)]
 
 		// The first few attempts sample the room; after that, its centre, which
 		// is open by construction in every room on the list.
@@ -148,7 +148,7 @@ find_bot_spawn :: proc(probe: physics.Body) -> ([3]f32, bool) {
 	return {}, false
 }
 
-respawn_bot :: proc(index: int) {
+respawn_bot :: proc(index: int, areas: []game.Spawn_Area) {
 	pawn := bot_pawn(index)
 	brain := &brains[index]
 
@@ -156,7 +156,7 @@ respawn_bot :: proc(index: int) {
 		radius = BOT_RADIUS,
 		height = BOT_HEIGHT,
 	}
-	position, ok := find_bot_spawn(probe)
+	position, ok := find_bot_spawn(probe, areas)
 	if !ok {
 		log.warn("No free spawn found for a bot, retrying next tick")
 		pawn.respawn_in = 0.5
@@ -181,7 +181,6 @@ respawn_bot :: proc(index: int) {
 	pick_bot_direction(brain)
 }
 
-@(private = "file")
 pick_bot_direction :: proc(brain: ^Bot_Brain) {
 	angle := rand.float32_range(0, 2 * math.PI, bot_rng)
 	brain.wish_dir = {math.cos(angle), math.sin(angle)}
@@ -195,11 +194,9 @@ tick_bots :: proc(dt: f32) {
 
 		if !pawn.alive {
 			pawn.respawn_in -= dt
-			if pawn.respawn_in <= 0 do respawn_bot(i)
+			if pawn.respawn_in <= 0 do respawn_bot(i, game.MAP_SPAWN_AREAS)
 			continue
 		}
-
-		pawn.prev_position = pawn.body.position
 
 		engaged := tick_bot_combat(pawn, brain, dt)
 		if !engaged {
@@ -207,30 +204,38 @@ tick_bots :: proc(dt: f32) {
 			if brain.retarget_in <= 0 do pick_bot_direction(brain)
 		}
 
-		before := pawn.body.position
-		physics.grid_step_move(
-			&pawn.body,
-			&gs.grid,
-			brain.wish_dir.x * BOT_SPEED * dt,
-			brain.wish_dir.y * BOT_SPEED * dt,
-		)
-		physics.grid_apply_gravity(&pawn.body, &gs.grid, game.GRAVITY, dt)
-
-		// Walked into something: turning immediately is what keeps them from
-		// grinding along a wall for the rest of their timer. A bot in a fight
-		// keeps its target and circles the other way instead, because giving up
-		// the chase at the first doorframe looks like it lost interest.
-		moved := physics.horizontal_distance(pawn.body.position, before)
-		if moved < BOT_SPEED * dt * 0.5 {
-			if engaged {
-				brain.strafe = -brain.strafe
-			} else {
-				pick_bot_direction(brain)
-			}
-		}
+		bot_wander_step(pawn, brain, dt, engaged)
 
 		// A bot that finds a hole in the map should not fall forever.
 		if pawn.body.position.z < -20 do kill_bot(i, respawn_delay = 0.1)
+	}
+}
+
+// One movement step of the wander: the walk, the gravity, and the turn when a
+// wall stops it. Shared between the bench tick and the practice tick.
+bot_wander_step :: proc(pawn: ^game.Pawn, brain: ^Bot_Brain, dt: f32, engaged: bool) {
+	pawn.prev_position = pawn.body.position
+
+	before := pawn.body.position
+	physics.grid_step_move(
+		&pawn.body,
+		&gs.grid,
+		brain.wish_dir.x * BOT_SPEED * dt,
+		brain.wish_dir.y * BOT_SPEED * dt,
+	)
+	physics.grid_apply_gravity(&pawn.body, &gs.grid, game.GRAVITY, dt)
+
+	// Walked into something: turning immediately is what keeps them from
+	// grinding along a wall for the rest of their timer. A bot in a fight
+	// keeps its target and circles the other way instead, because giving up
+	// the chase at the first doorframe looks like it lost interest.
+	moved := physics.horizontal_distance(pawn.body.position, before)
+	if moved < BOT_SPEED * dt * 0.5 {
+		if engaged {
+			brain.strafe = -brain.strafe
+		} else {
+			pick_bot_direction(brain)
+		}
 	}
 }
 

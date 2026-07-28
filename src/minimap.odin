@@ -108,6 +108,23 @@ minimap_color :: proc(material: Material_ID) -> [4]f32 {
 // the radar agree with what the AI knows, which is the more defensible rule --
 // a bot that cannot see you should not be on your radar.
 update_minimap :: proc(dt: f32) {
+	// The range is omniscient: targets are there to be found, not to hide.
+	// sees_player never fires in practice -- combat is off -- so the bench's
+	// line-of-sight rule would show an empty radar.
+	if practice_active() {
+		for &contact, i in minimap.contacts {
+			pawn := bot_pawn(i)
+			contact.active = pawn.alive
+			if !pawn.alive {
+				contact.age = MINIMAP_MEMORY
+				continue
+			}
+			contact.position = {pawn.body.position.x, pawn.body.position.y}
+			contact.age = 0
+		}
+		return
+	}
+
 	// The benchmark's local bots keep the line-of-sight rule; the AI casts the
 	// ray anyway and the radar reads its answer.
 	if bench_active() {

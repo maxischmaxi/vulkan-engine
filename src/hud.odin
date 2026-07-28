@@ -93,7 +93,7 @@ build_hud :: proc() {
 		if !player.alive do draw_death_overlay(width, height)
 	}
 
-	if !bench_active() && net_client.phase == .Countdown {
+	if !local_sim_active() && net_client.phase == .Countdown {
 		draw_countdown(width, height)
 	}
 
@@ -141,7 +141,7 @@ draw_status :: proc(width, margin: f32) {
 	center := width * 0.5
 
 	seconds := int(f32(game.clock.tick_count) * game.TICK_DT)
-	if !bench_active() {
+	if !local_sim_active() {
 		seconds = int(math.ceil(net_client.time_left))
 	}
 	timer := fmt.tprintf("{}:{:02d}", seconds / 60, seconds % 60)
@@ -150,7 +150,10 @@ draw_status :: proc(width, margin: f32) {
 	hud_text_shadow(center, y, timer, HUD_TEXT_MEDIUM * scale, HUD_WHITE, .Center)
 	y += HUD_TEXT_MEDIUM * scale + 6 * scale
 
-	if !bench_active() {
+	if practice_active() {
+		hud_text_shadow(center, y, "PRACTICE", HUD_TEXT_SMALL * scale, HUD_DIM, .Center)
+		y += HUD_TEXT_SMALL * scale + 8 * scale
+	} else if !bench_active() {
 		// T left, CT right, each in its team colour; the underline marks the
 		// player's own side.
 		score := fmt.tprintf("{} : {}", net_client.t_score, net_client.ct_score)
@@ -194,11 +197,11 @@ draw_status :: proc(width, margin: f32) {
 	)
 
 	y += HUD_TEXT_SMALL * scale + 4 * scale
-	enemies := bench_active() ? bots_alive() : remote_enemies_alive()
+	enemies := local_sim_active() ? bots_alive() : remote_enemies_alive()
 	hud_text_shadow(
 		center,
 		y,
-		fmt.tprintf("{} ENEMIES", enemies),
+		fmt.tprintf(practice_active() ? "{} TARGETS" : "{} ENEMIES", enemies),
 		HUD_TEXT_SMALL * scale,
 		HUD_FAINT,
 		.Center,

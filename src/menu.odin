@@ -53,7 +53,7 @@ draw_scene_screens :: proc(width, height: f32) {
 		draw_connecting(width, height)
 	case .Match_End:
 		draw_match_end(width, height)
-	case .Playing:
+	case .Playing, .Practice:
 	// unreachable: build_hud branches before calling this
 	}
 
@@ -90,7 +90,11 @@ draw_main_menu :: proc(width, height: f32) {
 		enter_scene(.Team_Select)
 		return
 	}
-	if menu_button(cx - w * 0.5, y + h + 20 * scale, w, h, "QUIT") {
+	if menu_button(cx - w * 0.5, y + h + 20 * scale, w, h, "PRACTICE") {
+		start_practice()
+		return
+	}
+	if menu_button(cx - w * 0.5, y + 2 * (h + 20 * scale), w, h, "QUIT") {
 		glfw.SetWindowShouldClose(g.window, true)
 		return
 	}
@@ -262,12 +266,13 @@ draw_pause_overlay :: proc(width, height: f32) {
 	h := 56 * scale
 	y := height * 0.46
 
+	leave := practice_active() ? "LEAVE PRACTICE" : "LEAVE MATCH"
 	if menu_button(cx - w * 0.5, y, w, h, "RESUME") {
 		scene.paused = false
 		grab_cursor(true)
-	} else if menu_button(cx - w * 0.5, y + h + 20 * scale, w, h, "LEAVE MATCH") {
+	} else if menu_button(cx - w * 0.5, y + h + 20 * scale, w, h, leave) {
 		enter_scene(.Menu)
-	} else {
+	} else if !practice_active() {
 		hud_text(
 			cx,
 			y + 2 * (h + 20 * scale),

@@ -13,15 +13,19 @@ Scene :: enum u8 {
 	Team_Select,
 	Connecting,
 	Playing,
+	Practice,
 	Match_End,
 }
 
 Scene_State :: struct {
 	current:           Scene,
-	// Playing only: the ESC overlay is up and the cursor is loose. The match
-	// keeps running on the server regardless.
+	// Playing/Practice only: the ESC overlay is up and the cursor is loose.
+	// The match keeps running on the server regardless.
 	paused:            bool,
 	chosen_team:       game.Team,
+	// The next .Connecting leads to the range rather than a match. Set by the
+	// menu's PRACTICE button and --practice, cleared on the way back out.
+	practice_pending:  bool,
 	// A static literal, shown on the main menu after a failed connect. Not
 	// owned memory: assigning a new one never frees the old.
 	error_text:        string,
@@ -49,7 +53,12 @@ init_scene :: proc() {
 		scene.current = .Playing
 		return
 	}
-	// --join skips the clicking for development and headless testing.
+	// --practice and --join skip the clicking for development and headless
+	// testing. parse_cli already made the two flags mutually exclusive.
+	if cli.practice {
+		start_practice()
+		return
+	}
 	if cli.join != "" {
 		scene.chosen_team = cli.join == "t" ? .T : .CT
 		enter_scene(.Connecting)
@@ -68,6 +77,7 @@ enter_scene :: proc(next: Scene) {
 	case .Menu:
 		grab_cursor(false)
 		net_disconnect() // safe when idle; the menu never keeps a connection
+		scene.practice_pending = false
 		camera.position = game.SPAWN_POSITION + {0, 0, MENU_CAM_HEIGHT}
 		camera.yaw = game.SPAWN_YAW
 		camera.pitch = MENU_CAM_PITCH
@@ -75,14 +85,22 @@ enter_scene :: proc(next: Scene) {
 	case .Team_Select:
 		grab_cursor(false)
 		scene.error_text = ""
+		scene.practice_pending = false
 
 	case .Connecting:
 		grab_cursor(false)
-		net_connect_start(protocol.DEFAULT_PORT, scene.chosen_team)
+		if scene.practice_pending {
+			net_practice_start(protocol.DEFAULT_PORT)
+		} else {
+			net_connect_start(protocol.DEFAULT_PORT, scene.chosen_team)
+		}
 
 	case .Playing:
 		reset_match()
 		grab_cursor(true)
+
+	case .Practice:
+		practice_enter()
 
 	case .Match_End:
 		grab_cursor(false)
@@ -113,7 +131,7 @@ reset_match :: proc() {
 }
 
 scene_playing :: proc() -> bool {
-	return scene.current == .Playing
+	return scene.current == .Playing || scene.current == .Practice
 }
 
 // Per-frame housekeeping that is not input: timers and, later, the connect
@@ -142,7 +160,7 @@ scene_handle_esc :: proc() {
 		net_disconnect()
 		enter_scene(.Menu)
 
-	case .Playing:
+	case .Playing, .Practice:
 		scene.paused = !scene.paused
 		grab_cursor(!scene.paused)
 	}

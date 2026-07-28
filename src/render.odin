@@ -15,9 +15,10 @@ build_frame :: proc(alpha: f32) {
 	prop_begin_frame()
 	model_begin_frame()
 	// The world stays up behind the menu; the actors in it do not. Networked
-	// play draws the server's entities; the benchmark draws its local bots.
+	// play draws the server's entities; the benchmark and the practice range
+	// draw their local bots.
 	if scene_playing() {
-		if bench_active() {
+		if local_sim_active() {
 			submit_bots(alpha)
 		} else {
 			submit_remote_entities()

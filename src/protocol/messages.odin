@@ -124,6 +124,23 @@ read_loadout :: proc(r: ^Reader) -> (m: Loadout_Msg, ok: bool) {
 	return m, !r.error
 }
 
+// Sent instead of Join by a client entering the practice range. The server
+// only records it -- the range is simulated on the client -- but the flag is
+// the seam future matchmaking-from-practice hangs off. `entering = false` is
+// reserved for the practice-to-lobby hop once that exists.
+Practice_Msg :: struct {
+	entering: bool,
+}
+
+write_practice :: proc(w: ^Writer, m: Practice_Msg) {
+	write_u8(w, m.entering ? 1 : 0)
+}
+
+read_practice :: proc(r: ^Reader) -> (m: Practice_Msg, ok: bool) {
+	m.entering = read_u8(r) != 0
+	return m, !r.error
+}
+
 Disconnect :: struct {
 	reason: Disconnect_Reason,
 }

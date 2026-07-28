@@ -60,6 +60,7 @@ build_dust2 :: proc() -> []Brush {
 	build_a_site(&b)
 	build_ct_spawn(&b)
 	build_scenery(&b)
+	build_practice_range(&b)
 
 	return b[:]
 }

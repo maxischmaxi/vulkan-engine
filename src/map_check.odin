@@ -62,6 +62,45 @@ verify_spawn_areas :: proc() {
 	log.infof("Map: {} rooms verified", len(game.MAP_SPAWN_AREAS))
 }
 
+// The practice bands, same contract as the spawn rooms. Run from
+// practice_enter rather than startup: targets only ever stand there on demand.
+verify_practice_areas :: proc() {
+	when !ODIN_DEBUG do return
+
+	probe := physics.Body {
+		radius = BOT_RADIUS,
+		height = BOT_HEIGHT,
+	}
+	failed := 0
+
+	for area, i in game.PRACTICE_BOT_AREAS {
+		center := [2]f32{(area.min.x + area.max.x) * 0.5, (area.min.y + area.max.y) * 0.5}
+
+		z, found := physics.ground_below(
+			{center.x, center.y, area.floor + BOT_PROBE_UP},
+			gs.collision,
+			BOT_PROBE_UP + CHECK_DROP,
+		)
+		if !found {
+			log.errorf("Map: practice band {} at {} has no floor under it", i, center)
+			failed += 1
+			continue
+		}
+
+		if physics.overlaps_any(
+			physics.body_aabb_at(probe, {center.x, center.y, z + 0.01}),
+			gs.collision,
+		) {
+			log.errorf("Map: practice band {} at {} is filled in", i, center)
+			failed += 1
+		}
+	}
+
+	if failed == 0 {
+		log.infof("Map: {} practice bands verified", len(game.PRACTICE_BOT_AREAS))
+	}
+}
+
 // The clipper's contract, checked rather than trusted: no two visible faces may
 // be coplanar, same-facing and overlapping with any real area. That is exactly
 // the configuration a depth buffer cannot resolve -- both surfaces are equally

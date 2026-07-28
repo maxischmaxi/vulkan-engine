@@ -79,7 +79,7 @@ seed_loadout :: proc() -> game.Loadout {
 			log.warnf("No weapon named {:q}", cli.weapon)
 		case index == game.WEAPON_KNIFE:
 		// always owned; default_weapon_index holds it up
-		case cli.bench <= 0 && !game.weapon_allowed(index, team):
+		case cli.bench <= 0 && !cli.practice && !game.weapon_allowed(index, team):
 			log.warnf("Weapon {:q} is not for team {}", cli.weapon, team)
 		case game.WEAPONS[index].slot == 0:
 			loadout.primary = i8(index)
@@ -167,7 +167,10 @@ finish_reload :: proc() {
 
 	take := min(weapon.mag_size - ammo.mag, ammo.reserve)
 	ammo.mag += take
-	ammo.reserve -= take
+	// The range trains aim, not economy: magazines cycle, reserve never drains.
+	if !practice_active() {
+		ammo.reserve -= take
+	}
 }
 
 // -------------------------------------------------------------------- firing
@@ -181,7 +184,7 @@ finish_reload :: proc() {
 // cursor and without a connection, and measuring its muzzle flashes is the
 // whole point of it.
 local_fire_block :: proc() -> game.Fire_Block {
-	if bench_active() do return game.pawn_fire_block(.Live, player)
+	if local_sim_active() do return game.pawn_fire_block(.Live, player)
 	if !net_client.joined do return .Not_In_Match
 	return game.pawn_fire_block(net_client.phase, player)
 }
@@ -295,7 +298,7 @@ trace_shot :: proc(alpha: f32, direction: [3]f32) -> Shot_Result {
 
 	// Targets are tested after the world but against the tightened range, so
 	// one standing in front of a wall wins and one behind it does not.
-	if bench_active() {
+	if local_sim_active() {
 		for i in 0 ..< BOT_COUNT {
 			pawn := bot_pawn(i)
 			if !pawn.alive do continue
@@ -359,7 +362,7 @@ fire :: proc(alpha: f32) {
 
 		if shot.target >= 0 {
 			any_hit = true
-			if bench_active() && damage_bot(shot.target, weapon.damage) {
+			if local_sim_active() && local_damage_bot(shot.target, weapon.damage) {
 				killed = true
 			}
 			continue
@@ -378,7 +381,7 @@ fire :: proc(alpha: f32) {
 		weapon_state.hit_marker = HIT_MARKER_TIME
 		// Online the server decides whether it killed; reconcile turns the
 		// marker red when the confirmation arrives.
-		weapon_state.hit_killed = bench_active() ? killed : false
+		weapon_state.hit_killed = local_sim_active() ? killed : false
 	}
 }
 

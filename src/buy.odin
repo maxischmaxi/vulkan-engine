@@ -73,6 +73,11 @@ buy_reset :: proc(l: game.Loadout) {
 // fine -- buying for the next life is the point.
 @(private = "file")
 buy_allowed :: proc() -> bool {
+	// On the range there is no phase to wait for: B works whenever the range
+	// itself is up.
+	if practice_active() {
+		return !scene.paused && !settings_ui.open
+	}
 	return(
 		scene_playing() &&
 		!scene.paused &&
@@ -125,7 +130,9 @@ buy_page_items :: proc(page: Buy_Page) -> (items: [9]Buy_Item, count: int) {
 
 	for weapon, i in game.WEAPONS {
 		if weapon.category != category do continue
-		if scene.chosen_team not_in weapon.teams do continue
+		// The range came from the main menu without a team choice, so it
+		// offers everything; a match offers only what the server would accept.
+		if !practice_active() && scene.chosen_team not_in weapon.teams do continue
 		if count >= len(items) do break
 		items[count] = {
 			weapon = i,
@@ -152,12 +159,15 @@ buy_item :: proc(item: Buy_Item) {
 		log.infof("Buy: {} ({})", weapon.name, weapon.price)
 	}
 
+	// Sent even from the range: the slot's loadout stays current for the day
+	// matchmaking pulls someone out of practice. A no-op before the accept.
 	net_send_loadout(buy_menu.pending)
 
 	// The countdown delivery: the server applies the buy to the live pawn the
 	// moment it arrives, so the local mirror does the same, with the same rule
-	// deciding what ends up in the hands.
-	if net_client.phase == .Countdown && player.alive {
+	// deciding what ends up in the hands. The range delivers the same way --
+	// immediately, no death required.
+	if (practice_active() || net_client.phase == .Countdown) && player.alive {
 		held := weapon_state.index
 		player.loadout = buy_menu.pending
 		refill_all_ammo()
@@ -273,15 +283,20 @@ draw_buy_menu :: proc(width, height: f32) {
 	cursor := y + pad
 	title := buy_menu.page == .Categories ? "BUY MENU" : buy_page_title(buy_menu.page)
 	hud_text(x + pad, cursor, title, size, HUD_WARN)
-	team_label := scene.chosen_team == .T ? "T" : "CT"
-	hud_text(
-		x + panel_w - pad,
-		cursor,
-		team_label,
-		size,
-		scene.chosen_team == .T ? MENU_T_COLOR : MENU_CT_COLOR,
-		.Right,
-	)
+	if practice_active() {
+		// no team on the range; the pages offer both arsenals
+		hud_text(x + panel_w - pad, cursor, "ALL", size, HUD_DIM, .Right)
+	} else {
+		team_label := scene.chosen_team == .T ? "T" : "CT"
+		hud_text(
+			x + panel_w - pad,
+			cursor,
+			team_label,
+			size,
+			scene.chosen_team == .T ? MENU_T_COLOR : MENU_CT_COLOR,
+			.Right,
+		)
+	}
 	cursor += row_h * 1.2
 
 	if buy_menu.page == .Categories {

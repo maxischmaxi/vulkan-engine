@@ -28,6 +28,10 @@ Net_Client :: struct {
 	active:             bool, // socket open, somewhere in the handshake or beyond
 	got_accept:         bool,
 	joined:             bool, // match joined; snapshots are flowing
+	// Registered on the range instead of joining a match. Snapshots still
+	// arrive -- they carry the reliable acks and feed the liveness watchdog --
+	// but none of their content may touch the locally simulated range.
+	practice:           bool,
 	socket:             net.UDP_Socket,
 	server_ep:          net.Endpoint,
 	conn:               protocol.Connection,
@@ -65,6 +69,23 @@ net_client: Net_Client
 recv_buf: [protocol.MTU]u8
 
 net_connect_start :: proc(port: int, team: game.Team) {
+	if !net_open(port) do return
+	net_client.team = team
+	log.infof("NET: connecting to 127.0.0.1:{}", port)
+	send_connect_request()
+}
+
+// The practice variant of the handshake: no team, and the accept leads to the
+// range instead of waiting for a match phase (see handle_server_packet).
+net_practice_start :: proc(port: int) {
+	if !net_open(port) do return
+	net_client.practice = true
+	log.infof("NET: connecting to 127.0.0.1:{} for practice", port)
+	send_connect_request()
+}
+
+@(private = "file")
+net_open :: proc(port: int) -> bool {
 	net_reset()
 
 	socket, err := net.make_bound_udp_socket(net.IP4_Any, 0)
@@ -72,14 +93,14 @@ net_connect_start :: proc(port: int, team: game.Team) {
 		log.errorf("NET: cannot open a socket: {}", err)
 		scene.error_text = "CANNOT OPEN A SOCKET"
 		enter_scene(.Menu)
-		return
+		return false
 	}
 	if block_err := net.set_blocking(socket, false); block_err != nil {
 		log.errorf("NET: cannot make the socket non-blocking: {}", block_err)
 		net.close(socket)
 		scene.error_text = "CANNOT OPEN A SOCKET"
 		enter_scene(.Menu)
-		return
+		return false
 	}
 
 	net_client.active = true
@@ -89,12 +110,9 @@ net_connect_start :: proc(port: int, team: game.Team) {
 		port    = port,
 	}
 	net_client.client_salt = rand.uint32()
-	net_client.team = team
 	net_client.connect_start = time.tick_now()
 	net_client.phase = .Idle
-
-	log.infof("NET: connecting to 127.0.0.1:{}", port)
-	send_connect_request()
+	return true
 }
 
 // Best effort: tell the server we are gone, then forget it. Called from every
@@ -147,6 +165,15 @@ net_client_pump :: proc() {
 			} else {
 				send_connect_request()
 			}
+		}
+	}
+
+	// A practice client sends no input packets, so the keepalive is what feeds
+	// the server's timeout and carries the reliable Practice message to its ack.
+	if net_client.joined && net_client.practice {
+		if time.duration_seconds(time.tick_diff(net_client.last_send, now)) >
+		   protocol.CONNECT_RETRY_SECONDS {
+			send_keepalive()
 		}
 	}
 
@@ -206,15 +233,29 @@ handle_server_packet :: proc(data: []u8) {
 				accept.pawn_id,
 				accept.server_tick,
 			)
-			// the team choice rides reliably; the server answers with a phase
-			if !protocol.queue_reliable_msg(
-				&net_client.conn,
-				.Join,
-				protocol.write_join,
-				protocol.Join{team = net_client.team},
-			) {
-				net_fail("PROTOCOL FAILURE")
-				return
+			if net_client.practice {
+				// the range flag rides reliably instead of a Join, so the
+				// server records the player without starting a match
+				if !protocol.queue_reliable_msg(
+					&net_client.conn,
+					.Practice,
+					protocol.write_practice,
+					protocol.Practice_Msg{entering = true},
+				) {
+					net_fail("PROTOCOL FAILURE")
+					return
+				}
+			} else {
+				// the team choice rides reliably; the server answers with a phase
+				if !protocol.queue_reliable_msg(
+					&net_client.conn,
+					.Join,
+					protocol.write_join,
+					protocol.Join{team = net_client.team},
+				) {
+					net_fail("PROTOCOL FAILURE")
+					return
+				}
 			}
 			// the seed loadout ships right behind the join, so --weapon runs
 			// spawn armed and the slot never holds a stale default
@@ -224,6 +265,17 @@ handle_server_packet :: proc(data: []u8) {
 				net_send_debug_flags()
 			}
 			send_keepalive()
+
+			if net_client.practice {
+				// The accept is the "you are in": the queued Practice message is
+				// guaranteed to arrive over the reliable channel, and from here
+				// the snapshot watchdog owns connection liveness. The accept may
+				// carry another match's phase; the range has none.
+				net_client.phase = .Idle
+				net_client.joined = true
+				net_client.last_snapshot_time = time.tick_now()
+				enter_scene(.Practice)
+			}
 
 		case .Connect_Deny:
 			deny, dok := protocol.read_connect_deny(&r)
@@ -281,6 +333,10 @@ handle_server_packet :: proc(data: []u8) {
 
 @(private = "file")
 handle_match_phase :: proc(m: protocol.Match_Phase_Msg) {
+	// Defensive: the server should never phase a practice slot, but another
+	// match's phase must not pull the range into .Playing or .Match_End.
+	if net_client.practice do return
+
 	log.infof("NET: match phase {} (T {} : {} CT)", m.phase, m.t_score, m.ct_score)
 	net_client.phase = m.phase
 	net_client.t_score = int(m.t_score)
@@ -354,6 +410,13 @@ read_snapshot_msg :: proc(r: ^protocol.Reader) -> (s: protocol.Snapshot, ok: boo
 
 @(private = "file")
 handle_snapshot :: proc(s: protocol.Snapshot) {
+	// On the range the snapshot is only proof of life: the sim is local, and
+	// another match's phase, scores or entities must not leak into it.
+	if net_client.practice {
+		net_client.last_snapshot_time = time.tick_now()
+		return
+	}
+
 	first := !net_client.have_snapshot
 	slot := s.server_tick % SNAPSHOT_CAP
 	net_client.snapshots[slot] = s

@@ -22,6 +22,9 @@ Cli :: struct {
 	// Skip the menu and join a match immediately: "t" or "ct". Development
 	// convenience and the only way to drive a match without clicking.
 	join:          string,
+	// Skip the menu and enter the practice range. Same development role as
+	// --join; when both are given, practice wins.
+	practice:      bool,
 	// Start holding this weapon by name. The only way to look at a viewmodel
 	// without a keyboard, which is what makes a screenshot of one repeatable.
 	weapon:        string,
@@ -34,6 +37,7 @@ CLI_USAGE :: `Options:
   --gpu-timing  measure each pass on the GPU and show it in the overlay
   --bench=N     run the fixed camera path for N frames, print one line, exit
   --join=TEAM   skip the menu and join the local server as t or ct
+  --practice    skip the menu and enter the practice range
   --weapon=NAME start holding a weapon by name, e.g. ak, glock, awp, knife
   --no-light-cull  shade every light in every tile, to measure the culling
   --no-depth-prepass  shade the world without the depth-only first pass
@@ -70,6 +74,9 @@ parse_cli :: proc() {
 			}
 			cli.join = value
 
+		case arg == "--practice":
+			cli.practice = true
+
 		case strings.has_prefix(arg, "--weapon="):
 			cli.weapon = arg[len("--weapon="):]
 
@@ -88,5 +95,10 @@ parse_cli :: proc() {
 		case:
 			log.warnf("Ignoring unknown option {}", arg)
 		}
+	}
+
+	if cli.practice && cli.join != "" {
+		log.warn("--practice wins over --join")
+		cli.join = ""
 	}
 }

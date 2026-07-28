@@ -293,6 +293,12 @@ update :: proc() {
 				tick_player(game.TICK_DT)
 				tick_bots(game.TICK_DT)
 			}
+		} else if practice_active() {
+			// The range is local too; the connection only registers presence.
+			for _ in 0 ..< steps {
+				tick_player(game.TICK_DT)
+				tick_practice(game.TICK_DT)
+			}
 		} else {
 			for _ in 0 ..< steps {
 				predict_tick(game.TICK_DT)

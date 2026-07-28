@@ -376,6 +376,20 @@ test_loadout_roundtrip :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_practice_roundtrip :: proc(t: ^testing.T) {
+	for m in ([]Practice_Msg{{entering = true}, {entering = false}}) {
+		buf: [8]u8
+		w := writer(buf[:])
+		write_practice(&w, m)
+		testing.expect_value(t, w.off, 1)
+		r := reader(buf[:w.off])
+		got, ok := read_practice(&r)
+		testing.expect(t, ok)
+		testing.expect_value(t, got, m)
+	}
+}
+
+@(test)
 test_seq_greater_wraps :: proc(t: ^testing.T) {
 	testing.expect(t, seq_greater(1, 0))
 	testing.expect(t, !seq_greater(0, 1))
