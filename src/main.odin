@@ -183,6 +183,7 @@ main :: proc() {
 	create_prop_renderer()
 	create_model_renderer()
 	create_decal_renderer()
+	create_tracer_renderer()
 
 	// After the meshes exist, because it looks up every model it places.
 	place_map_props()
@@ -205,6 +206,7 @@ main :: proc() {
 	defer destroy_prop_renderer()
 	defer destroy_model_renderer()
 	defer destroy_decal_renderer()
+	defer destroy_tracer_renderer()
 	defer destroy_hud_renderer()
 
 	create_command_buffers()
@@ -313,8 +315,12 @@ update :: proc() {
 		// Firing runs on real time against the interpolated world, so it has to
 		// come after the camera is where the player sees it.
 		update_weapon(game.clock.frame_dt, game.clock.alpha)
+		// After the fire may have advanced the spray, before any matrix is
+		// built from the punched view.
+		viewpunch_update(game.clock.frame_dt)
 	}
 	update_transient_lights(game.clock.frame_dt)
+	update_tracers(game.clock.frame_dt)
 
 	cpu_zone(.Build_Frame)
 	update_cascades()

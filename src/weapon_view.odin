@@ -2,6 +2,7 @@ package main
 
 import "core:log"
 import "core:math"
+import "core:math/rand"
 import "game"
 import "physics"
 import "vendor:glfw"
@@ -24,11 +25,19 @@ Weapon_State :: struct {
 	zoom_active:  bool, // scoped in; the camera lens follows this
 	shots:        int,
 	hits:         int,
+	// The cosmetic mirror of the server's spray burst (game/weapon.odin).
+	spray:        game.Spray_Track,
 }
 
 weapon_state: Weapon_State
 
 weapon_ammo: [game.WEAPON_COUNT]game.Weapon_Ammo
+
+// The client's own stance-cone draws, for decals and practice damage. Online
+// the server draws its own and decides damage; the two disagreeing while the
+// feet move is by design. Self-seeds from entropy; the bench pins it.
+cosmetic_rng_state: rand.Default_Random_State
+cosmetic_rng := rand.default_random_generator(&cosmetic_rng_state)
 
 MUZZLE_FLASH_TIME :: 0.045
 HIT_MARKER_TIME :: 0.18
@@ -53,6 +62,9 @@ refill_all_ammo :: proc() {
 		}
 	}
 	weapon_state.reload_left = 0
+	// Mirrors refill_pawn_ammo: a respawn into the same weapon index skips
+	// select_weapon's reset, so the burst must end here too.
+	game.spray_track_reset(&weapon_state.spray)
 }
 
 // The loadout a life starts with before any buying: the team default, bent by
@@ -135,6 +147,8 @@ select_weapon :: proc(index: int) {
 	// Rounds already chambered stay chambered, but the reload itself is lost --
 	// swapping out mid-magazine to skip the wait is not a trade worth allowing.
 	weapon_state.reload_left = 0
+	// A different weapon is a different pattern, mirroring select_pawn_weapon.
+	game.spray_track_reset(&weapon_state.spray)
 	log.infof("Weapon: {}", current_weapon().name)
 }
 
@@ -157,6 +171,8 @@ start_reload :: proc() -> bool {
 	if ammo.mag >= weapon.mag_size || ammo.reserve <= 0 do return false
 
 	weapon_state.reload_left = weapon.reload_time
+	// Reloading lowers the weapon; the burst is over, as on the server.
+	game.spray_track_reset(&weapon_state.spray)
 	return true
 }
 
@@ -198,6 +214,11 @@ update_weapon :: proc(dt: f32, alpha: f32) {
 	weapon_state.hit_marker = max(weapon_state.hit_marker - dt, 0)
 	weapon_state.recoil = max(weapon_state.recoil - dt * RECOIL_RECOVERY, 0)
 	weapon_state.draw_left = max(weapon_state.draw_left - dt, 0)
+
+	// The burst cools off the way the server's does (tick_pawn_weapon), just
+	// on frame time -- the linear finisher lands both ends on an exact 0
+	// within a tick of each other.
+	game.spray_track_decay(&weapon_state.spray, current_weapon().spray, dt)
 
 	update_viewmodel(dt)
 
@@ -268,6 +289,7 @@ Shot_Result :: struct {
 	point:  [3]f32,
 	normal: [3]f32,
 	target: int, // -1 when the world was hit; a bot index in the benchmark, a remote index online
+	group:  game.Hit_Group, // where on the target the ray landed; None for the world
 }
 
 // The ray starts at the eye and runs along the view direction, not from the
@@ -303,26 +325,30 @@ trace_shot :: proc(alpha: f32, direction: [3]f32) -> Shot_Result {
 			pawn := bot_pawn(i)
 			if !pawn.alive do continue
 
-			hit, ok := physics.ray_aabb(origin, direction, bot_hit_box(pawn, alpha), best_t)
+			box := bot_hit_box(pawn, alpha)
+			hit, ok := physics.ray_aabb(origin, direction, box, best_t)
 			if !ok do continue
 
 			best_t = hit.t
 			result.point = hit.point
 			result.normal = hit.normal
 			result.target = i
+			result.group = game.hit_group_from_height(hit.point.z, box.min.z, box.max.z - box.min.z)
 			found = true
 		}
 	} else {
 		for i in 0 ..< remote.drawn_count {
 			d := &remote.drawn[i]
 
-			hit, ok := physics.ray_aabb(origin, direction, remote_target_box(d), best_t)
+			box := remote_target_box(d)
+			hit, ok := physics.ray_aabb(origin, direction, box, best_t)
 			if !ok do continue
 
 			best_t = hit.t
 			result.point = hit.point
 			result.normal = hit.normal
 			result.target = i
+			result.group = game.hit_group_from_height(hit.point.z, box.min.z, box.max.z - box.min.z)
 			found = true
 		}
 	}
@@ -342,28 +368,76 @@ fire :: proc(alpha: f32) {
 	weapon_state.shots += 1
 	weapon_state.recoil = 1
 
+	muzzle: [3]f32
 	if !weapon.melee {
 		weapon_state.flash = MUZZLE_FLASH_TIME
 
 		// The flash lights the surroundings for a moment. It is a real light, so
 		// walls near the muzzle brighten the way they should.
-		add_transient_light(muzzle_world_position(), {1.0, 0.82, 0.5}, 26, 7, MUZZLE_FLASH_TIME)
+		muzzle = muzzle_world_position()
+		add_transient_light(muzzle, {1.0, 0.82, 0.5}, 26, 7, MUZZLE_FLASH_TIME)
 	}
 
-	// The same pellet pattern the server traces, from the raw camera angles --
-	// the already-accepted cosmetic divergence from the quantized wire ones.
+	// The same spray step and pellet pattern the server traces, from the raw
+	// camera angles -- the already-accepted cosmetic divergence from the
+	// quantized wire ones. The stance cone is drawn from the local rng: in the
+	// practice range that sample is the truth, online the server's own draws
+	// decide the damage.
+	spray_yaw, spray_pitch := camera.yaw, camera.pitch
+	inacc := f32(0)
+	if !weapon.melee {
+		pre := weapon_state.spray.progress
+		// Offline this roll is the truth; online it is a placeholder the next
+		// snapshot's seed corrects -- masked by the deterministic prefix. No
+		// pattern, no seed: knife/nova/awp bursts leave the rng untouched.
+		burst_seed := u32(0)
+		if pre == 0 && weapon.spray.climb_shots > 0 {
+			burst_seed = rand.uint32(cosmetic_rng)
+		}
+		off := game.spray_track_shot(&weapon_state.spray, weapon.spray, weapon.mag_size, burst_seed)
+		spray_yaw += off.x
+		spray_pitch = clamp(spray_pitch + off.y, -game.SPRAY_MAX_PITCH, game.SPRAY_MAX_PITCH)
+		inacc = game.inaccuracy_degrees(weapon, player^, weapon_state.zoom_active, pre)
+		viewpunch_note_shot()
+	}
+
 	count := max(weapon.pellets, 1)
 	any_hit := false
 	killed := false
 	for i in 0 ..< count {
-		dir := game.pellet_dir(camera.yaw, camera.pitch, i, weapon.spread)
+		yaw, pitch := spray_yaw, spray_pitch
+		if inacc > 0 {
+			j := game.inaccuracy_offset(cosmetic_rng, inacc)
+			yaw += j.x
+			pitch = clamp(pitch + j.y, -game.SPRAY_MAX_PITCH, game.SPRAY_MAX_PITCH)
+		}
+		dir := game.pellet_dir(yaw, pitch, i, weapon.spread)
 		shot := trace_shot(alpha, dir)
+
+		// The tracer flies to wherever the trace ended: the impact when it hit,
+		// the end of the weapon's reach when it did not. From the muzzle, never
+		// the eye -- an eye-aligned streak collapses to a dot on the crosshair.
+		if !weapon.melee {
+			end := shot.hit ? shot.point : player_eye() + dir * weapon.range
+			add_tracer(muzzle, end)
+		}
+
 		if !shot.hit do continue
 
 		if shot.target >= 0 {
 			any_hit = true
-			if local_sim_active() && local_damage_bot(shot.target, weapon.damage) {
-				killed = true
+			if local_sim_active() {
+				// The server's damage math, mirrored so the range teaches
+				// the real numbers.
+				dmg := weapon.damage
+				pen := weapon.armor_pen
+				if !weapon.melee {
+					dmg = game.scaled_damage(weapon.damage, shot.group)
+					if game.hit_group_bypasses_armor(shot.group) do pen = 1
+				}
+				if local_damage_bot(shot.target, dmg, pen) {
+					killed = true
+				}
 			}
 			continue
 		}

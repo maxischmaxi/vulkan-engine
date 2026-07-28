@@ -80,6 +80,7 @@ init_bench :: proc() {
 	// default generator is seeded per process. Pinning it here is what makes two
 	// runs comparable rather than merely similar.
 	rand.reset(BENCH_SEED, bot_rng)
+	rand.reset(BENCH_SEED, cosmetic_rng) // decal jitter repeats run to run
 
 	// The path teleports every frame, so collision would fight it the whole way.
 	player.noclip = true

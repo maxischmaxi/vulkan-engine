@@ -16,6 +16,16 @@ PENDING_CAP :: 128
 // noise lives well under it, real mispredictions well over.
 RECONCILE_EPSILON :: 0.02
 
+// The spray mirror only adopts the server's burst depth after this long
+// without a local shot -- past any honest RTT plus a snapshot interval, so a
+// stale snapshot can never re-arm a burst the client already cooled off.
+SPRAY_ADOPT_IDLE :: 0.5
+
+// The ammo mirror adopts the server's count only after this long without a
+// local shot: a snapshot from RTT ago saying "one round left" must not hand a
+// held trigger a phantom shot the server will refuse.
+AMMO_ADOPT_QUIET :: 0.35
+
 Pending_Input :: struct {
 	tick:          u32,
 	cmd:           game.Pawn_Input,
@@ -127,9 +137,43 @@ reconcile :: proc(s: ^protocol.Snapshot) {
 		net_client.kills_synced = true
 		player.kills = int(p.kills)
 		player.deaths = int(p.deaths)
-		// the cosmetic ammo counter re-syncs to the authoritative one
-		weapon_ammo[weapon_state.index].mag = int(p.ammo_mag)
-		weapon_ammo[weapon_state.index].reserve = int(p.ammo_reserve)
+		// The cosmetic ammo counter re-syncs to the authoritative one, but only
+		// while the local weapon is quiet and matches the server's hand --
+		// mid-burst the local count is fresher than the snapshot's. Reload and
+		// respawn refills still land: both imply a quiet trigger.
+		if weapon_state.index == int(own.weapon) &&
+		   weapon_state.cooldown <= 0 &&
+		   weapon_state.spray.cool > AMMO_ADOPT_QUIET {
+			weapon_ammo[weapon_state.index].mag = int(p.ammo_mag)
+			weapon_ammo[weapon_state.index].reserve = int(p.ammo_reserve)
+		}
+		// The spray mirror: the seed is the server's word even mid-burst (the
+		// deterministic prefix masked the swap window), but the depth is only
+		// adopted when locally long idle -- mid-burst the local track is ~RTT
+		// fresher, and a stale snapshot must never re-arm a burst the client
+		// already cooled off.
+		if weapon_state.index == int(own.weapon) {
+			if weapon_state.spray.progress > 0 &&
+			   p.spray_progress > 0 &&
+			   p.spray_seed != weapon_state.spray.seed {
+				weapon_state.spray.seed = p.spray_seed
+				game.spray_build_points(
+					current_weapon().spray,
+					p.spray_seed,
+					&weapon_state.spray.points,
+				)
+			}
+			if weapon_state.spray.progress == 0 &&
+			   weapon_state.spray.cool > SPRAY_ADOPT_IDLE {
+				weapon_state.spray.progress = f32(p.spray_progress) / 8
+				weapon_state.spray.seed = p.spray_seed
+				game.spray_build_points(
+					current_weapon().spray,
+					p.spray_seed,
+					&weapon_state.spray.points,
+				)
+			}
+		}
 	}
 
 	// life edges

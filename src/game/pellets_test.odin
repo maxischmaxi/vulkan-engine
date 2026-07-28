@@ -17,9 +17,14 @@ make_range :: proc() -> (gs: Game_State) {
 		max = {50, 50, 0},
 	}
 	gs.grid = physics.grid_build(gs.collision)
+	// The runner seeds this per test: burst starts roll their seed from it.
+	gs.rng = context.random_generator
 
 	// shooter at the origin looking east, armed with the shotgun
 	init_pawn(&gs.pawns[0], {0, 0, 0}, 0)
+	// On the floor: pawn_move would set this before any server-side fire, and
+	// an airborne shooter would draw random spread on top.
+	gs.pawns[0].body.on_ground = true
 	gs.pawns[0].loadout = {
 		primary   = WEAPON_NOVA,
 		secondary = WEAPON_GLOCK,
@@ -110,9 +115,11 @@ test_nova_fire_deterministic :: proc(t: ^testing.T) {
 test_nova_point_blank_aggregates_one_victim :: proc(t: ^testing.T) {
 	gs := make_range()
 	defer destroy_range(&gs)
-	// Health inflated so no mid-blast death hides pellets; at 3 m the whole
-	// pattern lands inside the hull (worst pellet enters at z ~1.78 of 1.8).
+	// Health inflated so no mid-blast death hides pellets; pitched onto the
+	// chest so all nine pellets land in the same x1 zone (z 1.12..1.38 of 1.8)
+	// and the nominal sum stays the plain per-pellet damage.
 	init_pawn(&gs.pawns[1], {3, 0, 0}, 0)
+	gs.pawns[0].pitch = -8.4
 	gs.pawns[1].armor = 0
 	gs.pawns[1].health = 1000
 
@@ -158,9 +165,10 @@ test_nova_blast_straddles_two_victims :: proc(t: ^testing.T) {
 test_nova_corpse_transparent_mid_blast :: proc(t: ^testing.T) {
 	gs := make_range()
 	defer destroy_range(&gs)
-	// Dies to the fourth hitting pellet; the rest of the blast passes through
-	// the corpse instead of pounding it further.
+	// Dies to the fourth hitting pellet (all in the chest band); the rest of
+	// the blast passes through the corpse instead of pounding it further.
 	init_pawn(&gs.pawns[1], {3, 0, 0}, 0)
+	gs.pawns[0].pitch = -8.4
 	gs.pawns[1].armor = 0
 	gs.pawns[1].health = 100
 

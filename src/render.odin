@@ -160,6 +160,9 @@ record_scene_pass :: proc(cmd: vk.CommandBuffer, image_index, frame: u32) {
 	gpu_timer_mark(cmd, frame, .Props)
 
 	record_decal_pass(cmd, frame)
+	// Tracers share the decal timing slot: both are a handful of thin blended
+	// quads, and neither is worth its own query.
+	record_tracer_pass(cmd, frame)
 	gpu_timer_mark(cmd, frame, .Decals)
 
 	record_viewmodel_block(cmd, frame)
@@ -333,6 +336,7 @@ draw_frame :: proc() {
 	upload_prop_instances(frame)
 	upload_model_instances(frame)
 	upload_decals(frame)
+	upload_tracers(frame)
 	upload_hud_quads(frame)
 
 	cpu_zone(.Record)

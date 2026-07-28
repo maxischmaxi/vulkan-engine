@@ -3,6 +3,7 @@ package main
 import "core:log"
 import "core:math"
 import "core:mem"
+import "game"
 import vk "vendor:vulkan"
 
 // Screen-space overlay: the crosshair, and the batched rectangles every other
@@ -450,6 +451,22 @@ record_hud_quads :: proc(cmd: vk.CommandBuffer, frame: u32) {
 	vk.CmdSetScissor(cmd, 0, 1, &full)
 }
 
+// How far the random stance cone reaches on screen, in the crosshair's
+// reference pixels: the opened gap's edge sits where the cone's edge lands.
+// Deterministic in the player's own stance, so it can be drawn client-side.
+@(private = "file")
+crosshair_bloom :: proc() -> f32 {
+	inacc := game.inaccuracy_degrees(
+		current_weapon(),
+		player^,
+		weapon_state.zoom_active,
+		weapon_state.spray.progress,
+	)
+	if inacc <= 0 do return 0
+	_, half_h := camera_half_tangents(camera.fov_horizontal)
+	return math.tan(math.to_radians(inacc)) * (CROSSHAIR_REFERENCE_HEIGHT * 0.5) / half_h
+}
+
 @(private = "file")
 record_crosshair :: proc(cmd: vk.CommandBuffer) {
 	vk.CmdBindPipeline(cmd, .GRAPHICS, hud_renderer.pipeline.pipeline)
@@ -461,26 +478,28 @@ record_crosshair :: proc(cmd: vk.CommandBuffer) {
 		0,
 	}
 
+	// Moving or airborne, the gap opens to the random cone the shot would be
+	// thrown into; planted, it closes back to the authored style.
+	style := crosshair
+	style.gap += crosshair_bloom()
+
 	// A dark border underneath keeps the crosshair readable against a bright
 	// wall, which a single-colour cross is not. It grows on all four sides,
 	// tips included: a border that stops short of the tip leaves the thinnest,
 	// hardest-to-see part of the cross without one.
-	if crosshair.outline > 0 {
-		grow := max(1, math.round(crosshair.outline * crosshair_scale()))
+	if style.outline > 0 {
+		grow := max(1, math.round(style.outline * crosshair_scale()))
 		draw_crosshair(
 			cmd,
 			{
-				rects = crosshair_rects(crosshair, grow),
-				color = {0, 0, 0, crosshair.color.a * 0.6},
+				rects = crosshair_rects(style, grow),
+				color = {0, 0, 0, style.color.a * 0.6},
 				screen = screen,
 			},
 		)
 	}
 
-	draw_crosshair(
-		cmd,
-		{rects = crosshair_rects(crosshair, 0), color = crosshair.color, screen = screen},
-	)
+	draw_crosshair(cmd, {rects = crosshair_rects(style, 0), color = style.color, screen = screen})
 
 	// Without sound, this X is the only confirmation that a shot connected. Same
 	// five rectangles, turned a quarter of a right angle so it reads as a
@@ -518,8 +537,7 @@ record_crosshair :: proc(cmd: vk.CommandBuffer) {
 	}
 }
 
-// The crosshair never opens up, because there is nothing varying for it to
-// report: most weapons fire exactly along the view direction, and the
-// shotgun's pellet cone is a fixed pattern, identical every pull -- a
-// crosshair that breathed would be describing an inaccuracy no weapon has.
-// crosshair_rects takes a `grow` if a static per-weapon bloom is ever wanted.
+// The crosshair reports exactly one thing: the random stance cone (bloom on
+// the gap, above). The spray pattern and the pellet rosette stay unreported
+// on purpose -- both are deterministic, identical every burst, and a
+// crosshair that breathed with them would dress skill up as variance.

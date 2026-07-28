@@ -28,10 +28,11 @@ Remote_Draw :: struct {
 }
 
 Remote_View :: struct {
-	render_tick: f64, // drift-corrected interpolation clock, in server ticks
-	initialized: bool,
-	drawn:       [game.MAX_PAWNS]Remote_Draw, // rebuilt every frame
-	drawn_count: int,
+	render_tick:  f64, // drift-corrected interpolation clock, in server ticks
+	initialized:  bool,
+	drawn:        [game.MAX_PAWNS]Remote_Draw, // rebuilt every frame
+	drawn_count:  int,
+	fire_scanned: u32, // newest tick already checked for Fired flags
 }
 
 remote: Remote_View
@@ -50,6 +51,8 @@ update_remote_clock :: proc(frame_dt: f32) {
 	if !remote.initialized {
 		remote.render_tick = target
 		remote.initialized = true
+		// History before the join is nobody's gunfire to show.
+		remote.fire_scanned = u32(max(target, 0))
 	}
 
 	remote.render_tick += f64(frame_dt) * game.TICK_RATE
@@ -60,6 +63,7 @@ update_remote_clock :: proc(frame_dt: f32) {
 	}
 
 	interpolate_remotes()
+	scan_remote_fire()
 }
 
 @(private = "file")
@@ -136,6 +140,62 @@ interpolate_remotes :: proc() {
 		}
 		remote.drawn_count += 1
 	}
+}
+
+// How far back a hitch may reach for missed Fired flags. Replaying a burst of
+// stale muzzle flashes after a stall reads as a glitch, not as catching up.
+@(private = "file")
+FIRE_SCAN_WINDOW :: 8
+
+// The visible half of a remote shot -- streak and muzzle light -- cued by the
+// Fired flag the server sets on the tick a pawn shot. The direction is the
+// entity's quantized aim, not the server's actual pellet: a cue for where fire
+// comes from, never a replay of what it hit.
+@(private = "file")
+scan_remote_fire :: proc() {
+	t0 := u32(max(remote.render_tick, 0))
+
+	start := remote.fire_scanned + 1
+	if t0 > FIRE_SCAN_WINDOW && start < t0 - FIRE_SCAN_WINDOW {
+		start = t0 - FIRE_SCAN_WINDOW
+	}
+
+	for tick := start; tick <= t0; tick += 1 {
+		s := snapshot_at(tick)
+		if s == nil do continue
+
+		for id in 0 ..< game.MAX_PAWNS {
+			if id not_in s.present || id == net_client.pawn_id do continue
+			e := &s.entities[id]
+			if .Fired not_in e.flags || .Alive not_in e.flags do continue
+
+			weapon_index := int(e.weapon)
+			if weapon_index >= game.WEAPON_COUNT do continue
+			weapon := game.WEAPONS[weapon_index]
+			// Bots shoot a hitscan stub while nominally holding the zero-value
+			// knife, so their Fired is gunfire. A player's melee swing is not.
+			if weapon.melee {
+				if .Is_Bot not_in e.flags do continue
+				weapon = game.WEAPONS[game.WEAPON_AK]
+			}
+
+			dir := game.view_forward(e.yaw, e.pitch)
+			radius, height := entity_size(e)
+			// Weapon height on the box model, pushed clear of its silhouette
+			// so the streak starts outside the body.
+			muzzle := e.position + {0, 0, height * 0.75} + dir * (radius + 0.15)
+
+			end := muzzle + dir * weapon.range
+			if hit, ok := physics.grid_raycast(&gs.grid, muzzle, dir, weapon.range); ok {
+				end = hit.point
+			}
+
+			add_tracer(muzzle, end)
+			add_transient_light(muzzle, {1.0, 0.82, 0.5}, 26, 7, MUZZLE_FLASH_TIME)
+		}
+	}
+
+	remote.fire_scanned = max(remote.fire_scanned, t0)
 }
 
 // Hands every interpolated entity to the prop renderer, in its team's colour.

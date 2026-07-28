@@ -62,8 +62,13 @@ camera_apply_mouse :: proc(dx, dy: f32) {
 
 // All three delegate to the game package's basis math: the simulation steers
 // by the same formulas, and prediction only works if the two can never drift.
+//
+// forward and right run through the viewpunch: they feed only the rendered
+// view (view matrix, viewmodel, shadows, light culling). Everything that goes
+// near the wire reads camera.yaw/camera.pitch directly and must stay raw.
 camera_forward :: proc() -> [3]f32 {
-	return game.view_forward(camera.yaw, camera.pitch)
+	yaw, pitch := punched_view_angles()
+	return game.view_forward(yaw, pitch)
 }
 
 // Horizontal only: walking must not drive you into the floor when looking down.
@@ -72,7 +77,8 @@ camera_forward_flat :: proc() -> [3]f32 {
 }
 
 camera_right :: proc() -> [3]f32 {
-	return game.yaw_right(camera.yaw)
+	yaw, _ := punched_view_angles()
+	return game.yaw_right(yaw)
 }
 
 camera_view :: proc() -> linalg.Matrix4f32 {

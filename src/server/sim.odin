@@ -111,6 +111,10 @@ sim_tick :: proc(dt: f32) {
 		cmd, base := consume_command(&slot)
 		p.prev_position = p.body.position
 
+		// Before any branch: the telemetry's turn stream must see every
+		// command, or death and countdown would tear holes into it.
+		telemetry_note_angles(&slot.aim, cmd)
+
 		// The head turns in every phase and in every state: looking around is
 		// not an act of play. pawn_move writes these same two fields on the
 		// live path below, so doing it here costs the live path nothing.
@@ -155,6 +159,9 @@ sim_tick :: proc(dt: f32) {
 		}
 		ev := game.tick_pawn_weapon(&sv.gs, slot.pawn_id, cmd, dt, match.phase)
 		if rewound do game.lag_comp_end(&sv.gs, &rw)
+
+		// Beside note_fire_block in spirit: collected, never judged here.
+		telemetry_note_fire(&slot.aim, cmd, ev)
 
 		for v in ev.victims[:ev.victim_count] {
 			// One cue per victim per blast, however many pellets landed: the
@@ -364,6 +371,8 @@ send_snapshots :: proc() {
 					reload_ticks   = u8(clamp(int(p.weapon.reload_left * game.TICK_RATE), 0, 255)),
 					kills          = u8(clamp(p.kills, 0, 255)),
 					deaths         = u8(clamp(p.deaths, 0, 255)),
+					spray_progress = u8(clamp(int(p.weapon.spray.progress * 8), 0, 255)),
+					spray_seed     = p.weapon.spray.seed,
 				}
 			}
 		}
@@ -431,4 +440,5 @@ log_server_stats :: proc() {
 	if denied > 0 {
 		log.warnf("Server: {} trigger pull(s) refused outside a live match", denied)
 	}
+	log_aim_stats()
 }

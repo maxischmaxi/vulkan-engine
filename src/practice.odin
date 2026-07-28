@@ -116,8 +116,8 @@ tick_practice :: proc(dt: f32) {
 
 // The local shot trace's damage hook, shared with the bench; the range keeps
 // its targets down longer than the benchmark does.
-local_damage_bot :: proc(index: int, amount: int) -> bool {
-	killed := damage_bot(index, amount)
+local_damage_bot :: proc(index: int, amount: int, armor_pen: f32 = 0) -> bool {
+	killed := damage_bot(index, amount, armor_pen)
 	if killed && practice_active() {
 		bot_pawn(index).respawn_in = PRACTICE_BOT_RESPAWN
 	}

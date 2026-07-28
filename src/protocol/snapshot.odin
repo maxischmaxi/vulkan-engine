@@ -64,6 +64,11 @@ Private_State :: struct {
 	reload_ticks:   u8,
 	kills:          u8,
 	deaths:         u8,
+	// The server's burst: depth in eighths of a shot, and the seed its pattern
+	// was rolled from -- the client mirror rebuilds the points from the seed
+	// and adopts the depth only when locally idle (predict.odin).
+	spray_progress: u8,
+	spray_seed:     u32,
 }
 
 Snapshot :: struct {
@@ -147,6 +152,8 @@ write_snapshot :: proc(w: ^Writer, s: Snapshot, base: ^Snapshot) {
 		write_u8(w, p.reload_ticks)
 		write_u8(w, p.kills)
 		write_u8(w, p.deaths)
+		write_u8(w, p.spray_progress)
+		write_u32(w, p.spray_seed)
 	}
 }
 
@@ -193,6 +200,8 @@ read_snapshot :: proc(r: ^Reader, base: ^Snapshot) -> (s: Snapshot, ok: bool) {
 		p.reload_ticks = read_u8(r)
 		p.kills = read_u8(r)
 		p.deaths = read_u8(r)
+		p.spray_progress = read_u8(r)
+		p.spray_seed = read_u32(r)
 	}
 	return s, !r.error
 }

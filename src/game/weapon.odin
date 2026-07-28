@@ -1,6 +1,7 @@
 package game
 
 import "../physics"
+import "core:math/rand"
 
 // Weapons are data, not code. Adding one means adding an entry to WEAPONS --
 // geometry, fire rate and handling all come from the same table, and nothing
@@ -47,6 +48,19 @@ Weapon :: struct {
 	range:         f32,
 	pellets:       int, // rays per trigger pull; 0 reads as 1
 	spread:        f32, // tangent of the pellet cone half-angle; 0 = a laser
+	// How the seeded burst pattern is generated (spray.odin); a zeroed value
+	// means no pattern -- every shot is shot 0.
+	spray:         Spray_Params,
+	// Random cone half-angles in degrees (inaccuracy.odin): at full run speed,
+	// while airborne, and -- for scoped weapons -- fired from the hip. The
+	// fire term opens per shot of burst depth, capped at ten.
+	inacc_move:    f32,
+	inacc_air:     f32,
+	inacc_unscoped: f32,
+	inacc_fire:    f32,
+	// How much of this weapon's damage ignores the vest: 0 = the vest's full
+	// absorb applies (pistol), 1 = the vest may as well not be worn (awp).
+	armor_pen:     f32,
 	zoom_fov:      f32, // horizontal degrees while scoped; 0 = no scope
 	// The models come out of scenes built around a camera at the origin, so the
 	// artist's own composition is the default and this only corrects it.
@@ -101,7 +115,21 @@ WEAPONS := [?]Weapon {
 		category      = .Pistol,
 		teams         = {.T},
 		price         = 0, // the starting pistol
-		damage        = 28,
+		damage        = 30,
+		spray         = {
+			climb_pitch  = 2.45,
+			climb_shots  = 6,
+			det_shots    = 5,
+			det_yaw      = 0.12,
+			yaw_sway     = 0.20,
+			yaw_step     = 0.12,
+			yaw_momentum = 0.30,
+			pitch_jitter = 0.05,
+			grace        = 0.20,
+		},
+		inacc_move    = 1.8,
+		inacc_air     = 5.0,
+		inacc_fire    = 0.03,
 		mag_size      = 20,
 		reserve_max   = 120,
 		reload_time   = 2.2,
@@ -119,7 +147,22 @@ WEAPONS := [?]Weapon {
 		category      = .Pistol,
 		teams         = {.CT},
 		price         = 0, // the starting pistol
-		damage        = 33,
+		damage        = 34,
+		armor_pen     = 0.10,
+		spray         = {
+			climb_pitch  = 2.25,
+			climb_shots  = 6,
+			det_shots    = 5,
+			det_yaw      = 0.10,
+			yaw_sway     = 0.15,
+			yaw_step     = 0.10,
+			yaw_momentum = 0.30,
+			pitch_jitter = 0.05,
+			grace        = 0.22,
+		},
+		inacc_move    = 1.8,
+		inacc_air     = 5.0,
+		inacc_fire    = 0.03,
 		mag_size      = 12,
 		reserve_max   = 24,
 		reload_time   = 2.2,
@@ -137,7 +180,25 @@ WEAPONS := [?]Weapon {
 		category = .Pistol,
 		teams = {.T, .CT},
 		price = 700,
-		damage = 58,
+		// One-taps a head through any vest: 248 nominal, pen 0.85 leaves the
+		// absorb at 18.
+		damage = 62,
+		armor_pen = 0.85,
+		// The slowest grace in the table: tap faster and shot two floats away.
+		spray = Spray_Params {
+			climb_pitch  = 6.2,
+			climb_shots  = 6,
+			det_shots    = 3,
+			det_yaw      = 0.50,
+			yaw_sway     = 0.9,
+			yaw_step     = 0.5,
+			yaw_momentum = 0.30,
+			pitch_jitter = 0.15,
+			grace        = 0.45,
+		},
+		inacc_move = 2.8,
+		inacc_air = 6.5,
+		inacc_fire = 0.10,
 		mag_size = 7,
 		reserve_max = 35,
 		reload_time = 2.2,
@@ -155,7 +216,22 @@ WEAPONS := [?]Weapon {
 		category = .SMG,
 		teams = {.T},
 		price = 1050,
-		damage = 26,
+		damage = 29,
+		armor_pen = 0.15,
+		spray = Spray_Params {
+			climb_pitch  = 3.7,
+			climb_shots  = 10,
+			det_shots    = 6,
+			det_yaw      = 0.22,
+			yaw_sway     = 1.6,
+			yaw_step     = 0.5,
+			yaw_momentum = 0.55,
+			pitch_jitter = 0.08,
+			grace        = 0.12,
+		},
+		inacc_move = 1.6, // the run-and-gun niche: cheapest accuracy on the move
+		inacc_air = 4.5,
+		inacc_fire = 0.04,
 		mag_size = 30,
 		reserve_max = 100,
 		reload_time = 2.6,
@@ -173,7 +249,22 @@ WEAPONS := [?]Weapon {
 		category = .SMG,
 		teams = {.CT},
 		price = 1250,
-		damage = 24,
+		damage = 26,
+		armor_pen = 0.20,
+		spray = Spray_Params {
+			climb_pitch  = 3.1,
+			climb_shots  = 10,
+			det_shots    = 6,
+			det_yaw      = 0.20,
+			yaw_sway     = 1.3,
+			yaw_step     = 0.4,
+			yaw_momentum = 0.55,
+			pitch_jitter = 0.08,
+			grace        = 0.11,
+		},
+		inacc_move = 1.6,
+		inacc_air = 4.5,
+		inacc_fire = 0.03,
 		mag_size = 30,
 		reserve_max = 120,
 		reload_time = 2.1,
@@ -195,6 +286,9 @@ WEAPONS := [?]Weapon {
 		// blank, about four pellets for an unarmored kill. The short range
 		// still stands in for falloff.
 		damage        = 26,
+		armor_pen     = 0.20,
+		inacc_move    = 1.5,
+		inacc_air     = 4.0,
 		mag_size      = 8,
 		reserve_max   = 32,
 		reload_time   = 2.9,
@@ -214,7 +308,25 @@ WEAPONS := [?]Weapon {
 		category      = .Rifle,
 		teams         = {.T},
 		price         = 2700,
-		damage        = 36,
+		// One-taps an armored head: 160 nominal, pen 0.55 leaves 36 to the vest,
+		// 124 through. The trade for the hardest spray in the table.
+		damage        = 40,
+		armor_pen     = 0.55,
+		// The hardest pattern in the table: the full climb, the widest wander.
+		spray         = {
+			climb_pitch  = 7.1,
+			climb_shots  = 10,
+			det_shots    = 6,
+			det_yaw      = 0.30,
+			yaw_sway     = 3.4,
+			yaw_step     = 0.9,
+			yaw_momentum = 0.60,
+			pitch_jitter = 0.12,
+			grace        = 0.15,
+		},
+		inacc_move    = 2.5,
+		inacc_air     = 6.0,
+		inacc_fire    = 0.05,
 		mag_size      = 30,
 		reserve_max   = 90,
 		reload_time   = 2.4,
@@ -232,7 +344,25 @@ WEAPONS := [?]Weapon {
 		category      = .Rifle,
 		teams         = {.CT},
 		price         = 3100,
-		damage        = 33,
+		// An armored head leaves 2 hp (140 nominal, 42 absorbed at pen 0.40):
+		// the classic asymmetry against the ak, paid back by the easier spray.
+		damage        = 35,
+		armor_pen     = 0.40,
+		// Three quarters of the ak's climb, a narrower wander.
+		spray         = {
+			climb_pitch  = 5.45,
+			climb_shots  = 10,
+			det_shots    = 6,
+			det_yaw      = 0.30,
+			yaw_sway     = 2.4,
+			yaw_step     = 0.7,
+			yaw_momentum = 0.60,
+			pitch_jitter = 0.10,
+			grace        = 0.14,
+		},
+		inacc_move    = 2.5,
+		inacc_air     = 6.0,
+		inacc_fire    = 0.04,
 		mag_size      = 30,
 		reserve_max   = 90,
 		reload_time   = 3.1,
@@ -250,9 +380,14 @@ WEAPONS := [?]Weapon {
 		category      = .Rifle,
 		teams         = {.T, .CT},
 		price         = 4750,
-		// 200 through ARMOR_ABSORB 0.5 against a full vest: 100 absorbed, 100
-		// taken -- the one-shot body kill an awp is for.
-		damage        = 200,
+		// 115 at pen 0.95 through a full vest: 2 absorbed, 113 taken -- the
+		// one-shot body kill an awp is for. The leg hit (86, and no vest below
+		// the belt) is the one shot it forgives.
+		damage        = 115,
+		armor_pen     = 0.95,
+		inacc_move    = 4.0,
+		inacc_air     = 8.0,
+		inacc_unscoped = 5.0, // a hip-fired awp is a prayer even planted
 		mag_size      = 5,
 		reserve_max   = 30,
 		reload_time   = 3.7,
@@ -296,6 +431,7 @@ Pawn_Weapon :: struct {
 	cooldown:         f32, // seconds until the next shot is allowed
 	reload_left:      f32, // seconds until the magazine is topped up
 	trigger_was_held: bool, // semi-automatics need the release between shots
+	spray:            Spray_Track, // the current burst (spray.odin)
 	ammo:             [WEAPON_COUNT]Weapon_Ammo,
 }
 
@@ -304,6 +440,7 @@ Shot_Result :: struct {
 	point:  [3]f32,
 	normal: [3]f32,
 	pawn:   int, // -1 when the world was hit
+	group:  Hit_Group, // where on the pawn the ray landed; None for the world
 }
 
 // One pawn a blast connected with: the summed table damage of the pellets
@@ -328,6 +465,11 @@ Fire_Events :: struct {
 	// Why a trigger pull was refused, when one was made anyway. None on a tick
 	// that never asked to fire -- see tick_pawn_weapon.
 	blocked:      Fire_Block,
+	// The pattern offset this pull flew with and the burst depth it sampled
+	// (pre-shot) -- what the aim telemetry correlates against, since the
+	// seeded pattern cannot be recomputed from an index alone.
+	spray_offset:   [2]f32,
+	spray_progress: f32,
 }
 
 // The victim entry for a pawn, appended on first contact. Bounded by the
@@ -352,6 +494,7 @@ refill_pawn_ammo :: proc(w: ^Pawn_Weapon) {
 		}
 	}
 	w.reload_left = 0
+	spray_track_reset(&w.spray)
 }
 
 select_pawn_weapon :: proc(w: ^Pawn_Weapon, index: int) {
@@ -363,6 +506,8 @@ select_pawn_weapon :: proc(w: ^Pawn_Weapon, index: int) {
 	// Rounds already chambered stay chambered, but the reload itself is lost --
 	// swapping out mid-magazine to skip the wait is not a trade worth allowing.
 	w.reload_left = 0
+	// A different weapon is a different pattern; the burst does not carry over.
+	spray_track_reset(&w.spray)
 }
 
 start_pawn_reload :: proc(w: ^Pawn_Weapon) -> bool {
@@ -374,6 +519,8 @@ start_pawn_reload :: proc(w: ^Pawn_Weapon) -> bool {
 	if ammo.mag >= weapon.mag_size || ammo.reserve <= 0 do return false
 
 	w.reload_left = weapon.reload_time
+	// Reloading lowers the weapon; the burst is over either way.
+	spray_track_reset(&w.spray)
 	return true
 }
 
@@ -418,6 +565,9 @@ trace_shot :: proc(gs: ^Game_State, shooter: int, origin, dir: [3]f32, range: f3
 		result.point = hit.point
 		result.normal = hit.normal
 		result.pawn = i
+		// The hull the ray was tested against is the hull the zone divides --
+		// under lag compensation both are the rewound one.
+		result.group = hit_group_from_height(hit.point.z, p.body.position.z, p.body.height)
 		found = true
 	}
 
@@ -445,6 +595,10 @@ tick_pawn_weapon :: proc(
 	w := &p.weapon
 
 	w.cooldown = max(w.cooldown - dt, 0)
+
+	// The burst cools off like the cooldown does, phase or no phase: a spray
+	// interrupted by a countdown must not resume mid-pattern when it ends.
+	spray_track_decay(&w.spray, WEAPONS[w.index].spray, dt)
 
 	if w.reload_left > 0 {
 		w.reload_left -= dt
@@ -512,21 +666,56 @@ tick_pawn_weapon :: proc(
 	w.cooldown = weapon.fire_interval
 	ev.fired = true
 
+	// One spray step per pull, however many pellets fly: the offset lands on
+	// the base angles all pellets share. Melee swings are not a burst. The rng
+	// is only tapped at burst start, so mid-burst draws stay aligned with the
+	// inaccuracy stream.
+	spray_yaw, spray_pitch := p.yaw, p.pitch
+	inacc := f32(0)
+	if !weapon.melee {
+		ev.spray_progress = w.spray.progress
+		burst_seed := u32(0)
+		// No pattern, no seed: knife/nova/awp bursts leave the rng untouched.
+		if w.spray.progress == 0 && weapon.spray.climb_shots > 0 {
+			burst_seed = rand.uint32(gs.rng)
+		}
+		ev.spray_offset = spray_track_shot(&w.spray, weapon.spray, weapon.mag_size, burst_seed)
+		spray_yaw += ev.spray_offset.x
+		spray_pitch = clamp(spray_pitch + ev.spray_offset.y, -SPRAY_MAX_PITCH, SPRAY_MAX_PITCH)
+		inacc = inaccuracy_degrees(weapon, p^, .Zoom in input.buttons, ev.spray_progress)
+	}
+
 	// One magazine round per pull, however many pellets fly. A pellet that
 	// kills makes the corpse transparent to the rest of the blast (trace_shot
 	// skips the dead) -- deterministically on both ends of the wire.
 	origin := eye_position(p^)
 	count := max(weapon.pellets, 1)
 	for i in 0 ..< count {
-		dir := pellet_dir(p.yaw, p.pitch, i, weapon.spread)
+		yaw, pitch := spray_yaw, spray_pitch
+		if inacc > 0 {
+			// Server rng only: online the client cannot know these draws, so
+			// its cosmetic mirror samples its own -- decals may disagree with
+			// the server by design while the feet move.
+			j := inaccuracy_offset(gs.rng, inacc)
+			yaw += j.x
+			pitch = clamp(pitch + j.y, -SPRAY_MAX_PITCH, SPRAY_MAX_PITCH)
+		}
+		dir := pellet_dir(yaw, pitch, i, weapon.spread)
 		shot := trace_shot(gs, id, origin, dir, weapon.range)
 		ev.shots[ev.shot_count] = shot
 		ev.shot_count += 1
 		if !shot.hit || shot.pawn < 0 do continue
 
 		v := find_victim(&ev, shot.pawn)
-		v.nominal += weapon.damage
-		if damage_pawn(&gs.pawns[shot.pawn], weapon.damage) {
+		dmg := weapon.damage
+		pen := weapon.armor_pen
+		if !weapon.melee {
+			// Zones only scale ranged damage: a knife to the head is a knife.
+			dmg = scaled_damage(weapon.damage, shot.group)
+			if hit_group_bypasses_armor(shot.group) do pen = 1
+		}
+		v.nominal += dmg
+		if damage_pawn(&gs.pawns[shot.pawn], dmg, pen) {
 			v.killed = true
 			p.kills += 1
 		}

@@ -90,8 +90,8 @@ Game_State :: struct {
 	pawns:     [MAX_PAWNS]Pawn,
 	collision: []physics.Aabb,
 	grid:      physics.Grid,
-	// Server-authoritative randomness only (bot AI, spawn picks). Prediction
-	// must never draw from this.
+	// Server-authoritative randomness only (bot AI, spawn picks, shot
+	// inaccuracy). Prediction must never draw from this.
 	rng:       rand.Generator,
 }
 
@@ -116,16 +116,18 @@ init_pawn :: proc(p: ^Pawn, position: [3]f32, yaw: f32) {
 	p.jump_buffer = 0
 }
 
-// Armour eats half of what is left, up to what the vest has. Returns whether
-// this was the killing blow; scorekeeping is the caller's business, because
-// only the caller knows who fired.
-damage_pawn :: proc(p: ^Pawn, amount: int) -> (killed: bool) {
+// Armour eats half of what is left, up to what the vest has, scaled down by
+// how well the round penetrates (armor_pen 1 = the vest sees nothing, the
+// default 0 = the vest's full absorb -- every pre-penetration call site keeps
+// its behavior). Returns whether this was the killing blow; scorekeeping is
+// the caller's business, because only the caller knows who fired.
+damage_pawn :: proc(p: ^Pawn, amount: int, armor_pen: f32 = 0) -> (killed: bool) {
 	if !p.alive || amount <= 0 do return false
 	if p.god do return false
 
 	taken := amount
 	if p.armor > 0 {
-		absorbed := min(p.armor, int(f32(taken) * ARMOR_ABSORB))
+		absorbed := min(p.armor, int(f32(taken) * ARMOR_ABSORB * (1 - armor_pen)))
 		p.armor -= absorbed
 		taken -= absorbed
 	}

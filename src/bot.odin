@@ -312,11 +312,11 @@ tick_bot_combat :: proc(pawn: ^game.Pawn, brain: ^Bot_Brain, dt: f32) -> bool {
 }
 
 // Returns whether this was the killing blow, which the hit marker colours.
-damage_bot :: proc(index: int, amount: int) -> bool {
+damage_bot :: proc(index: int, amount: int, armor_pen: f32 = 0) -> bool {
 	pawn := bot_pawn(index)
 	if !pawn.alive do return false
 
-	if !game.damage_pawn(pawn, amount) do return false
+	if !game.damage_pawn(pawn, amount, armor_pen) do return false
 
 	pawn.respawn_in = BOT_RESPAWN_DELAY
 	brains[index].seen_time = 0

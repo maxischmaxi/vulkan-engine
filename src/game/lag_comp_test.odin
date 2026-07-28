@@ -14,10 +14,15 @@ lag_range :: proc() -> (gs: Game_State) {
 		max = {50, 50, 0},
 	}
 	gs.grid = physics.grid_build(gs.collision)
+	// The runner seeds this per test: burst starts roll their seed from it.
+	gs.rng = context.random_generator
 
 	// shooter at the origin looking east, target five metres down the ray;
 	// the shooter carries the ak so the fire tests reach that far
 	init_pawn(&gs.pawns[0], {0, 0, 0}, 0)
+	// On the floor: pawn_move would set this before any server-side fire, and
+	// an airborne shooter would draw random spread on top.
+	gs.pawns[0].body.on_ground = true
 	gs.pawns[0].loadout = {
 		primary   = WEAPON_AK,
 		secondary = WEAPON_GLOCK,

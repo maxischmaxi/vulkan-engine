@@ -25,6 +25,9 @@ PROP_FRAG_CODE :: #load("../shaders/prop.frag.spv")
 DECAL_VERT_CODE :: #load("../shaders/decal.vert.spv")
 DECAL_FRAG_CODE :: #load("../shaders/decal.frag.spv")
 
+TRACER_VERT_CODE :: #load("../shaders/tracer.vert.spv")
+TRACER_FRAG_CODE :: #load("../shaders/tracer.frag.spv")
+
 CROSSHAIR_VERT_CODE :: #load("../shaders/crosshair.vert.spv")
 CROSSHAIR_FRAG_CODE :: #load("../shaders/crosshair.frag.spv")
 

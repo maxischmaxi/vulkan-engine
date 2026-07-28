@@ -16,10 +16,18 @@ make_range :: proc() -> (gs: Game_State) {
 		max = {50, 50, 0},
 	}
 	gs.grid = physics.grid_build(gs.collision)
+	// The runner seeds this per test: burst starts roll their seed from it.
+	gs.rng = context.random_generator
 
 	// shooter at the origin looking east, target five metres down the ray;
-	// the shooter carries the ak so the range tests fire a real rifle
+	// the shooter carries the ak so the range tests fire a real rifle. Pitched
+	// down onto the chest so the generic fire tests read the x1 zone -- the
+	// eye-height ray would land in the head band and quadruple everything.
 	init_pawn(&gs.pawns[0], {0, 0, 0}, 0)
+	gs.pawns[0].pitch = -5.2
+	// On the floor: pawn_move would set this before any server-side fire, and
+	// an airborne shooter would draw random spread on top.
+	gs.pawns[0].body.on_ground = true
 	gs.pawns[0].loadout = {
 		primary   = WEAPON_AK,
 		secondary = WEAPON_GLOCK,
@@ -97,6 +105,29 @@ test_fire_kills_through_armor_math :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_damage_pawn_armor_pen :: proc(t: ^testing.T) {
+	p: Pawn
+
+	// pen 0 keeps the classic split: 40 -> 20 absorbed, 20 taken
+	init_pawn(&p, {0, 0, 0}, 0)
+	_ = damage_pawn(&p, 40)
+	testing.expect_value(t, p.health, 80)
+	testing.expect_value(t, p.armor, 80)
+
+	// the ak's pen 0.55: absorb int(40 * 0.5 * 0.45) = 9
+	init_pawn(&p, {0, 0, 0}, 0)
+	_ = damage_pawn(&p, 40, 0.55)
+	testing.expect_value(t, p.health, 69)
+	testing.expect_value(t, p.armor, 91)
+
+	// pen 1: the vest sees nothing and wears not at all
+	init_pawn(&p, {0, 0, 0}, 0)
+	_ = damage_pawn(&p, 40, 1)
+	testing.expect_value(t, p.health, 60)
+	testing.expect_value(t, p.armor, 100)
+}
+
+@(test)
 test_loadout_team_restriction :: proc(t: ^testing.T) {
 	// the m4 is CT only: a T request falls back to no primary, the rest holds
 	l := validate_loadout({primary = WEAPON_M4, secondary = WEAPON_GLOCK, armor = true}, .T)
@@ -138,15 +169,104 @@ test_awp_one_shot_through_full_armor :: proc(t: ^testing.T) {
 	}
 	gs.pawns[0].weapon.index = WEAPON_AWP
 
-	// full health, full vest -- the one-shot the table's damage is chosen for
+	// full health, full vest -- the one-shot the table's damage is chosen for.
+	// Scoped: an unzoomed awp pays a random hip-fire cone even planted.
 	input := Pawn_Input {
-		buttons     = {.Fire_Pressed},
+		buttons     = {.Fire_Pressed, .Zoom},
 		weapon_slot = -1,
 	}
 	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT, .Live)
 	testing.expect_value(t, ev.victim_count, 1)
 	testing.expect(t, ev.victims[0].killed)
 	testing.expect(t, !gs.pawns[1].alive)
+}
+
+@(test)
+test_ak_armored_headshot_one_shots :: proc(t: ^testing.T) {
+	gs := make_range()
+	defer destroy_range(&gs)
+	gs.pawns[0].pitch = 0 // eye height: the head band
+
+	input := Pawn_Input {
+		buttons     = {.Fire_Pressed},
+		weapon_slot = -1,
+	}
+	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT, .Live)
+
+	// 160 nominal, 36 to the vest at pen 0.55, 124 through: the one-tap
+	testing.expect_value(t, ev.shots[0].group, Hit_Group.Head)
+	testing.expect_value(t, ev.victim_count, 1)
+	testing.expect(t, ev.victims[0].killed)
+	testing.expect(t, !gs.pawns[1].alive)
+}
+
+@(test)
+test_m4_armored_headshot_leaves_sliver :: proc(t: ^testing.T) {
+	gs := make_range()
+	defer destroy_range(&gs)
+	gs.pawns[0].loadout = {
+		primary   = WEAPON_M4,
+		secondary = WEAPON_USP,
+	}
+	gs.pawns[0].weapon.index = WEAPON_M4
+	gs.pawns[0].pitch = 0
+
+	input := Pawn_Input {
+		buttons     = {.Fire_Pressed},
+		weapon_slot = -1,
+	}
+	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT, .Live)
+
+	// 140 nominal, 42 absorbed at pen 0.40: two hp short of the ak's one-tap
+	testing.expect_value(t, ev.shots[0].group, Hit_Group.Head)
+	testing.expect(t, !ev.victims[0].killed)
+	testing.expect(t, gs.pawns[1].alive)
+	testing.expect_value(t, gs.pawns[1].health, 2)
+}
+
+@(test)
+test_awp_leg_shot_survives :: proc(t: ^testing.T) {
+	gs := make_range()
+	defer destroy_range(&gs)
+	gs.pawns[0].loadout = {
+		primary   = WEAPON_AWP,
+		secondary = WEAPON_USP,
+	}
+	gs.pawns[0].weapon.index = WEAPON_AWP
+	gs.pawns[0].pitch = -13.8 // down into the leg band
+
+	input := Pawn_Input {
+		buttons     = {.Fire_Pressed, .Zoom}, // scoped, so the shot is a laser
+		weapon_slot = -1,
+	}
+	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT, .Live)
+
+	// 86 nominal, and no vest below the belt: the one shot the awp forgives
+	testing.expect_value(t, ev.shots[0].group, Hit_Group.Legs)
+	testing.expect(t, !ev.victims[0].killed)
+	testing.expect(t, gs.pawns[1].alive)
+	testing.expect_value(t, gs.pawns[1].health, 14)
+	testing.expect_value(t, gs.pawns[1].armor, PAWN_MAX_ARMOR)
+}
+
+@(test)
+test_knife_ignores_hit_zones :: proc(t: ^testing.T) {
+	gs := make_range()
+	defer destroy_range(&gs)
+	gs.pawns[0].weapon.index = WEAPON_KNIFE
+	gs.pawns[0].pitch = 0
+	gs.pawns[1].body.position = {1, 0, 0} // arm's length
+
+	input := Pawn_Input {
+		buttons     = {.Fire_Pressed},
+		weapon_slot = -1,
+	}
+	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT, .Live)
+
+	// an eye-height stab lands in the head band but stays a knife: 55, not 220
+	testing.expect_value(t, ev.victim_count, 1)
+	testing.expect_value(t, ev.victims[0].nominal, 55)
+	testing.expect_value(t, gs.pawns[1].health, 72)
 }
 
 @(test)

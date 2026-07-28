@@ -74,6 +74,9 @@ Client_Slot :: struct {
 	// that client -- it is the signal, not the enforcement.
 	fire_denied:        int,
 	fire_denied_logged: bool,
+	// Same groundwork, richer stream: what the aim did around every trigger
+	// pull (aim_telemetry.odin). Zeroed with the slot on connect.
+	aim:                Aim_Telemetry,
 }
 
 clients: [MAX_CLIENTS]Client_Slot

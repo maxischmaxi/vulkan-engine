@@ -164,12 +164,14 @@ test_snapshot_roundtrip :: proc(t: ^testing.T) {
 	}
 	s.has_private = true
 	s.private = {
-		velocity     = {1, 2, -3},
-		armor        = 88,
-		ammo_mag     = 17,
-		ammo_reserve = 90,
-		kills        = 4,
-		deaths       = 2,
+		velocity       = {1, 2, -3},
+		armor          = 88,
+		ammo_mag       = 17,
+		ammo_reserve   = 90,
+		kills          = 4,
+		deaths         = 2,
+		spray_progress = 44, // 5.5 shots deep, in eighths
+		spray_seed     = 0xDEAD_BEEF,
 	}
 
 	zero: Snapshot
@@ -177,8 +179,8 @@ test_snapshot_roundtrip :: proc(t: ^testing.T) {
 	w := writer(buf[:])
 	write_snapshot(&w, s, &zero)
 	testing.expect(t, !w.overflow)
-	// full: fixed + 2 x (mask 1 + fields 18) + has_private 1 + private 19
-	testing.expect_value(t, w.off, SNAP_FIXED_BYTES + 2 * 19 + 1 + 19)
+	// full: fixed + 2 x (mask 1 + fields 18) + has_private 1 + private 24
+	testing.expect_value(t, w.off, SNAP_FIXED_BYTES + 2 * 19 + 1 + 24)
 
 	r := reader(buf[:w.off])
 	got, ok := read_snapshot(&r, &zero)
@@ -194,6 +196,8 @@ test_snapshot_roundtrip :: proc(t: ^testing.T) {
 	testing.expect(t, got.has_private)
 	testing.expect_value(t, got.private.velocity, s.private.velocity)
 	testing.expect_value(t, got.private.kills, s.private.kills)
+	testing.expect_value(t, got.private.spray_progress, s.private.spray_progress)
+	testing.expect_value(t, got.private.spray_seed, s.private.spray_seed)
 }
 
 // A changed subset travels; everything else comes out of the receiver's
