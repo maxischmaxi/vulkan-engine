@@ -45,6 +45,8 @@ Weapon :: struct {
 	fire_interval: f32, // seconds between shots
 	automatic:     bool,
 	range:         f32,
+	pellets:       int, // rays per trigger pull; 0 reads as 1
+	spread:        f32, // tangent of the pellet cone half-angle; 0 = a laser
 	zoom_fov:      f32, // horizontal degrees while scoped; 0 = no scope
 	// The models come out of scenes built around a camera at the origin, so the
 	// artist's own composition is the default and this only corrects it.
@@ -189,9 +191,10 @@ WEAPONS := [?]Weapon {
 		category      = .Heavy,
 		teams         = {.T, .CT},
 		price         = 1050,
-		// One tight slug for now rather than pellets; the short range is what
-		// stands in for falloff until a deterministic spread exists.
-		damage        = 80,
+		// Per pellet. Nine fixed pellets (pellets.odin): 234 nominal at point
+		// blank, about four pellets for an unarmored kill. The short range
+		// still stands in for falloff.
+		damage        = 26,
 		mag_size      = 8,
 		reserve_max   = 32,
 		reload_time   = 2.9,
@@ -199,6 +202,8 @@ WEAPONS := [?]Weapon {
 		fire_interval = 0.9,
 		automatic     = false,
 		range         = 40,
+		pellets       = NOVA_PELLETS,
+		spread        = 0.0675, // tan of ~3.9 degrees, counter-strike's cone
 		view_offset   = {0, 0, 0},
 		recoil_kick   = 0.060,
 	},
@@ -301,14 +306,42 @@ Shot_Result :: struct {
 	pawn:   int, // -1 when the world was hit
 }
 
-Fire_Events :: struct {
-	fired:   bool,
-	dry:     bool,
-	shot:    Shot_Result,
+// One pawn a blast connected with: the summed table damage of the pellets
+// that hit (pre-armor, the damage cue's intensity) and whether one of them
+// was the killing blow.
+Pellet_Victim :: struct {
+	pawn:    int,
+	nominal: int,
 	killed:  bool,
+}
+
+Fire_Events :: struct {
+	// Per trigger pull, regardless of pellet count.
+	fired:        bool,
+	dry:          bool,
+	// Every ray the pull traced -- one for most weapons, the pellet pattern
+	// for a shotgun -- plus the victims aggregated across them.
+	shots:        [MAX_PELLETS]Shot_Result,
+	shot_count:   int,
+	victims:      [MAX_PELLETS]Pellet_Victim,
+	victim_count: int,
 	// Why a trigger pull was refused, when one was made anyway. None on a tick
 	// that never asked to fire -- see tick_pawn_weapon.
-	blocked: Fire_Block,
+	blocked:      Fire_Block,
+}
+
+// The victim entry for a pawn, appended on first contact. Bounded by the
+// pellet count, so the linear scan is the whole cost.
+@(private = "file")
+find_victim :: proc(ev: ^Fire_Events, pawn: int) -> ^Pellet_Victim {
+	for &v in ev.victims[:ev.victim_count] {
+		if v.pawn == pawn do return &v
+	}
+	ev.victims[ev.victim_count] = {
+		pawn = pawn,
+	}
+	ev.victim_count += 1
+	return &ev.victims[ev.victim_count - 1]
 }
 
 refill_pawn_ammo :: proc(w: ^Pawn_Weapon) {
@@ -479,10 +512,24 @@ tick_pawn_weapon :: proc(
 	w.cooldown = weapon.fire_interval
 	ev.fired = true
 
-	ev.shot = trace_shot(gs, id, eye_position(p^), view_forward(p.yaw, p.pitch), weapon.range)
-	if ev.shot.hit && ev.shot.pawn >= 0 {
-		ev.killed = damage_pawn(&gs.pawns[ev.shot.pawn], weapon.damage)
-		if ev.killed do p.kills += 1
+	// One magazine round per pull, however many pellets fly. A pellet that
+	// kills makes the corpse transparent to the rest of the blast (trace_shot
+	// skips the dead) -- deterministically on both ends of the wire.
+	origin := eye_position(p^)
+	count := max(weapon.pellets, 1)
+	for i in 0 ..< count {
+		dir := pellet_dir(p.yaw, p.pitch, i, weapon.spread)
+		shot := trace_shot(gs, id, origin, dir, weapon.range)
+		ev.shots[ev.shot_count] = shot
+		ev.shot_count += 1
+		if !shot.hit || shot.pawn < 0 do continue
+
+		v := find_victim(&ev, shot.pawn)
+		v.nominal += weapon.damage
+		if damage_pawn(&gs.pawns[shot.pawn], weapon.damage) {
+			v.killed = true
+			p.kills += 1
+		}
 	}
 	return
 }

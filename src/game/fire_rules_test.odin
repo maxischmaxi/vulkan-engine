@@ -52,7 +52,7 @@ test_no_fire_outside_live :: proc(t: ^testing.T) {
 		ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT, phase)
 
 		testing.expectf(t, !ev.fired, "fired during {}", phase)
-		testing.expectf(t, !ev.shot.hit, "traced during {}", phase)
+		testing.expectf(t, ev.shot_count == 0, "traced during {}", phase)
 		testing.expect_value(t, ev.blocked, Fire_Block.Not_In_Match)
 		testing.expect_value(t, gs.pawns[1].health, PAWN_MAX_HEALTH)
 		testing.expect_value(
@@ -175,7 +175,7 @@ test_countdown_pulls_leave_no_residue :: proc(t: ^testing.T) {
 	// the match starts: one shot, and the fire interval holds the next one back
 	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT, .Live)
 	testing.expect(t, ev.fired)
-	testing.expect_value(t, ev.shot.pawn, 1)
+	testing.expect_value(t, ev.shots[0].pawn, 1)
 
 	ev = tick_pawn_weapon(&gs, 0, FIRE, TICK_DT, .Live)
 	testing.expect(t, !ev.fired)

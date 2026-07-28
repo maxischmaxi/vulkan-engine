@@ -141,6 +141,36 @@ MATERIALS := []Material {
 		normal_scale = 1.0,
 		saturation = 0.55,
 	},
+	// Railing -- decor marker; wood fallback for when the marking is skipped
+	{
+		tint = {0.62, 0.50, 0.34, 1},
+		layer = 9,
+		uv_scale = 0.8,
+		roughness_mul = 0.9,
+		metallic = 0,
+		normal_scale = 1.0,
+		saturation = 0.55,
+	},
+	// Fence -- decor marker, same wood fallback
+	{
+		tint = {0.62, 0.50, 0.34, 1},
+		layer = 9,
+		uv_scale = 0.8,
+		roughness_mul = 0.9,
+		metallic = 0,
+		normal_scale = 1.0,
+		saturation = 0.55,
+	},
+	// Pillar -- decor marker; trim plaster fallback
+	{
+		tint = {1.10, 1.01, 0.86, 1},
+		layer = 2,
+		uv_scale = 3.0,
+		roughness_mul = 1.0,
+		metallic = 0,
+		normal_scale = 1.0,
+		saturation = 0.80,
+	},
 	// ------------------------------------------------------------- models
 	//
 	// Imported geometry carries its own UVs, so uv_scale is 1 -- the world's
@@ -207,6 +237,17 @@ MATERIALS := []Material {
 		normal_scale  = 1.0,
 		saturation    = 1.0,
 	},
+	{
+		// Modular decoration pieces on their own flat-colour palette, pulled
+		// toward the sandstone the same way the prop palette is.
+		tint          = {0.92, 0.82, 0.62, 1},
+		layer         = 13,
+		uv_scale      = 1.0,
+		roughness_mul = 1.0,
+		metallic      = 0,
+		normal_scale  = 1.0,
+		saturation    = 0.55,
+	},
 }
 
 // Model materials are appended past the map's, so game.Material_ID keeps meaning
@@ -218,7 +259,8 @@ MODEL_MAT_RETRO_GUNS :: MODEL_MAT_RETRO_ARMS + 1
 MODEL_MAT_PROP_PALETTE :: MODEL_MAT_RETRO_ARMS + 2
 MODEL_MAT_GUN_MATTE :: MODEL_MAT_RETRO_ARMS + 3
 MODEL_MAT_GUN_METAL :: MODEL_MAT_RETRO_ARMS + 4
-MODEL_MATERIAL_COUNT :: 5
+MODEL_MAT_MOD_PALETTE :: MODEL_MAT_RETRO_ARMS + 5
+MODEL_MATERIAL_COUNT :: 6
 
 // Everything behind descriptor set 1: the material table and the texture arrays
 // it indexes into. None of it changes after load.

@@ -518,7 +518,8 @@ record_crosshair :: proc(cmd: vk.CommandBuffer) {
 	}
 }
 
-// The crosshair never opens up, because there is nothing for it to report:
-// trace_shot fires exactly along the view direction with no spread at all. A
-// crosshair that breathed anyway would be describing an inaccuracy the weapon
-// does not have.
+// The crosshair never opens up, because there is nothing varying for it to
+// report: most weapons fire exactly along the view direction, and the
+// shotgun's pellet cone is a fixed pattern, identical every pull -- a
+// crosshair that breathed would be describing an inaccuracy no weapon has.
+// crosshair_rects takes a `grow` if a static per-weapon bloom is ever wanted.

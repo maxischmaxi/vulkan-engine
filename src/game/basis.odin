@@ -25,3 +25,12 @@ view_forward :: proc(yaw, pitch: f32) -> [3]f32 {
 	cp := math.cos(rp)
 	return {cp * math.cos(ry), cp * math.sin(ry), math.sin(rp)}
 }
+
+// cross(yaw_right, view_forward), written out. Unit length because the two
+// are orthogonal unit vectors.
+view_up :: proc(yaw, pitch: f32) -> [3]f32 {
+	ry := math.to_radians(yaw)
+	rp := math.to_radians(pitch)
+	sp := math.sin(rp)
+	return {-sp * math.cos(ry), -sp * math.sin(ry), math.cos(rp)}
+}

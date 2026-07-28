@@ -15,6 +15,7 @@ props=Models.zip
 palettes=Palettes.zip
 psx=psx-first-person-arms-free-game-assets.zip
 guns=UltimateGunPackByQuaternius.zip
+modular=ModularGameAssetsForPrototyping.zip
 
 # An archive may be deleted once its assets are on disk; a re-run then keeps
 # what is extracted. Only a pack missing both archive and assets is an error.
@@ -36,6 +37,7 @@ need "$retro" assets/retro/blend
 need "$props" assets/props/models
 need "$palettes" assets/props/palettes
 need "$guns" assets/guns/obj
+need "$modular" assets/modular/pieces
 
 # The blend files are the good source: arms and gun sit in one scene, already
 # posed and animated. The FBX are the fallback for anything the blend lacks.
@@ -72,6 +74,16 @@ fi
 # the rest, and a second set of arms is worth having on disk.
 if [ -e "$psx" ]; then
     pull "$psx" assets/psx_arms "arms_rig.glb" "arms_01.png" "arms_gloves_01.png"
+fi
+
+# The modular prototyping pieces: the converter reads a curated roster from
+# pieces/, and texture.png is the 8x8 palette every piece's UVs point into.
+if [ -e "$modular" ]; then
+    pull "$modular" assets/modular/pieces \
+        "Free 3D Modular Game Assets For Prototyping/Pieces/*.fbx"
+    pull "$modular" assets/modular \
+        "Free 3D Modular Game Assets For Prototyping/texture.png" \
+        "Free 3D Modular Game Assets For Prototyping/License.txt"
 fi
 
 echo "assets/ ready:"

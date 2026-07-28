@@ -32,6 +32,7 @@ TEXTURE_SETS := []string {
 	"RetroWeapons",
 	"PropPalette",
 	"GunPalette",
+	"ModularPalette",
 }
 
 TEXTURE_DIR :: "textures"

@@ -267,10 +267,14 @@ class Builder:
             self.vertices.append(key)
         self.indices.append(index)
 
-    def add_object(self, obj, material_map):
+    def add_object(self, obj, material_map, flat_tangents=False):
         # Tangent space needs tris or quads, and several of these meshes have
         # n-gons. A temporary modifier at the end of the stack triangulates
         # after the armature has already posed the mesh.
+        #
+        # flat_tangents is for palette-mapped meshes whose UVs are constant per
+        # face: calc_tangents has no UV gradient to work with there, so a
+        # synthetic tangent stands in while the real UVs are kept.
         triangulate = obj.modifiers.new("export_triangulate", "TRIANGULATE")
         depsgraph = bpy.context.evaluated_depsgraph_get()
         evaluated = obj.evaluated_get(depsgraph)
@@ -281,7 +285,7 @@ class Builder:
             # palette swatches instead, with a constant UV per loop. Tangents
             # can only be computed where UVs exist.
             has_uv = mesh.uv_layers.active is not None
-            if has_uv:
+            if has_uv and not flat_tangents:
                 mesh.calc_tangents()
 
             world = obj.matrix_world
@@ -324,10 +328,14 @@ class Builder:
                         tangent = fallback_tangent(normal)
                         sign = 1.0
                     else:
-                        tangent = Vector(
-                            self.convert_dir(world.to_3x3() @ loop.tangent)
-                        ).normalized()
-                        sign = loop.bitangent_sign
+                        if flat_tangents:
+                            tangent = fallback_tangent(normal)
+                            sign = 1.0
+                        else:
+                            tangent = Vector(
+                                self.convert_dir(world.to_3x3() @ loop.tangent)
+                            ).normalized()
+                            sign = loop.bitangent_sign
                         u, v = uvs[loop_index].uv
                         # Blender's v runs up the image, the engine's runs down it
                         uv = (u, 1.0 - v)
@@ -587,13 +595,77 @@ def build_props():
         builder.write(OUT / f"{name}.mesh")
 
 
+# The modular prototyping pieces worth having as map decoration. The pack also
+# ships primitives and pickup trinkets (spheres, coins, keys); those stay out.
+MODULAR_PIECES = [
+    "fence",
+    "fence2",
+    "fence3",
+    "fence wood",
+    "railing",
+    "railing edge",
+    "pillar",
+    "pillar1",
+    "pillar2",
+    "stairs",
+    "stairs corner",
+    "ramp",
+    "wall door",
+    "door",
+    "window",
+    "ladder",
+]
+
+
+def build_modular():
+    src = ASSETS / "modular" / "pieces"
+    if not src.exists():
+        print("no modular pieces found")
+        return
+    print(f"modular ({len(MODULAR_PIECES)}):")
+    # One material across the whole pack, UV-mapped onto the 8x8 palette. The
+    # UVs are constant per face, hence the flat tangents.
+    material_map = {"Material": ("mod_palette", None)}
+
+    for stem in MODULAR_PIECES:
+        path = src / f"{stem}.fbx"
+        if not path.exists():
+            sys.exit(f"missing {path} -- run tools/extract_models.sh")
+
+        # A fresh empty scene per piece: the FBX files are tiny and this keeps
+        # one import from ever seeing another's objects.
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        bpy.ops.import_scene.fbx(filepath=str(path))
+
+        # The pieces arrive Z-up in metres; matrix_world carries whatever the
+        # importer decided, so "world" axes and unit 1.0 are already right.
+        builder = Builder("world", 1.0)
+        for obj in exportable_meshes():
+            builder.add_object(obj, material_map, flat_tangents=True)
+
+        # Same convention as the props: the pieces sit scattered around their
+        # authoring scene, so the origin goes to the footprint centre at floor
+        # level, which is what fit_transform placement assumes.
+        mn, mx = builder.bounds()
+        builder.translate((-(mn[0] + mx[0]) * 0.5, -(mn[1] + mx[1]) * 0.5, -mn[2]))
+
+        name = "mod_" + stem.replace(" ", "_")
+        builder.write(OUT / f"{name}.mesh")
+
+
 def main():
     if not ASSETS.exists():
         sys.exit("assets/ missing -- run tools/extract_models.sh first")
     OUT.mkdir(parents=True, exist_ok=True)
-    for spec in VIEWMODELS:
-        build_viewmodel(spec)
-    build_props()
+
+    # `blender -b -P convert_models.py -- modular` rebuilds only the modular
+    # pieces; the full run re-bakes every viewmodel and takes minutes.
+    args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+    if "modular" not in args:
+        for spec in VIEWMODELS:
+            build_viewmodel(spec)
+        build_props()
+    build_modular()
     print(f"models written to {OUT}")
 
 

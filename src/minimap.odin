@@ -88,7 +88,8 @@ destroy_minimap :: proc() {
 @(private = "file")
 minimap_color :: proc(material: Material_ID) -> [4]f32 {
 	#partial switch material {
-	case .Crate:
+	case .Crate, .Fence, .Railing:
+		// Decor barriers read as furniture, not walls
 		return {0.72, 0.55, 0.30, 1}
 	case .Brick, .Brick_Alt:
 		return {0.55, 0.50, 0.44, 1}

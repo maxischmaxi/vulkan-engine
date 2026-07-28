@@ -156,10 +156,11 @@ sim_tick :: proc(dt: f32) {
 		ev := game.tick_pawn_weapon(&sv.gs, slot.pawn_id, cmd, dt, match.phase)
 		if rewound do game.lag_comp_end(&sv.gs, &rw)
 
-		if ev.fired && ev.shot.hit && ev.shot.pawn >= 0 {
-			// The nominal weapon damage, pre-armor: a cosmetic intensity, not
+		for v in ev.victims[:ev.victim_count] {
+			// One cue per victim per blast, however many pellets landed: the
+			// summed nominal damage, pre-armor -- a cosmetic intensity, not
 			// the bookkept loss.
-			queue_damage(p.body.position, ev.shot.pawn, game.WEAPONS[p.weapon.index].damage)
+			queue_damage(p.body.position, v.pawn, v.nominal)
 		}
 		if ev.fired {
 			fired_this_tick[slot.pawn_id] = true
@@ -169,7 +170,9 @@ sim_tick :: proc(dt: f32) {
 				lag_stats.age_sum += int(sv.tick - rewind_tick)
 			}
 		}
-		if ev.killed do on_pawn_killed(slot.pawn_id, ev.shot.pawn)
+		for v in ev.victims[:ev.victim_count] {
+			if v.killed do on_pawn_killed(slot.pawn_id, v.pawn)
+		}
 
 		// A fall through the world is a death, not an exploit.
 		if p.body.position.z < -50 {

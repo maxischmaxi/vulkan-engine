@@ -15,4 +15,9 @@ Material_ID :: enum u32 {
 	Rock         = 7,
 	Rock_Alt     = 8,
 	Crate        = 9,
+	// Decoration markers: the client swaps these brushes for modular meshes
+	// (map_decor.odin); until then they render with the fallback rows below.
+	Railing      = 10,
+	Fence        = 11,
+	Pillar       = 12,
 }

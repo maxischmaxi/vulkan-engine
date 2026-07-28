@@ -147,9 +147,10 @@ main :: proc() {
 	brushes := game.build_dust2()
 	defer delete(brushes)
 
-	// Before the bake: the crates it claims stop being drawn as boxes, and models
-	// take their place once the meshes are loaded.
+	// Before the bake: the crates and decor they claim stop being drawn as
+	// boxes, and models take their place once the meshes are loaded.
 	mark_prop_brushes(brushes)
+	mark_decor_brushes(brushes)
 
 	bake_world(brushes)
 	create_world_buffers()

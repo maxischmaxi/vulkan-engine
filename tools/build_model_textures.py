@@ -15,6 +15,8 @@ Three sets come out of this:
   PropPalette   the 12x12 palette the Collada props are mapped onto, blown up
                 with nearest so the colour fields stay flat.
   GunPalette    one swatch per gun-pack material name; see gun_palette.py.
+  ModularPalette  the modular prototyping pack's 8x8 palette, same treatment
+                as PropPalette.
 
 Run through `just models`; convert_models.py assumes the atlas layout below.
 """
@@ -135,6 +137,22 @@ def build_prop_palette():
     )
 
 
+def build_modular_palette():
+    # One pixel per colour field; nearest keeps them flat, like PropPalette.
+    src = ASSETS / "modular" / "texture.png"
+    palette = load(src).convert("RGB")
+    palette = palette.resize((LAYER, LAYER), Image.NEAREST)
+    write(
+        "ModularPalette",
+        {
+            "Color": palette,
+            "NormalGL": flat_normal(LAYER),
+            "Roughness": constant(LAYER, 200),
+            "AmbientOcclusion": constant(LAYER, 255),
+        },
+    )
+
+
 def build_gun_palette():
     # One flat-colour swatch per (gun, material) across the roster; the mesh
     # UVs point at swatch centres, exactly like the prop palette. Colour comes
@@ -168,6 +186,7 @@ def main():
     print(f"model textures at {LAYER}x{LAYER}:")
     build_retro_weapons()
     build_prop_palette()
+    build_modular_palette()
     build_gun_palette()
 
 

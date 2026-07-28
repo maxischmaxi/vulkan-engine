@@ -57,7 +57,7 @@ test_rewind_hits_where_target_was :: proc(t: ^testing.T) {
 	lag_comp_end(&gs, &rw)
 
 	testing.expect(t, ev.fired)
-	testing.expect_value(t, ev.shot.pawn, 1)
+	testing.expect_value(t, ev.shots[0].pawn, 1)
 	testing.expect(t, gs.pawns[1].health < PAWN_MAX_HEALTH)
 	// the hull is back where the present says it is
 	testing.expect_value(t, gs.pawns[1].body.position, [3]f32{5, 3, 0})
@@ -72,7 +72,8 @@ test_no_rewind_misses_moved_target :: proc(t: ^testing.T) {
 
 	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT, .Live)
 	testing.expect(t, ev.fired)
-	testing.expect_value(t, ev.shot.pawn, -1)
+	testing.expect_value(t, ev.shots[0].pawn, -1)
+	testing.expect_value(t, ev.victim_count, 0)
 	testing.expect_value(t, gs.pawns[1].health, PAWN_MAX_HEALTH)
 }
 
@@ -114,7 +115,7 @@ test_dead_at_rewind_tick_not_hit :: proc(t: ^testing.T) {
 	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT, .Live)
 	lag_comp_end(&gs, &rw)
 
-	testing.expect_value(t, ev.shot.pawn, -1)
+	testing.expect_value(t, ev.shots[0].pawn, -1)
 	testing.expect(t, gs.pawns[1].alive)
 	testing.expect_value(t, gs.pawns[1].health, PAWN_MAX_HEALTH)
 }
@@ -135,10 +136,40 @@ test_kill_during_rewind_survives_restore :: proc(t: ^testing.T) {
 	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT, .Live)
 	lag_comp_end(&gs, &rw)
 
-	testing.expect(t, ev.killed)
+	testing.expect_value(t, ev.victim_count, 1)
+	testing.expect(t, ev.victims[0].killed)
 	testing.expect(t, !gs.pawns[1].alive)
 	testing.expect_value(t, gs.pawns[1].deaths, 1)
 	testing.expect_value(t, gs.pawns[1].body.position, [3]f32{5, 3, 0})
+}
+
+@(test)
+test_nova_kill_during_rewind_restores :: proc(t: ^testing.T) {
+	// Nine traces inside one rewind window: the whole pellet loop runs against
+	// the rewound hulls, and the restore afterwards is still exact.
+	gs := lag_range()
+	defer destroy_lag_range(&gs)
+	gs.pawns[0].loadout = {
+		primary   = WEAPON_NOVA,
+		secondary = WEAPON_GLOCK,
+	}
+	gs.pawns[0].weapon.index = WEAPON_NOVA
+	gs.pawns[1].body.position = {3, 0, 0}
+	gs.pawns[1].armor = 0
+
+	hist: Lag_History
+	lag_history_record(&hist, &gs, 10)
+	gs.pawns[1].body.position = {3, 3, 0}
+
+	rw, ok := lag_comp_begin(&hist, &gs, 10, 0)
+	testing.expect(t, ok)
+	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT, .Live)
+	lag_comp_end(&gs, &rw)
+
+	testing.expect_value(t, ev.victim_count, 1)
+	testing.expect(t, ev.victims[0].killed)
+	testing.expect_value(t, gs.pawns[1].deaths, 1)
+	testing.expect_value(t, gs.pawns[1].body.position, [3]f32{3, 3, 0})
 }
 
 @(test)
@@ -157,7 +188,7 @@ test_rewind_restores_crouch_hull :: proc(t: ^testing.T) {
 	ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT, .Live)
 	lag_comp_end(&gs, &rw)
 
-	testing.expect_value(t, ev.shot.pawn, -1)
+	testing.expect_value(t, ev.shots[0].pawn, -1)
 	testing.expect_value(t, gs.pawns[1].body.height, f32(PLAYER_HEIGHT))
 }
 

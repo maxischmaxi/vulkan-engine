@@ -79,6 +79,8 @@ mesh_material_index :: proc(name: string) -> (u32, bool) {
 		return MODEL_MAT_GUN_MATTE, true
 	case "gun_metal":
 		return MODEL_MAT_GUN_METAL, true
+	case "mod_palette":
+		return MODEL_MAT_MOD_PALETTE, true
 	}
 	return 0, false
 }
@@ -186,6 +188,12 @@ MESH_FILES := []string {
 	"prop_electricbox_01",
 	"prop_garbagecan",
 	"prop_suitcase_01",
+	"mod_fence",
+	"mod_fence2",
+	"mod_fence3",
+	"mod_railing",
+	"mod_pillar",
+	"mod_pillar2",
 }
 
 create_mesh_store :: proc() {

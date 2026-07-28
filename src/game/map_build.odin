@@ -154,3 +154,28 @@ add_crates :: proc(out: ^[dynamic]Brush, x0, y0, floor, size, low, high: f32, al
 add_massif :: proc(out: ^[dynamic]Brush, x0, y0, x1, y1: f32, height: f32 = OUTER_H - 2) {
 	append(out, wall(x0, y0, x1, y1, .Rock_Alt, height))
 }
+
+// Decoration brushes: collision like any other brush, but the client marks them
+// (map_decor.odin) and stands modular meshes in the volume instead of drawing
+// the box. They float DECOR_LIFT above their base because the face clipper
+// treats any brush within PLANE_EPS of a plane as burying the face under it --
+// a fence flush on a floor would cut a hole into it, visible through the gaps
+// between the fence's planks. Keep decor at least 1e-3 away from every
+// neighbouring brush face for the same reason.
+DECOR_LIFT :: 0.01
+
+add_railing :: proc(out: ^[dynamic]Brush, x0, y0, x1, y1, base: f32, height: f32 = 1.1) {
+	append(out, box(x0, y0, base + DECOR_LIFT, x1, y1, base + DECOR_LIFT + height, .Railing))
+}
+
+add_fence :: proc(out: ^[dynamic]Brush, x0, y0, x1, y1, base: f32, height: f32 = 1.9) {
+	append(out, box(x0, y0, base + DECOR_LIFT, x1, y1, base + DECOR_LIFT + height, .Fence))
+}
+
+add_pillar :: proc(out: ^[dynamic]Brush, x, y, base: f32, side: f32 = 0.3, height: f32 = 2.6) {
+	half := side * 0.5
+	append(
+		out,
+		box(x - half, y - half, base + DECOR_LIFT, x + half, y + half, base + DECOR_LIFT + height, .Pillar),
+	)
+}

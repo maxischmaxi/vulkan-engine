@@ -48,8 +48,9 @@ test_fire_edge_damages_target :: proc(t: ^testing.T) {
 	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT, .Live)
 
 	testing.expect(t, ev.fired)
-	testing.expect(t, ev.shot.hit)
-	testing.expect_value(t, ev.shot.pawn, 1)
+	testing.expect_value(t, ev.shot_count, 1)
+	testing.expect(t, ev.shots[0].hit)
+	testing.expect_value(t, ev.shots[0].pawn, 1)
 	testing.expect(t, gs.pawns[1].health < PAWN_MAX_HEALTH)
 	testing.expect_value(
 		t,
@@ -89,7 +90,8 @@ test_fire_kills_through_armor_math :: proc(t: ^testing.T) {
 	}
 	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT, .Live)
 
-	testing.expect(t, ev.killed)
+	testing.expect_value(t, ev.victim_count, 1)
+	testing.expect(t, ev.victims[0].killed)
 	testing.expect(t, !gs.pawns[1].alive)
 	testing.expect_value(t, gs.pawns[0].kills, 1)
 }
@@ -142,7 +144,8 @@ test_awp_one_shot_through_full_armor :: proc(t: ^testing.T) {
 		weapon_slot = -1,
 	}
 	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT, .Live)
-	testing.expect(t, ev.killed)
+	testing.expect_value(t, ev.victim_count, 1)
+	testing.expect(t, ev.victims[0].killed)
 	testing.expect(t, !gs.pawns[1].alive)
 }
 

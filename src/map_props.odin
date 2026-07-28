@@ -96,8 +96,6 @@ fit_transform :: proc(mesh: Mesh, mn, mx: [3]f32, flip: bool) -> linalg.Matrix4f
 // Runs after the meshes are loaded. Turns every marked brush into the models
 // that fill it and hands the lot to the renderer, which uploads them once.
 place_map_props :: proc() {
-	if len(prop_brushes) == 0 do return
-
 	placements := make([dynamic]Model_Placement, 0, 128)
 	defer delete(placements)
 
@@ -163,11 +161,14 @@ place_map_props :: proc() {
 		}
 	}
 
+	brush_count := len(prop_brushes)
+	append_decor_placements(&placements)
+
 	if len(placements) > MAX_PROP_INSTANCES_TOTAL {
 		log.warnf(
 			"{} prop instances from {} brushes -- raise PROP_TILE if this is a frame-rate problem",
 			len(placements),
-			len(prop_brushes),
+			brush_count,
 		)
 	}
 

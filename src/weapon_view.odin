@@ -275,10 +275,9 @@ Shot_Result :: struct {
 // Online this trace is cosmetic -- markers and decals now, the server's word
 // on damage later. It runs against the interpolated positions the player is
 // actually looking at, so the feedback agrees with the screen.
-trace_shot :: proc(alpha: f32) -> Shot_Result {
+trace_shot :: proc(alpha: f32, direction: [3]f32) -> Shot_Result {
 	weapon := current_weapon()
 	origin := player_eye()
-	direction := camera_forward()
 
 	result := Shot_Result {
 		target = -1,
@@ -348,27 +347,39 @@ fire :: proc(alpha: f32) {
 		add_transient_light(muzzle_world_position(), {1.0, 0.82, 0.5}, 26, 7, MUZZLE_FLASH_TIME)
 	}
 
-	shot := trace_shot(alpha)
-	if !shot.hit do return
+	// The same pellet pattern the server traces, from the raw camera angles --
+	// the already-accepted cosmetic divergence from the quantized wire ones.
+	count := max(weapon.pellets, 1)
+	any_hit := false
+	killed := false
+	for i in 0 ..< count {
+		dir := game.pellet_dir(camera.yaw, camera.pitch, i, weapon.spread)
+		shot := trace_shot(alpha, dir)
+		if !shot.hit do continue
 
-	if shot.target >= 0 {
-		weapon_state.hits += 1
-		weapon_state.hit_marker = HIT_MARKER_TIME
-		if bench_active() {
-			weapon_state.hit_killed = damage_bot(shot.target, weapon.damage)
-		} else {
-			// The server decides whether it killed; reconcile turns the marker
-			// red when the confirmation arrives.
-			weapon_state.hit_killed = false
+		if shot.target >= 0 {
+			any_hit = true
+			if bench_active() && damage_bot(shot.target, weapon.damage) {
+				killed = true
+			}
+			continue
 		}
-		return
+
+		// Decals only go on the world, and only from something that leaves a
+		// hole. Seeds spaced per pellet so the nine holes get distinct edges.
+		if weapon.melee do continue
+		seed := f32(weapon_state.shots * game.MAX_PELLETS + i) * 0.6180339887
+		add_decal(shot.point, shot.normal, seed - math.floor(seed))
 	}
 
-	// Decals only go on the world, and only from something that leaves a hole.
-	if weapon.melee do return
-
-	seed := f32(weapon_state.shots) * 0.6180339887
-	add_decal(shot.point, shot.normal, seed - math.floor(seed))
+	if any_hit {
+		// One marker per pull: the stat stays "pulls that connected".
+		weapon_state.hits += 1
+		weapon_state.hit_marker = HIT_MARKER_TIME
+		// Online the server decides whether it killed; reconcile turns the
+		// marker red when the confirmation arrives.
+		weapon_state.hit_killed = bench_active() ? killed : false
+	}
 }
 
 hit_marker_alpha :: proc() -> f32 {

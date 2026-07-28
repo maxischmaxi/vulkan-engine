@@ -153,6 +153,11 @@ build_b_site :: proc(b: ^[dynamic]Brush) {
 	add_floor(b, -48, 34, -38, 44, 1.8, .Brick)
 	add_ramp(b, -38, 38, -34.4, 44, 1.8, GROUND_Z, .Brick, along_y = false)
 
+	// railing on the platform lip: along the site and toward the ramp. Inset
+	// 0.05 from every edge and wall so nothing sits flush (see DECOR_LIFT).
+	add_railing(b, -47.95, 34.05, -38.05, 34.55, 1.8)
+	add_railing(b, -38.55, 34.55, -38.05, 37.95, 1.8)
+
 	// the double stack: the low one is a step, the high one is the angle
 	add_crates(b, -36, 26, GROUND_Z, 3, 1.6, 2.6)
 	append(b, box(-27, 36, GROUND_Z, -24, 39, GROUND_Z + 1.2, .Crate))
@@ -164,6 +169,12 @@ build_b_site :: proc(b: ^[dynamic]Brush) {
 	append(b, wall(-20, 44, -14, 44 + WALL_T, .Wall_Alt, 7)) // north
 	add_doorway(b, -19, 38, -18.4, 44, 40, 42.4, .Brick, along_x = false)
 	add_ramp(b, -18, 38, -14, 44, GROUND_Z, 2.4, .Brick, along_y = false)
+
+	// door-frame pillars a hair off the wall faces at the gap corners
+	add_pillar(b, -19.16, 40, GROUND_Z)
+	add_pillar(b, -19.16, 42.4, GROUND_Z)
+	add_pillar(b, -18.24, 40, GROUND_Z)
+	add_pillar(b, -18.24, 42.4, GROUND_Z)
 }
 
 // ------------------------------------------------------------------------ mid
@@ -179,6 +190,12 @@ build_mid :: proc(b: ^[dynamic]Brush) {
 
 	// mid doors, the one place the whole lane narrows to a gap
 	add_doorway(b, -6, -10, 6, -10 + WALL_T, -2, 2)
+
+	// door-frame pillars on both sides of the gap
+	add_pillar(b, -2, -10.16, GROUND_Z)
+	add_pillar(b, 2, -10.16, GROUND_Z)
+	add_pillar(b, -2, -9.24, GROUND_Z)
+	add_pillar(b, 2, -9.24, GROUND_Z)
 
 	// The xbox. Waist height on the radar and a crouch-jump in practice: the
 	// angle onto catwalk from up here is the reason to know the difference.
@@ -240,6 +257,12 @@ build_long :: proc(b: ^[dynamic]Brush) {
 
 	add_doorway(b, 24, -24, 42, -24 + WALL_T, 30, 34, .Brick, base = 1.2)
 
+	// door-frame pillars on both sides of long doors
+	add_pillar(b, 30, -24.16, 1.2)
+	add_pillar(b, 34, -24.16, 1.2)
+	add_pillar(b, 30, -23.24, 1.2)
+	add_pillar(b, 34, -23.24, 1.2)
+
 	append(b, box(25, -14, 1.2, 28, -11, 1.2 + 1.2, .Crate))
 	append(b, box(38, -4, 1.2, 41, -1, 1.2 + 1.2, .Crate))
 
@@ -248,6 +271,10 @@ build_long :: proc(b: ^[dynamic]Brush) {
 	// crouch-jump if you are carrying no speed into it.
 	add_slab(b, 24, 0, 31, 12)
 	append(b, box(25, 2, GROUND_Z, 27, 4, GROUND_Z + 1.0, .Crate))
+
+	// wooden fence on the pit's north rim; the lane-side lip stays open, the
+	// jump back out over it is the point of the pit
+	add_fence(b, 24.05, 12.05, 30.95, 12.55, 1.2)
 }
 
 // ---------------------------------------------------------------------- A site
@@ -267,6 +294,12 @@ build_a_site :: proc(b: ^[dynamic]Brush) {
 	// The platform, and the steps up onto it from the middle of the site.
 	add_floor(b, 34, 30, 46, 42, 3.0, .Brick_Alt)
 	add_ramp(b, 30, 32, 34, 40, 1.4, 3.0, .Brick_Alt, along_y = false)
+
+	// railing on the platform's north edge over ninja and on the west edge
+	// stubs either side of the ramp
+	add_railing(b, 34.05, 41.45, 45.95, 41.95, 3.0)
+	add_railing(b, 34.05, 30.05, 34.55, 31.95, 3.0)
+	add_railing(b, 34.05, 40.05, 34.55, 41.45, 3.0)
 
 	// goose, where short lets out
 	add_crates(b, 16, 22, 1.4, 3, 1.2, 2.4)
