@@ -1,0 +1,21 @@
+# The master directory. One instance, anywhere with a public UDP port; its
+# state is soft (rebuilt from heartbeats), so Restart=on-failure is the whole
+# HA story. Put TOKEN in /opt/vulkan/master.env (TOKEN=...), not on this line.
+#
+# Install: cp vulkan-master /opt/vulkan/, this file to /etc/systemd/system/,
+# then systemctl enable --now vulkan-master.
+
+[Unit]
+Description=vulkan game master directory
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/opt/vulkan/master.env
+ExecStart=/opt/vulkan/vulkan-master -port=27050 -token=${TOKEN} -idle-stop=300 -floor=1
+Restart=on-failure
+User=vulkan
+WorkingDirectory=/opt/vulkan
+
+[Install]
+WantedBy=multi-user.target

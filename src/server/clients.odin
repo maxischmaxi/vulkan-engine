@@ -230,6 +230,13 @@ handle_unconnected :: proc(peer: Peer, version: u8, data: []u8) {
 		return
 	}
 
+	// Winding down (master drain or SIGTERM): no new handshakes. Full is the
+	// honest answer -- this instance has no room for a future.
+	if server_refusing_joins() {
+		deny_and_close(peer, .Full)
+		return
+	}
+
 	if peer.kind == .Steam {
 		// The transport already authenticated the SteamID; the ticket is the
 		// ownership/ban check on top. Real tickets run ~234 bytes -- anything

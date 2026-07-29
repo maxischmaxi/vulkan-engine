@@ -1,0 +1,29 @@
+# The fleet agent: one per game-server host. Scaling a region up is booting a
+# machine that runs this unit; the agent registers with the master and spawns
+# vulkan-server children on demand.
+#
+# A game host ships: vulkan-agent, vulkan-server, libsteam_api.so (next to the
+# server binary, found via its $ORIGIN rpath) and -- dev fleets under AppID 480
+# only -- steam_appid.txt. Set -region per host. TOKEN comes from
+# /opt/vulkan/agent.env, the same value the master holds.
+#
+# KillMode=mixed sends systemd's SIGTERM to the agent alone; the agent forwards
+# it to the children and reaps them, which is why TimeoutStopSec has headroom
+# over the agent's own 5 s SIGKILL grace.
+
+[Unit]
+Description=vulkan game fleet agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/opt/vulkan/agent.env
+ExecStart=/opt/vulkan/vulkan-agent -master=master.example.net:27050 -token=${TOKEN} -region=eu -capacity=4 -server-bin=/opt/vulkan/vulkan-server
+Restart=on-failure
+User=vulkan
+WorkingDirectory=/opt/vulkan
+KillMode=mixed
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

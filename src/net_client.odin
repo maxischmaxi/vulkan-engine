@@ -77,16 +77,21 @@ net_client: Net_Client
 recv_buf: [protocol.MTU]u8
 
 net_connect_start :: proc(port: int, team: game.Team) {
-	if !net_open(port) do return
+	net_connect_start_ep({address = net.IP4_Loopback, port = port}, team)
+}
+
+// The general UDP entry: any endpoint, e.g. one the master handed out.
+net_connect_start_ep :: proc(server_ep: net.Endpoint, team: game.Team) {
+	if !net_open(server_ep) do return
 	net_client.team = team
-	log.infof("NET: connecting to 127.0.0.1:{}", port)
+	log.infof("NET: connecting to {}", net.to_string(server_ep))
 	send_connect_request()
 }
 
 // The practice variant of the handshake: no team, and the accept leads to the
 // range instead of waiting for a match phase (see handle_server_packet).
 net_practice_start :: proc(port: int) {
-	if !net_open(port) do return
+	if !net_open({address = net.IP4_Loopback, port = port}) do return
 	net_client.practice = true
 	log.infof("NET: connecting to 127.0.0.1:{} for practice", port)
 	send_connect_request()
@@ -125,7 +130,7 @@ net_try_connect_request :: proc() {
 }
 
 @(private = "file")
-net_open :: proc(port: int) -> bool {
+net_open :: proc(server_ep: net.Endpoint) -> bool {
 	net_reset()
 
 	socket, err := net.make_bound_udp_socket(net.IP4_Any, 0)
@@ -145,10 +150,7 @@ net_open :: proc(port: int) -> bool {
 
 	net_client.active = true
 	net_client.socket = socket
-	net_client.server_ep = {
-		address = net.IP4_Loopback,
-		port    = port,
-	}
+	net_client.server_ep = server_ep
 	net_client.client_salt = rand.uint32()
 	net_client.connect_start = time.tick_now()
 	net_client.phase = .Idle

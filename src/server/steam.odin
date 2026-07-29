@@ -79,6 +79,13 @@ steam_server_shutdown :: proc() {
 	steam_sv = {}
 }
 
+// The server's own SteamID64 once the anonymous logon confirmed -- what a
+// Steam heartbeat advertises to the master. Zero before that.
+steam_server_id :: proc() -> u64 {
+	if !steam_sv.logged_on do return 0
+	return u64(steam.SteamGameServer_GetSteamID())
+}
+
 // One drain per tick, on the game-server pipe. A callback pumped from the
 // wrong pipe never arrives, which looks exactly like an auth timeout -- keep
 // every gameserver callback here.

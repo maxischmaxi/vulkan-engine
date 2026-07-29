@@ -278,6 +278,7 @@ update :: proc() {
 	// Before the tick loop, so a snapshot that just arrived is reconciled
 	// first and the new ticks predict on top of corrected state.
 	steam_pump()
+	master_query_pump()
 	net_client_pump()
 	update_scene()
 

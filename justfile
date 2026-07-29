@@ -47,6 +47,27 @@ client: run
 server:
     odin run src/server -debug {{steam_rpath}}
 
+# ---------------------------------------------------------------- control plane
+# The master directory and the fleet agent. The dev loop is: `just master` in
+# one terminal, `just agent` in another (which builds the server binary the
+# agent spawns), then clients with --master=127.0.0.1:27050 --join=t.
+
+master:
+    odin run src/master -debug -- -token=dev -idle-stop=60 -floor=1
+
+# the dev fleet's server binary; the agent spawns copies of it
+server-bin:
+    odin build src/server -out:vulkan-server-dev -debug {{steam_rpath}}
+
+agent: server-bin
+    odin run src/agent -debug -- -master=127.0.0.1:27050 -token=dev -capacity=2 -server-bin=./vulkan-server-dev -insecure
+
+release-master:
+    odin build src/master -out:vulkan-master -o:speed -no-bounds-check -disable-assert
+
+release-agent:
+    odin build src/agent -out:vulkan-agent -o:speed -no-bounds-check -disable-assert
+
 release-server:
     odin build src/server -out:vulkan-server -o:speed -no-bounds-check -disable-assert -define:STEAM_REQUIRED=true -extra-linker-flags:"-Wl,-rpath,'\$ORIGIN'"
     cp steamworks/redistributable_bin/linux64/libsteam_api.so .
@@ -85,6 +106,7 @@ test:
     odin test src/game
     odin test src/protocol
     odin test src/anticheat
+    odin test src/mm
 
 check:
     odin check src -vet-unused -vet-shadowing
@@ -92,6 +114,9 @@ check:
     odin check src/game -vet-unused -vet-shadowing -no-entry-point
     odin check src/protocol -vet-unused -vet-shadowing -no-entry-point
     odin check src/anticheat -vet-unused -vet-shadowing -no-entry-point
+    odin check src/mm -vet-unused -vet-shadowing -no-entry-point
+    odin check src/master -vet-unused -vet-shadowing
+    odin check src/agent -vet-unused -vet-shadowing
     odin check src/server -vet-unused -vet-shadowing
     odin check src -vet-unused -vet-shadowing -define:STEAM_REQUIRED=true
     odin check src/server -vet-unused -vet-shadowing -define:STEAM_REQUIRED=true
@@ -101,4 +126,4 @@ fmt:
     odinfmt -w src
 
 clean:
-    rm -f shaders/*.spv vulkan vulkan-server libsteam_api.so src.bin
+    rm -f shaders/*.spv vulkan vulkan-server vulkan-server-dev vulkan-master vulkan-agent libsteam_api.so src.bin

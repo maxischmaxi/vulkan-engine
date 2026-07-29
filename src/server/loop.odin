@@ -25,6 +25,9 @@ run_loop :: proc() {
 		sv.gs.tick = u64(sv.tick)
 		target := time.Duration(sv.tick) * period
 
+		// 0. a pending SIGTERM/SIGINT, or a drain deadline running out
+		shutdown_tick()
+
 		// 1. everything the wire brought since the last tick, on both
 		// transports, plus whatever Steam has to say about them
 		receive_packets()
@@ -45,6 +48,9 @@ run_loop :: proc() {
 
 		// 5. one snapshot per client
 		send_snapshots()
+
+		// the control plane: heartbeat to the master, drain requests back
+		heartbeat_tick()
 
 		free_all(context.temp_allocator)
 

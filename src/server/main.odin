@@ -1,6 +1,7 @@
 package main
 
 import "../game"
+import "../mm"
 import "../physics"
 import "../protocol"
 import "core:log"
@@ -58,6 +59,39 @@ main :: proc() {
 				os.exit(1)
 			}
 
+		case strings.has_prefix(arg, "-master="):
+			hb.master_str = arg[len("-master="):]
+			if hb.master_str == "" {
+				log.errorf("-master wants HOST:PORT, got {}", arg)
+				os.exit(1)
+			}
+
+		case strings.has_prefix(arg, "-region="):
+			hb.region = mm.region_from_string(arg[len("-region="):])
+
+		case strings.has_prefix(arg, "-token="):
+			hb.token = mm.token_from_string(arg[len("-token="):])
+
+		case strings.has_prefix(arg, "-server-id="):
+			value, ok := strconv.parse_u64(arg[len("-server-id="):])
+			if !ok || value == 0 {
+				log.errorf("-server-id wants a non-zero integer, got {}", arg)
+				os.exit(1)
+			}
+			// An id handed down means an agent spawned us; it doubles as the
+			// spawn correlation id the master is waiting on.
+			hb.server_id = value
+			hb.spawn_id = value
+
+		case strings.has_prefix(arg, "-advertise="):
+			ep, ok := net.parse_endpoint(arg[len("-advertise="):])
+			if !ok {
+				log.errorf("-advertise wants IP:PORT, got {}", arg)
+				os.exit(1)
+			}
+			hb.advertise = ep
+			hb.has_advertise = true
+
 		case arg == "-ac-shadow":
 			ac.shadow = true
 
@@ -71,11 +105,16 @@ main :: proc() {
 		case arg == "-help" || arg == "--help":
 			log.info(
 				"Options:\n" +
-				"  -port=N     listen on UDP port N (default 27015)\n" +
-				"  -insecure   UDP only, no Steam (dev builds)\n" +
-				"  -banlist=F  ban list file (default bans.txt)\n" +
-				"  -ac-shadow  statistical detectors log instead of banning\n" +
-				"  -harden     refuse dev affordances like a release server (dev builds)",
+				"  -port=N          listen on UDP port N (default 27015)\n" +
+				"  -insecure        UDP only, no Steam (dev builds)\n" +
+				"  -banlist=F       ban list file (default bans.txt)\n" +
+				"  -master=H:P      register with the master at H:P and heartbeat\n" +
+				"  -region=STR      region advertised to the master (default local)\n" +
+				"  -token=STR       shared secret for master traffic\n" +
+				"  -server-id=N     identity handed down by the fleet agent\n" +
+				"  -advertise=IP:P  address to advertise instead of the heartbeat source\n" +
+				"  -ac-shadow       statistical detectors log instead of banning\n" +
+				"  -harden          refuse dev affordances like a release server (dev builds)",
 			)
 			os.exit(0)
 
@@ -103,6 +142,10 @@ main :: proc() {
 
 	steam_server_init(port)
 	defer steam_server_shutdown()
+
+	hb.port = u16(port)
+	if !heartbeat_init() do os.exit(1)
+	signal_install()
 
 	init_match()
 

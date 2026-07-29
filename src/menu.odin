@@ -195,7 +195,7 @@ draw_connecting :: proc(width, height: f32) {
 	hud_rect(0, 0, width, height, MENU_DIM)
 
 	// The dots animate after the fixed label so the label itself never shifts.
-	label := "CONNECTING TO SERVER"
+	label := connecting_label()
 	size := hud_font_size(HUD_TEXT_MEDIUM * scale)
 	pen := hud_text_shadow(cx, height * 0.42, label, size, HUD_WHITE, .Center)
 	dots := int(glfw.GetTime() * 2) % 3 + 1

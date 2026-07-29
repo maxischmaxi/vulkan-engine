@@ -77,6 +77,7 @@ enter_scene :: proc(next: Scene) {
 	case .Menu:
 		grab_cursor(false)
 		net_disconnect() // safe when idle; the menu never keeps a connection
+		master_query_stop() // same: a pending server search dies with the scene
 		scene.practice_pending = false
 		camera.position = game.SPAWN_POSITION + {0, 0, MENU_CAM_HEIGHT}
 		camera.yaw = game.SPAWN_YAW
@@ -93,6 +94,8 @@ enter_scene :: proc(next: Scene) {
 			net_practice_start(protocol.DEFAULT_PORT)
 		} else if cli.connect_id != 0 {
 			net_connect_start_steam(cli.connect_id, scene.chosen_team)
+		} else if cli.master != "" {
+			master_query_start(scene.chosen_team)
 		} else {
 			when STEAM_REQUIRED {
 				// A release server has no UDP listener, so a loopback try

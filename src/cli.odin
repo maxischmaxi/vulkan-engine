@@ -34,6 +34,11 @@ Cli :: struct {
 	// Join a server over Steam by its SteamID64 (printed by the server when it
 	// logs on). Zero means the loopback UDP dev server.
 	connect_id:    u64,
+	// Ask this master for a server instead of naming one. --connect wins when
+	// both are given.
+	master:        string,
+	// Region preference for the master query; empty takes any region.
+	region:        string,
 	// Dev builds only: fire one deliberately illegal message after the accept,
 	// so the server's anti-cheat pipeline is testable headless. "debugmsg" is
 	// the only probe today; the seam future probes extend.
@@ -48,6 +53,8 @@ CLI_USAGE :: `Options:
   --bench=N     run the fixed camera path for N frames, print one line, exit
   --join=TEAM   skip the menu and join the local server as t or ct
   --connect=ID  join the server with this steamid64 over Steam
+  --master=H:P  ask the master at H:P for a server to join
+  --region=STR  region preference for the master query
   --practice    skip the menu and enter the practice range
   --weapon=NAME start holding a weapon by name, e.g. ak, glock, awp, knife
   --no-steam    run without Steam, dev builds only
@@ -86,6 +93,15 @@ parse_cli :: proc() {
 				continue
 			}
 			cli.connect_id = value
+
+		case strings.has_prefix(arg, "--master="):
+			cli.master = arg[len("--master="):]
+			if cli.master == "" {
+				log.errorf("--master wants HOST:PORT, got {}", arg)
+			}
+
+		case strings.has_prefix(arg, "--region="):
+			cli.region = arg[len("--region="):]
 
 		case strings.has_prefix(arg, "--join="):
 			value := arg[len("--join="):]
