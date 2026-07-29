@@ -17,10 +17,13 @@ import "core:strings"
 // cheaper to hold from day one than to retrofit.
 
 Server :: struct {
-	socket:  net.UDP_Socket,
-	gs:      game.Game_State,
-	tick:    u32,
-	running: bool,
+	socket:   net.UDP_Socket,
+	gs:       game.Game_State,
+	tick:     u32,
+	running:  bool,
+	// Pure-UDP mode: skip Steam entirely. Dev only; STEAM_REQUIRED builds
+	// refuse the flag.
+	insecure: bool,
 }
 
 sv: Server
@@ -39,8 +42,20 @@ main :: proc() {
 			}
 			port = value
 
+		case arg == "-insecure":
+			when STEAM_REQUIRED {
+				log.error("-insecure is not available in this build")
+				os.exit(1)
+			} else {
+				sv.insecure = true
+			}
+
 		case arg == "-help" || arg == "--help":
-			log.info("Options:\n  -port=N   listen on UDP port N (default 27015)")
+			log.info(
+				"Options:\n" +
+				"  -port=N     listen on UDP port N (default 27015)\n" +
+				"  -insecure   UDP only, no Steam (dev builds)",
+			)
 			os.exit(0)
 
 		case:
@@ -58,24 +73,18 @@ main :: proc() {
 	defer physics.grid_destroy(&sv.gs.grid)
 	sv.gs.rng = rand.default_random_generator()
 
-	socket, err := net.make_bound_udp_socket(net.IP4_Any, port)
-	if err != nil {
-		log.errorf("Cannot bind UDP port {}: {}", port, err)
-		os.exit(1)
+	when !STEAM_REQUIRED {
+		if !udp_open(port) do os.exit(1)
+		defer udp_close()
 	}
-	sv.socket = socket
-	defer net.close(sv.socket)
 
-	if block_err := net.set_blocking(sv.socket, false); block_err != nil {
-		log.errorf("Cannot make the socket non-blocking: {}", block_err)
-		os.exit(1)
-	}
+	steam_server_init(port)
+	defer steam_server_shutdown()
 
 	init_match()
 
 	log.infof(
-		"Server: listening on UDP {}, {} Hz, map dust2 ({} colliders)",
-		port,
+		"Server: up at {} Hz, map dust2 ({} colliders)",
 		game.TICK_RATE,
 		len(sv.gs.collision),
 	)

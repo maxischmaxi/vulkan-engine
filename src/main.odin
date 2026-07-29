@@ -84,6 +84,9 @@ main :: proc() {
 
 	parse_cli()
 
+	steam_init()
+	defer steam_shutdown()
+
 	glfw.SetErrorCallback(proc "c" (error: i32, description: cstring) {
 		context = g.odin_context
 		log.errorf("GLFW Error {}: {}", error, description)
@@ -274,6 +277,7 @@ update :: proc() {
 
 	// Before the tick loop, so a snapshot that just arrived is reconciled
 	// first and the new ticks predict on top of corrected state.
+	steam_pump()
 	net_client_pump()
 	update_scene()
 

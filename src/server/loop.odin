@@ -25,8 +25,11 @@ run_loop :: proc() {
 		sv.gs.tick = u64(sv.tick)
 		target := time.Duration(sv.tick) * period
 
-		// 1. everything the wire brought since the last tick
+		// 1. everything the wire brought since the last tick, on both
+		// transports, plus whatever Steam has to say about them
 		receive_packets()
+		steam_server_pump()
+		steam_receive_packets()
 
 		// 2. who is still here
 		update_clients()

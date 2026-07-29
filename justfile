@@ -30,20 +30,26 @@ models:
     python3 tools/build_model_textures.py
     blender -b -P tools/convert_models.py
 
+# libsteam_api.so has SONAME libsteam_api.so, so the binary needs an rpath to
+# find the vendored copy at runtime; dev builds point at the repo, release
+# builds use $ORIGIN and ship the .so next to the binary
+steam_rpath := "-extra-linker-flags:\"-Wl,-rpath," + justfile_directory() + "/steamworks/redistributable_bin/linux64\""
+
 # -debug sets ODIN_DEBUG, which enables the validation layer and the HUD's debug
 # tools (DEBUG_TOOLS defaults to it)
 run: shaders
-    odin run src -debug
+    odin run src -debug {{steam_rpath}}
 
 # the same thing under the name the server recipe pairs with
 client: run
 
 # the dedicated server: headless, no shaders to compile, no Vulkan to validate
 server:
-    odin run src/server -debug
+    odin run src/server -debug {{steam_rpath}}
 
 release-server:
-    odin build src/server -out:vulkan-server -o:speed -no-bounds-check -disable-assert
+    odin build src/server -out:vulkan-server -o:speed -no-bounds-check -disable-assert -define:STEAM_REQUIRED=true -extra-linker-flags:"-Wl,-rpath,'\$ORIGIN'"
+    cp steamworks/redistributable_bin/linux64/libsteam_api.so .
 
 # No ODIN_DEBUG, so no validation layer, no debug symbols and no debug tools.
 #
@@ -53,8 +59,17 @@ release-server:
 # -o:aggressive is deliberately absent. It licenses float reassociation, and the
 # physics compares floats exactly (physics/raycast.odin, physics/body.odin), so it
 # could quietly change what the player collides with. Speed is not worth that.
+# STEAM_REQUIRED makes Steam mandatory: the client relaunches through Steam,
+# the server refuses -insecure and compiles the UDP listener out, and both
+# ends force SDR relay routing so no IP is ever exchanged.
+#
+# STEAM_APP_ID still defaults to 480 (Spacewar). Before an actual Steam
+# release both recipes need -define:STEAM_APP_ID=<real id>, and the packaging
+# must NOT ship steam_appid.txt -- next to the binary it disables the
+# relaunch-through-Steam gate; it exists for development only.
 release: shaders
-    odin build src -out:vulkan -o:speed -no-bounds-check -disable-assert
+    odin build src -out:vulkan -o:speed -no-bounds-check -disable-assert -define:STEAM_REQUIRED=true -extra-linker-flags:"-Wl,-rpath,'\$ORIGIN'"
+    cp steamworks/redistributable_bin/linux64/libsteam_api.so .
 
 # Optimised, but with the debug overlay and its shortcuts compiled in. The only
 # way to look at something that misbehaves at full speed and not at -o:none.
@@ -62,7 +77,7 @@ release: shaders
 # Keeps bounds checks: this is the build to reproduce a bug in, and an index that
 # runs off the end should stop rather than corrupt something further away.
 release-tools: shaders
-    odin build src -out:vulkan -o:speed -define:DEBUG_TOOLS=true
+    odin build src -out:vulkan -o:speed -define:DEBUG_TOOLS=true {{steam_rpath}}
 
 # the packages with no Vulkan dependency, which is what makes them testable
 test:
@@ -76,10 +91,12 @@ check:
     odin check src/game -vet-unused -vet-shadowing -no-entry-point
     odin check src/protocol -vet-unused -vet-shadowing -no-entry-point
     odin check src/server -vet-unused -vet-shadowing
+    odin check src -vet-unused -vet-shadowing -define:STEAM_REQUIRED=true
+    odin check src/server -vet-unused -vet-shadowing -define:STEAM_REQUIRED=true
 
 # One formatting to argue about instead of one per contributor.
 fmt:
     odinfmt -w src
 
 clean:
-    rm -f shaders/*.spv vulkan src.bin
+    rm -f shaders/*.spv vulkan vulkan-server libsteam_api.so src.bin

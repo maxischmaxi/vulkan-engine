@@ -15,7 +15,7 @@ package protocol
 //     connection.odin (join, match phases, kills, disconnects)
 
 PROTOCOL_MAGIC :: u16(0xB0F5)
-PROTOCOL_VERSION :: u8(7)
+PROTOCOL_VERSION :: u8(8)
 
 // Well under every real-world MTU, so a packet is never fragmented. The worst
 // snapshot today is ~400 bytes; this is headroom, not a target.
@@ -70,16 +70,27 @@ Msg_Id :: enum u8 {
 }
 
 Deny_Reason :: enum u8 {
-	None        = 0,
-	Full        = 1,
-	Bad_Version = 2,
-	In_Match    = 3,
+	None         = 0,
+	Full         = 1,
+	Bad_Version  = 2,
+	In_Match     = 3,
+	Bad_Ticket   = 4,
+	No_License   = 5,
+	Banned       = 6,
+	Auth_Timeout = 7,
 }
 
 Disconnect_Reason :: enum u8 {
-	None     = 0,
-	Quit     = 1,
-	Timeout  = 2,
-	Shutdown = 3,
-	Kicked   = 4,
+	None         = 0,
+	Quit         = 1,
+	Timeout      = 2,
+	Shutdown     = 3,
+	Kicked       = 4,
+	Auth_Revoked = 5,
 }
+
+// Steam transport only: deny/disconnect reasons mirrored into the connection
+// close handshake (ESteamNetConnectionEnd app range 1000..1999), because the
+// deny/disconnect datagrams themselves are unreliable and may not arrive.
+CLOSE_CODE_DENY_BASE :: 1000
+CLOSE_CODE_DISCONNECT_BASE :: 1100

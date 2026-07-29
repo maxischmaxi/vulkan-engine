@@ -343,7 +343,7 @@ send_snapshots :: proc() {
 	zero_base: protocol.Snapshot
 
 	for &slot in clients {
-		if slot.state == .Empty do continue
+		if slot.state == .Empty || slot.state == .Authenticating do continue
 
 		s := snap
 		s.last_input_tick = slot.consumed_tick
@@ -397,7 +397,7 @@ send_snapshots :: proc() {
 			log.warnf("Server: snapshot overflowed the MTU, not sent")
 			continue
 		}
-		send_to(slot.endpoint, w.buf[:w.off])
+		send_to(slot.peer, w.buf[:w.off])
 	}
 
 	log_server_stats()

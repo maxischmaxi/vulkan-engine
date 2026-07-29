@@ -9,10 +9,16 @@ import "../game"
 
 MAX_NAME :: 16
 
+// A Steam auth session ticket. Real tickets run ~234 bytes; the cap is the
+// SDK's own buffer recommendation. Zero-length means an insecure dev connect.
+MAX_TICKET :: 1024
+
 Connect_Request :: struct {
 	client_salt: u32,
 	name:        [MAX_NAME]u8,
 	name_len:    u8,
+	ticket:      [MAX_TICKET]u8,
+	ticket_len:  u16,
 }
 
 write_connect_request :: proc(w: ^Writer, m: Connect_Request) {
@@ -20,12 +26,20 @@ write_connect_request :: proc(w: ^Writer, m: Connect_Request) {
 	write_u8(w, min(m.name_len, MAX_NAME))
 	name := m.name
 	write_bytes(w, name[:])
+	// Unlike the fixed name block, the ticket goes out length-prefixed and
+	// trimmed: padding it to MAX_TICKET would put every handshake at the MTU.
+	tlen := min(m.ticket_len, MAX_TICKET)
+	write_u16(w, tlen)
+	ticket := m.ticket
+	write_bytes(w, ticket[:tlen])
 }
 
 read_connect_request :: proc(r: ^Reader) -> (m: Connect_Request, ok: bool) {
 	m.client_salt = read_u32(r)
 	m.name_len = min(read_u8(r), MAX_NAME)
 	read_bytes(r, m.name[:])
+	m.ticket_len = min(read_u16(r), MAX_TICKET)
+	read_bytes(r, m.ticket[:m.ticket_len])
 	return m, !r.error
 }
 

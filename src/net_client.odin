@@ -17,7 +17,14 @@ import "protocol"
 SNAPSHOT_CAP :: protocol.SNAPSHOT_RING
 
 NET_CONNECT_TIMEOUT :: 5.0
+// Finding a relay route can take well over the loopback budget.
+NET_CONNECT_TIMEOUT_STEAM :: 15.0
 NET_SNAPSHOT_TIMEOUT :: 5.0
+
+Net_Transport :: enum u8 {
+	Udp,
+	Steam,
+}
 
 // How far ahead of the server's clock the client stamps its commands, so they
 // arrive just before the tick that wants them. Generous for localhost; a real
@@ -26,6 +33,7 @@ NET_RUN_AHEAD :: 8
 
 Net_Client :: struct {
 	active:             bool, // socket open, somewhere in the handshake or beyond
+	transport:          Net_Transport,
 	got_accept:         bool,
 	joined:             bool, // match joined; snapshots are flowing
 	// Registered on the range instead of joining a match. Snapshots still
@@ -84,6 +92,38 @@ net_practice_start :: proc(port: int) {
 	send_connect_request()
 }
 
+// The Steam variant: no socket -- a P2P connection to the server's SteamID.
+// The Connect_Request waits until Steam reports the route open and the auth
+// ticket is in hand; net_try_connect_request fires it from either callback.
+net_connect_start_steam :: proc(steamid: u64, team: game.Team) {
+	if !steam_available() {
+		scene.error_text = "STEAM NOT RUNNING"
+		enter_scene(.Menu)
+		return
+	}
+	net_reset()
+	net_client.active = true
+	net_client.transport = .Steam
+	net_client.team = team
+	net_client.client_salt = rand.uint32()
+	net_client.connect_start = time.tick_now()
+	net_client.last_send = time.tick_now()
+	net_client.phase = .Idle
+	steam_request_ticket(steamid)
+	steam_net_connect(steamid)
+	log.infof("NET: connecting to steam server {}", steamid)
+}
+
+// Sends the connect request if everything it depends on is ready; safe to
+// call from every place that removes one of the obstacles.
+net_try_connect_request :: proc() {
+	if !net_client.active || net_client.got_accept do return
+	if net_client.transport == .Steam {
+		if !steam_net.connected || !steam_state.ticket_ready do return
+	}
+	send_connect_request()
+}
+
 @(private = "file")
 net_open :: proc(port: int) -> bool {
 	net_reset()
@@ -127,10 +167,16 @@ net_disconnect :: proc() {
 			protocol.connection_begin_packet(&net_client.conn, &w)
 			protocol.write_u8(&w, u8(protocol.Msg_Id.Disconnect))
 			protocol.write_disconnect(&w, {reason = .Quit})
-			net.send_udp(net_client.socket, w.buf[:w.off], net_client.server_ep)
+			net_send(w.buf[:w.off])
 		}
 	}
-	net.close(net_client.socket)
+	switch net_client.transport {
+	case .Udp:
+		net.close(net_client.socket)
+	case .Steam:
+		steam_net_close(true) // linger so the Disconnect burst still flushes
+		steam_cancel_ticket()
+	}
 	log.info("NET: disconnected")
 	net_reset()
 }
@@ -153,8 +199,9 @@ net_client_pump :: proc() {
 
 	// handshake upkeep
 	if !net_client.joined {
-		if time.duration_seconds(time.tick_diff(net_client.connect_start, now)) >
-		   NET_CONNECT_TIMEOUT {
+		timeout :=
+			net_client.transport == .Steam ? NET_CONNECT_TIMEOUT_STEAM : NET_CONNECT_TIMEOUT
+		if time.duration_seconds(time.tick_diff(net_client.connect_start, now)) > timeout {
 			net_fail("COULD NOT REACH SERVER")
 			return
 		}
@@ -163,7 +210,7 @@ net_client_pump :: proc() {
 			if net_client.got_accept {
 				send_keepalive() // carries the queued reliable Join until acked
 			} else {
-				send_connect_request()
+				net_try_connect_request()
 			}
 		}
 	}
@@ -178,16 +225,27 @@ net_client_pump :: proc() {
 	}
 
 	// drain everything that arrived
-	for {
-		n, _, err := net.recv_udp(net_client.socket, recv_buf[:])
-		if err == .Would_Block do break
-		if err != nil {
-			log.warnf("NET: recv error {}", err)
-			break
+	switch net_client.transport {
+	case .Udp:
+		for {
+			n, _, err := net.recv_udp(net_client.socket, recv_buf[:])
+			if err == .Would_Block do break
+			if err != nil {
+				log.warnf("NET: recv error {}", err)
+				break
+			}
+			if n < protocol.HEADER_SIZE do continue
+			handle_server_packet(recv_buf[:n])
+			if !net_client.active do return // a deny or disconnect tore us down
 		}
-		if n < protocol.HEADER_SIZE do continue
-		handle_server_packet(recv_buf[:n])
-		if !net_client.active do return // a deny or disconnect tore us down
+	case .Steam:
+		for {
+			data, ok := steam_net_poll()
+			if !ok do break
+			if len(data) < protocol.HEADER_SIZE do continue
+			handle_server_packet(data)
+			if !net_client.active do return
+		}
 	}
 
 	// a joined client that stops hearing snapshots has lost the server
@@ -199,12 +257,43 @@ net_client_pump :: proc() {
 	}
 }
 
-@(private = "file")
 net_fail :: proc(text: string) {
 	log.warnf("NET: {}", text)
 	net_disconnect()
 	scene.error_text = text
 	enter_scene(.Menu)
+}
+
+// All strings glyph-safe for the HUD font (uppercase, no ? & ' @).
+deny_text :: proc(reason: protocol.Deny_Reason) -> string {
+	switch reason {
+	case .Full:
+		return "SERVER FULL"
+	case .Bad_Version:
+		return "VERSION MISMATCH"
+	case .Bad_Ticket:
+		return "STEAM AUTH FAILED"
+	case .No_License:
+		return "GAME NOT OWNED ON THIS ACCOUNT"
+	case .Banned:
+		return "BANNED"
+	case .Auth_Timeout:
+		return "STEAM AUTH TIMED OUT"
+	case .None, .In_Match:
+	}
+	return "CONNECTION REFUSED"
+}
+
+server_disconnect_text :: proc(reason: protocol.Disconnect_Reason) -> string {
+	#partial switch reason {
+	case .Auth_Revoked:
+		return "STEAM AUTH REVOKED"
+	case .Shutdown:
+		return "SERVER SHUT DOWN"
+	case .Kicked:
+		return "KICKED"
+	}
+	return "SERVER CLOSED THE CONNECTION"
 }
 
 @(private = "file")
@@ -282,7 +371,7 @@ handle_server_packet :: proc(data: []u8) {
 			reason := dok ? deny.reason : .None
 			log.warnf("NET: connection denied ({})", reason)
 			net_disconnect()
-			scene.error_text = reason == .Full ? "SERVER FULL" : "CONNECTION REFUSED"
+			scene.error_text = deny_text(reason)
 			enter_scene(.Menu)
 		}
 		return
@@ -323,7 +412,11 @@ handle_server_packet :: proc(data: []u8) {
 				handle_damage(m)
 			}
 		case .Server_Disconnect:
-			net_fail("SERVER CLOSED THE CONNECTION")
+			text := "SERVER CLOSED THE CONNECTION"
+			if m, mok := protocol.read_disconnect(&r); mok {
+				text = server_disconnect_text(m.reason)
+			}
+			net_fail(text)
 			return
 		case:
 			return // unknown message, rest of the datagram unreadable
@@ -454,15 +547,18 @@ send_connect_request :: proc() {
 	scratch: protocol.Connection
 	protocol.connection_init(&scratch, 0)
 
-	buf: [64]u8
+	buf: [protocol.MTU]u8
 	w := protocol.writer(buf[:])
 	protocol.connection_begin_packet(&scratch, &w)
 	protocol.write_u8(&w, u8(protocol.Msg_Id.Connect_Request))
+	name := steam_persona()
+	if name == "" do name = "PLAYER"
 	request := protocol.Connect_Request {
 		client_salt = net_client.client_salt,
-		name_len    = 3,
+		ticket_len  = u16(steam_state.ticket_len),
 	}
-	copy(request.name[:], "max")
+	request.name_len = u8(copy(request.name[:], name))
+	copy(request.ticket[:], steam_state.ticket[:steam_state.ticket_len])
 	protocol.write_connect_request(&w, request)
 	net_send(w.buf[:w.off])
 }
@@ -478,8 +574,13 @@ send_keepalive :: proc() {
 
 net_send :: proc(data: []u8) {
 	net_client.last_send = time.tick_now()
-	if _, err := net.send_udp(net_client.socket, data, net_client.server_ep); err != nil {
-		log.warnf("NET: send error {}", err)
+	switch net_client.transport {
+	case .Udp:
+		if _, err := net.send_udp(net_client.socket, data, net_client.server_ep); err != nil {
+			log.warnf("NET: send error {}", err)
+		}
+	case .Steam:
+		steam_net_send(data)
 	}
 }
 

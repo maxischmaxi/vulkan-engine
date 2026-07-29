@@ -4,8 +4,8 @@ import "../game"
 import "../protocol"
 import "core:log"
 import "core:math/rand"
-import "core:net"
 import "core:time"
+import steam "../../steamworks"
 
 // Who is connected, and what they are allowed to mean. Every datagram lands
 // here first: unconnected traffic may only ever become a handshake, connected
@@ -28,17 +28,25 @@ MAX_INPUT_BACKLOG :: 6
 
 Client_State :: enum u8 {
 	Empty,
+	// Steam peer whose ticket is with the Steam backend; the accept waits for
+	// the verdict. Nothing but handshake retries may arrive in this state.
+	Authenticating,
 	Connected, // handshake done, sitting in the menu / team select
 	In_Game, // joined a match, owns a pawn
 }
 
+// How long a ticket may sit with Steam before the connect is refused. The
+// client's steam connect budget (15 s) comfortably covers it.
+AUTH_TIMEOUT_SECONDS :: 10.0
+
 Client_Slot :: struct {
 	state:              Client_State,
-	endpoint:           net.Endpoint,
+	peer:               Peer,
 	conn:               protocol.Connection,
 	client_salt:        u32,
 	server_salt:        u32,
 	last_recv:          time.Tick,
+	auth_start:         time.Tick, // .Authenticating: when the ticket went to Steam
 	pawn_id:            int,
 	name:               [protocol.MAX_NAME]u8,
 	name_len:           u8,
@@ -81,25 +89,8 @@ Client_Slot :: struct {
 
 clients: [MAX_CLIENTS]Client_Slot
 
-recv_buf: [protocol.MTU]u8
-
-receive_packets :: proc() {
-	for {
-		n, ep, err := net.recv_udp(sv.socket, recv_buf[:])
-		if err == .Would_Block do break
-		if err != nil {
-			// Transient network errors are logged and survived; a dead socket
-			// would spin here, so anything persistent shows up loudly.
-			log.warnf("Server: recv error {}", err)
-			break
-		}
-		if n < protocol.HEADER_SIZE do continue
-		handle_packet(ep, recv_buf[:n])
-	}
-}
-
-@(private = "file")
-handle_packet :: proc(ep: net.Endpoint, data: []u8) {
+// Both transports feed this: udp.odin's drain and steam_net.odin's poll group.
+handle_packet :: proc(peer: Peer, data: []u8) {
 	// The session field sits at a fixed offset; zero marks handshake traffic,
 	// which is the only thing an unknown endpoint may say to us.
 	r := protocol.reader(data)
@@ -110,12 +101,17 @@ handle_packet :: proc(ep: net.Endpoint, data: []u8) {
 	if magic != protocol.PROTOCOL_MAGIC do return
 
 	if session == 0 {
-		handle_unconnected(ep, version, data)
+		handle_unconnected(peer, version, data)
 		return
 	}
 
-	slot := find_client(ep)
+	slot := find_client(peer)
 	if slot == nil do return
+
+	// Until the ticket verdict is in, the only currency is handshake retries
+	// (session 0, handled above). Everything else -- Join, Input, Loadout --
+	// would let an unvalidated account act.
+	if slot.state == .Authenticating do return
 
 	pr, ok := protocol.connection_read(&slot.conn, data)
 	if !ok do return
@@ -172,7 +168,7 @@ handle_packet :: proc(ep: net.Endpoint, data: []u8) {
 }
 
 @(private = "file")
-handle_unconnected :: proc(ep: net.Endpoint, version: u8, data: []u8) {
+handle_unconnected :: proc(peer: Peer, version: u8, data: []u8) {
 	// Re-parse as a full packet through a throwaway session-0 connection: the
 	// handshake rides the same framing as everything else.
 	scratch: protocol.Connection
@@ -180,7 +176,7 @@ handle_unconnected :: proc(ep: net.Endpoint, version: u8, data: []u8) {
 	pr, ok := protocol.connection_read(&scratch, data)
 	if !ok {
 		if version != protocol.PROTOCOL_VERSION {
-			send_deny(ep, .Bad_Version)
+			send_deny(peer, .Bad_Version)
 		}
 		return
 	}
@@ -189,18 +185,48 @@ handle_unconnected :: proc(ep: net.Endpoint, version: u8, data: []u8) {
 	request, rok := protocol.read_connect_request(&pr)
 	if !rok do return
 
-	// A duplicate request from a known endpoint gets the same accept again --
+	// A duplicate request from a known peer gets the same accept again --
 	// the first one may have been lost, and the handshake must be idempotent.
-	if slot := find_client(ep); slot != nil {
+	if slot := find_client(peer); slot != nil {
 		if slot.client_salt == request.client_salt {
-			send_accept(slot)
+			// While Steam is still judging the ticket there is no accept to
+			// repeat; the retry only proves the peer is alive.
+			if slot.state == .Authenticating {
+				slot.last_recv = time.tick_now()
+			} else {
+				send_accept(slot)
+			}
 		}
 		return
 	}
 
+	if peer.kind == .Steam {
+		// The transport already authenticated the SteamID; the ticket is the
+		// ownership/ban check on top. Real tickets run ~234 bytes -- anything
+		// shorter is junk and must not get as far as evicting a slot.
+		if request.ticket_len < 64 {
+			deny_and_close(peer, .Bad_Ticket)
+			return
+		}
+		// One account, one slot. A reconnect after a crash arrives while the
+		// old slot still lingers, so the old one yields -- but only the old
+		// one this packet: the fresh slot is built by the client's next
+		// retry, one tick later, so the EndAuthSession here and any stale
+		// ValidateAuthTicketResponse drain before the new BeginAuthSession.
+		if old := find_client_by_steam_id(peer.steam_id); old != nil {
+			log.infof(
+				"Server: steamid {} reconnected, dropping old slot {}",
+				peer.steam_id,
+				client_index(old),
+			)
+			drop_client(old)
+			return
+		}
+	}
+
 	slot := find_free_slot()
 	if slot == nil {
-		send_deny(ep, .Full)
+		deny_and_close(peer, .Full)
 		return
 	}
 
@@ -209,8 +235,7 @@ handle_unconnected :: proc(ep: net.Endpoint, version: u8, data: []u8) {
 	// The command ring tests "does this slot hold tick N" by equality; a fresh
 	// zeroed ring would falsely claim to hold tick 0.
 	for &t in slot.command_ticks do t = max(u32)
-	slot.state = .Connected
-	slot.endpoint = ep
+	slot.peer = peer
 	slot.client_salt = request.client_salt
 	slot.server_salt = rand.uint32()
 	slot.name = request.name
@@ -220,8 +245,124 @@ handle_unconnected :: proc(ep: net.Endpoint, version: u8, data: []u8) {
 	protocol.connection_init(&slot.conn, request.client_salt ~ slot.server_salt)
 
 	name := string(slot.name[:slot.name_len])
-	log.infof("Server: client {} connected ({}) from {}", index, name, net.endpoint_to_string(ep))
-	send_accept(slot)
+	if peer.kind == .Steam {
+		// The accept waits for Steam's verdict on the ticket; the immediate
+		// result only catches tickets that are malformed on their face.
+		slot.state = .Authenticating
+		slot.auth_start = time.tick_now()
+		res := steam.GameServer_BeginAuthSession(
+			steam.GameServer(),
+			&request.ticket[0],
+			i32(request.ticket_len),
+			steam.CSteamID(peer.steam_id),
+		)
+		if res != .OK {
+			log.warnf("Server: BeginAuthSession for {} refused ({})", peer.steam_id, res)
+			slot^ = {}
+			deny_and_close(peer, .Bad_Ticket)
+			return
+		}
+		steam_net_claim_conn(peer.conn)
+		log.infof(
+			"Server: client {} authenticating ({}) from {}",
+			index,
+			name,
+			peer_desc(peer),
+		)
+	} else {
+		slot.state = .Connected
+		log.infof("Server: client {} connected ({}) from {}", index, name, peer_desc(peer))
+		send_accept(slot)
+	}
+}
+
+// Steam's verdict on a ticket, pumped from the game-server pipe. Arrives once
+// during the handshake, and again at any time when the session dies under a
+// connected client (logout, ban, cancelled ticket).
+steam_on_validate_ticket :: proc(cb: ^steam.ValidateAuthTicketResponse) {
+	slot := find_client_by_steam_id(u64(cb.SteamID))
+	if slot == nil do return
+
+	if slot.state == .Authenticating {
+		if cb.eAuthSessionResponse == .OK {
+			slot.state = .Connected
+			log.infof(
+				"Server: client {} authenticated (owner {})",
+				client_index(slot),
+				u64(cb.OwnerSteamID),
+			)
+			send_accept(slot)
+		} else {
+			log.warnf(
+				"Server: client {} ticket rejected ({})",
+				client_index(slot),
+				cb.eAuthSessionResponse,
+			)
+			reason := deny_reason_for(cb.eAuthSessionResponse)
+			send_deny(slot.peer, reason)
+			steam_net_close_reason(slot.peer.conn, deny_close_code(reason))
+			drop_client(slot)
+		}
+		return
+	}
+
+	// Mid-session revocation. The pawn goes; the account stays bannable.
+	if cb.eAuthSessionResponse != .OK {
+		log.warnf(
+			"Server: client {} auth revoked ({})",
+			client_index(slot),
+			cb.eAuthSessionResponse,
+		)
+		// The datagram is best effort; the close reason rides the reliable
+		// close handshake and is what the client actually acts on.
+		send_server_disconnect(slot, .Auth_Revoked)
+		steam_net_close_reason(slot.peer.conn, disconnect_close_code(.Auth_Revoked))
+		drop_client(slot)
+	}
+}
+
+// Deny a peer that owns no slot, then free its transport state. Steam
+// connections carry the reason in the close handshake too, because the deny
+// datagram itself is unreliable.
+@(private = "file")
+deny_and_close :: proc(peer: Peer, reason: protocol.Deny_Reason) {
+	send_deny(peer, reason)
+	if peer.kind == .Steam {
+		steam_net_close_reason(peer.conn, deny_close_code(reason))
+	}
+}
+
+@(private = "file")
+deny_close_code :: proc(reason: protocol.Deny_Reason) -> i32 {
+	return protocol.CLOSE_CODE_DENY_BASE + i32(reason)
+}
+
+@(private = "file")
+disconnect_close_code :: proc(reason: protocol.Disconnect_Reason) -> i32 {
+	return protocol.CLOSE_CODE_DISCONNECT_BASE + i32(reason)
+}
+
+@(private = "file")
+deny_reason_for :: proc(r: steam.EAuthSessionResponse) -> protocol.Deny_Reason {
+	// NoLicenseOrExpired already covers ownership, so there is no separate
+	// UserHasLicenseForApp round trip.
+	#partial switch r {
+	case .NoLicenseOrExpired:
+		return .No_License
+	case .VACBanned, .PublisherIssuedBan:
+		return .Banned
+	}
+	return .Bad_Ticket
+}
+
+@(private = "file")
+send_server_disconnect :: proc(slot: ^Client_Slot, reason: protocol.Disconnect_Reason) {
+	buf: [64]u8
+	w := protocol.writer(buf[:])
+	protocol.connection_begin_packet(&slot.conn, &w)
+	protocol.write_u8(&w, u8(protocol.Msg_Id.Server_Disconnect))
+	protocol.write_disconnect(&w, {reason = reason})
+	send_to(slot.peer, w.buf[:w.off])
 }
 
 @(private = "file")
@@ -245,11 +386,11 @@ send_accept :: proc(slot: ^Client_Slot) {
 			phase = match.phase,
 		},
 	)
-	send_to(slot.endpoint, w.buf[:w.off])
+	send_to(slot.peer, w.buf[:w.off])
 }
 
 @(private = "file")
-send_deny :: proc(ep: net.Endpoint, reason: protocol.Deny_Reason) {
+send_deny :: proc(peer: Peer, reason: protocol.Deny_Reason) {
 	scratch: protocol.Connection
 	protocol.connection_init(&scratch, 0)
 
@@ -258,19 +399,38 @@ send_deny :: proc(ep: net.Endpoint, reason: protocol.Deny_Reason) {
 	protocol.connection_begin_packet(&scratch, &w)
 	protocol.write_u8(&w, u8(protocol.Msg_Id.Connect_Deny))
 	protocol.write_connect_deny(&w, {reason = reason})
-	send_to(ep, w.buf[:w.off])
+	send_to(peer, w.buf[:w.off])
 }
 
-send_to :: proc(ep: net.Endpoint, data: []u8) {
-	if _, err := net.send_udp(sv.socket, data, ep); err != nil {
-		log.warnf("Server: send error {}", err)
+send_to :: proc(peer: Peer, data: []u8) {
+	switch peer.kind {
+	case .Udp:
+		udp_send_to(peer.ep, data)
+	case .Steam:
+		steam_send(peer.conn, data)
 	}
 }
 
-find_client :: proc(ep: net.Endpoint) -> ^Client_Slot {
+find_client :: proc(peer: Peer) -> ^Client_Slot {
 	for &slot in clients {
 		if slot.state == .Empty do continue
-		if slot.endpoint == ep do return &slot
+		if peer_equal(slot.peer, peer) do return &slot
+	}
+	return nil
+}
+
+find_client_by_conn :: proc(conn: steam.HSteamNetConnection) -> ^Client_Slot {
+	for &slot in clients {
+		if slot.state == .Empty do continue
+		if slot.peer.kind == .Steam && slot.peer.conn == conn do return &slot
+	}
+	return nil
+}
+
+find_client_by_steam_id :: proc(steam_id: u64) -> ^Client_Slot {
+	for &slot in clients {
+		if slot.state == .Empty do continue
+		if slot.peer.kind == .Steam && slot.peer.steam_id == steam_id do return &slot
 	}
 	return nil
 }
@@ -293,15 +453,36 @@ client_index :: proc(slot: ^Client_Slot) -> int {
 update_clients :: proc() {
 	for &slot in clients {
 		if slot.state == .Empty do continue
+		// An authenticating slot answers to exactly one deadline: Steam's
+		// verdict. The generic last_recv timeout would fire first (5 < 10)
+		// and silently eat the deny.
+		if slot.state == .Authenticating {
+			if time.duration_seconds(time.tick_since(slot.auth_start)) > AUTH_TIMEOUT_SECONDS {
+				log.warnf("Server: client {} auth timed out", client_index(&slot))
+				send_deny(slot.peer, .Auth_Timeout)
+				steam_net_close_reason(slot.peer.conn, deny_close_code(.Auth_Timeout))
+				drop_client(&slot)
+			}
+			continue
+		}
 		if time.duration_seconds(time.tick_since(slot.last_recv)) > protocol.TIMEOUT_SECONDS {
 			log.infof("Server: client {} timed out", client_index(&slot))
 			drop_client(&slot)
 		}
 	}
+	steam_expire_unclaimed()
 }
 
 drop_client :: proc(slot: ^Client_Slot) {
 	was_in_game := slot.state == .In_Game
+	if slot.peer.kind == .Steam {
+		if steam_sv.active {
+			steam.GameServer_EndAuthSession(steam.GameServer(), steam.CSteamID(slot.peer.steam_id))
+		}
+		// Linger so a queued Server_Disconnect still flushes before the
+		// connection dies.
+		steam_net_close_conn(slot.peer.conn, true)
+	}
 	sv.gs.pawns[slot.pawn_id] = {}
 	slot^ = {}
 	if was_in_game {

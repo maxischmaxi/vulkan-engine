@@ -247,6 +247,15 @@ hud_text_width :: proc(text: string, size: f32) -> f32 {
 	return f32(len(text) - 1) * px * FONT_ADVANCE_RATIO + px * FONT_INK_RATIO
 }
 
+// Whether this byte draws ink after the same case fold hud_text applies.
+// Sanitisers for external strings (Steam persona names) keep only these.
+hud_font_has_glyph :: proc(c: u8) -> bool {
+	c := c
+	if c >= 'a' && c <= 'z' do c -= 32
+	index := int(c) - FONT_FIRST
+	return index >= 0 && index < FONT_COUNT && FONT_GLYPHS[index] != 0
+}
+
 // Returns where the pen ended up, so runs can be chained without measuring.
 hud_text :: proc(
 	x, y: f32,

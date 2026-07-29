@@ -91,8 +91,18 @@ enter_scene :: proc(next: Scene) {
 		grab_cursor(false)
 		if scene.practice_pending {
 			net_practice_start(protocol.DEFAULT_PORT)
+		} else if cli.connect_id != 0 {
+			net_connect_start_steam(cli.connect_id, scene.chosen_team)
 		} else {
-			net_connect_start(protocol.DEFAULT_PORT, scene.chosen_team)
+			when STEAM_REQUIRED {
+				// A release server has no UDP listener, so a loopback try
+				// would only burn the timeout. Until a server browser
+				// exists, joining needs --connect.
+				scene.error_text = "NO SERVER CONFIGURED"
+				enter_scene(.Menu)
+			} else {
+				net_connect_start(protocol.DEFAULT_PORT, scene.chosen_team)
+			}
 		}
 
 	case .Playing:

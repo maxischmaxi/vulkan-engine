@@ -2,11 +2,14 @@
 shaders/*.spv
 
 # odin build output (`odin build src` defaults to src.bin); vulkan and
-# vulkan-server are the release names, server the dev server binary
+# vulkan-server are the release names, server the dev server binary.
+# libsteam_api.so in the root is the copy release recipes place next to the
+# binary -- the committed one lives in steamworks/redistributable_bin/
 *.bin
 /vulkan
 /vulkan-server
 /server
+/libsteam_api.so
 
 # ambientCG archives and the textures extracted from them by `just textures`
 *.zip

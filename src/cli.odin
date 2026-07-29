@@ -28,6 +28,12 @@ Cli :: struct {
 	// Start holding this weapon by name. The only way to look at a viewmodel
 	// without a keyboard, which is what makes a screenshot of one repeatable.
 	weapon:        string,
+	// Skip Steam init entirely. Dev builds also fall back on their own when
+	// Steam is not running; the flag exists to test that path deliberately.
+	no_steam:      bool,
+	// Join a server over Steam by its SteamID64 (printed by the server when it
+	// logs on). Zero means the loopback UDP dev server.
+	connect_id:    u64,
 }
 
 cli: Cli
@@ -37,8 +43,10 @@ CLI_USAGE :: `Options:
   --gpu-timing  measure each pass on the GPU and show it in the overlay
   --bench=N     run the fixed camera path for N frames, print one line, exit
   --join=TEAM   skip the menu and join the local server as t or ct
+  --connect=ID  join the server with this steamid64 over Steam
   --practice    skip the menu and enter the practice range
   --weapon=NAME start holding a weapon by name, e.g. ak, glock, awp, knife
+  --no-steam    run without Steam, dev builds only
   --no-light-cull  shade every light in every tile, to measure the culling
   --no-depth-prepass  shade the world without the depth-only first pass
   --help        print this`
@@ -66,6 +74,14 @@ parse_cli :: proc() {
 		case arg == "--no-depth-prepass":
 			cli.depth_prepass = false
 
+		case strings.has_prefix(arg, "--connect="):
+			value, ok := strconv.parse_u64(arg[len("--connect="):])
+			if !ok || value == 0 {
+				log.errorf("--connect wants a steamid64, got {}", arg)
+				continue
+			}
+			cli.connect_id = value
+
 		case strings.has_prefix(arg, "--join="):
 			value := arg[len("--join="):]
 			if value != "t" && value != "ct" {
@@ -76,6 +92,14 @@ parse_cli :: proc() {
 
 		case arg == "--practice":
 			cli.practice = true
+
+		case arg == "--no-steam":
+			when STEAM_REQUIRED {
+				log.error("--no-steam is not available in this build")
+				os.exit(1)
+			} else {
+				cli.no_steam = true
+			}
 
 		case strings.has_prefix(arg, "--weapon="):
 			cli.weapon = arg[len("--weapon="):]

@@ -107,6 +107,17 @@ draw_main_menu :: proc(width, height: f32) {
 		HUD_FAINT,
 		.Center,
 	)
+
+	if steam_persona() != "" {
+		hud_text_shadow(
+			width - HUD_MARGIN * scale,
+			height - 40 * scale,
+			fmt.tprintf("STEAM: {}", steam_persona()),
+			HUD_TEXT_SMALL * 0.85 * scale,
+			HUD_FAINT,
+			.Right,
+		)
+	}
 }
 
 // One of the two team cards: a coloured accent bar, the tag on top, the role

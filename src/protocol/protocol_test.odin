@@ -41,6 +41,49 @@ test_writer_overflow_sticky :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_connect_request_roundtrip :: proc(t: ^testing.T) {
+	for tlen in ([]int{0, 234, MAX_TICKET}) {
+		m: Connect_Request
+		m.client_salt = 0xC0FFEE
+		m.name_len = u8(copy(m.name[:], "PLAYER"))
+		m.ticket_len = u16(tlen)
+		for i in 0 ..< tlen do m.ticket[i] = u8(i * 7)
+
+		buf: [2 * MAX_TICKET]u8
+		w := writer(buf[:])
+		write_connect_request(&w, m)
+		testing.expect(t, !w.overflow)
+		// the worst case must still fit one unfragmented datagram
+		testing.expect(t, HEADER_SIZE + 1 + w.off <= MTU)
+
+		r := reader(buf[:w.off])
+		back, ok := read_connect_request(&r)
+		testing.expect(t, ok)
+		testing.expect_value(t, back.client_salt, m.client_salt)
+		testing.expect_value(t, back.name_len, m.name_len)
+		testing.expect_value(t, back.ticket_len, m.ticket_len)
+		testing.expect(t, back.name == m.name)
+		testing.expect(t, back.ticket == m.ticket)
+	}
+
+	// a ticket that cannot fit the buffer must flag overflow, not crash
+	m: Connect_Request
+	m.ticket_len = MAX_TICKET
+	small: [128]u8
+	w := writer(small[:])
+	write_connect_request(&w, m)
+	testing.expect(t, w.overflow)
+
+	// a truncated datagram must flag a read error, not crash
+	big: [2 * MAX_TICKET]u8
+	w2 := writer(big[:])
+	write_connect_request(&w2, m)
+	r := reader(big[:w2.off - 10])
+	_, ok := read_connect_request(&r)
+	testing.expect(t, !ok)
+}
+
+@(test)
 test_yaw_quantization :: proc(t: ^testing.T) {
 	step := f32(360.0 / 65536.0)
 	for yaw in ([]f32{0, 90, 179.9, -180, -10, 359.9, 720.5}) {
