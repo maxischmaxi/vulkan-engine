@@ -292,6 +292,8 @@ server_disconnect_text :: proc(reason: protocol.Disconnect_Reason) -> string {
 		return "SERVER SHUT DOWN"
 	case .Kicked:
 		return "KICKED"
+	case .Banned:
+		return "BANNED"
 	}
 	return "SERVER CLOSED THE CONNECTION"
 }
@@ -352,6 +354,19 @@ handle_server_packet :: proc(data: []u8) {
 			// debug toggles flipped before connecting still have to arrive
 			if debug.god_mode || debug.infinite_ammo {
 				net_send_debug_flags()
+			}
+			when !STEAM_REQUIRED {
+				if cli.cheat_probe == "debugmsg" {
+					// Deliberately illegal: a hardened server answers this
+					// with an instant ban, which is exactly what the headless
+					// anti-cheat E2E test wants to observe.
+					protocol.queue_reliable_msg(
+						&net_client.conn,
+						.Debug_Flags,
+						protocol.write_debug_flags,
+						protocol.Debug_Flags{god = true, infinite_ammo = true},
+					)
+				}
 			}
 			send_keepalive()
 

@@ -34,7 +34,10 @@ steam_server_init :: proc(port: int) {
 		0,
 		u16(port),
 		steam.STEAMGAMESERVER_QUERY_PORT_SHARED,
-		.Authentication,
+		// AuthenticationAndSecure marks the session VAC-secure. A no-op under
+		// AppID 480, but the switch must not be forgotten when the real AppID
+		// lands; VAC-banned accounts already deny at the ticket verdict.
+		.AuthenticationAndSecure,
 		STEAM_SERVER_VERSION,
 		&err_msg,
 	)

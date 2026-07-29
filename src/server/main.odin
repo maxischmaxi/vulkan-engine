@@ -32,6 +32,7 @@ main :: proc() {
 	context.logger = log.create_console_logger()
 
 	port := protocol.DEFAULT_PORT
+	ban_path := BAN_FILE_DEFAULT
 	for arg in os.args[1:] {
 		switch {
 		case strings.has_prefix(arg, "-port="):
@@ -50,11 +51,31 @@ main :: proc() {
 				sv.insecure = true
 			}
 
+		case strings.has_prefix(arg, "-banlist="):
+			ban_path = arg[len("-banlist="):]
+			if ban_path == "" {
+				log.errorf("-banlist wants a file path, got {}", arg)
+				os.exit(1)
+			}
+
+		case arg == "-ac-shadow":
+			ac.shadow = true
+
+		case arg == "-harden":
+			when STEAM_REQUIRED {
+				log.info("-harden is implied in this build")
+			} else {
+				ac.harden = true
+			}
+
 		case arg == "-help" || arg == "--help":
 			log.info(
 				"Options:\n" +
 				"  -port=N     listen on UDP port N (default 27015)\n" +
-				"  -insecure   UDP only, no Steam (dev builds)",
+				"  -insecure   UDP only, no Steam (dev builds)\n" +
+				"  -banlist=F  ban list file (default bans.txt)\n" +
+				"  -ac-shadow  statistical detectors log instead of banning\n" +
+				"  -harden     refuse dev affordances like a release server (dev builds)",
 			)
 			os.exit(0)
 
@@ -62,6 +83,8 @@ main :: proc() {
 			log.warnf("Ignoring unknown option {}", arg)
 		}
 	}
+
+	ban_list_load(ban_path)
 
 	// The same map, the same bake, the same order as the client -- which is
 	// what makes the two simulations bit-compatible.

@@ -34,6 +34,10 @@ Cli :: struct {
 	// Join a server over Steam by its SteamID64 (printed by the server when it
 	// logs on). Zero means the loopback UDP dev server.
 	connect_id:    u64,
+	// Dev builds only: fire one deliberately illegal message after the accept,
+	// so the server's anti-cheat pipeline is testable headless. "debugmsg" is
+	// the only probe today; the seam future probes extend.
+	cheat_probe:   string,
 }
 
 cli: Cli
@@ -47,6 +51,7 @@ CLI_USAGE :: `Options:
   --practice    skip the menu and enter the practice range
   --weapon=NAME start holding a weapon by name, e.g. ak, glock, awp, knife
   --no-steam    run without Steam, dev builds only
+  --cheat-probe=K  dev builds only: send illegal message K after connect (debugmsg)
   --no-light-cull  shade every light in every tile, to measure the culling
   --no-depth-prepass  shade the world without the depth-only first pass
   --help        print this`
@@ -99,6 +104,14 @@ parse_cli :: proc() {
 				os.exit(1)
 			} else {
 				cli.no_steam = true
+			}
+
+		case strings.has_prefix(arg, "--cheat-probe="):
+			when STEAM_REQUIRED {
+				log.error("--cheat-probe is not available in this build")
+				os.exit(1)
+			} else {
+				cli.cheat_probe = arg[len("--cheat-probe="):]
 			}
 
 		case strings.has_prefix(arg, "--weapon="):

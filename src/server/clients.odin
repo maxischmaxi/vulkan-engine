@@ -85,6 +85,11 @@ Client_Slot :: struct {
 	// Same groundwork, richer stream: what the aim did around every trigger
 	// pull (aim_telemetry.odin). Zeroed with the slot on connect.
 	aim:                Aim_Telemetry,
+	// Cheap event counters the anti-cheat pass judges (anticheat.odin).
+	anomaly:            Anomaly_Counters,
+	// .Steam: the library owner Steam reported with the ticket verdict --
+	// differs from steam_id when the game is family-shared.
+	owner_steam_id:     u64,
 }
 
 clients: [MAX_CLIENTS]Client_Slot
@@ -108,6 +113,12 @@ handle_packet :: proc(peer: Peer, data: []u8) {
 	slot := find_client(peer)
 	if slot == nil do return
 
+	// The rate gate: an honest client sends ~64 datagrams a second and the
+	// budget is four times that. Excess is shed here; whether the flood is a
+	// violation is judged at the window reset in ac_tick.
+	slot.anomaly.packets_window += 1
+	if slot.anomaly.packets_window > AC_PACKET_BUDGET do return
+
 	// Until the ticket verdict is in, the only currency is handshake retries
 	// (session 0, handled above). Everything else -- Join, Input, Loadout --
 	// would let an unvalidated account act.
@@ -127,6 +138,13 @@ handle_packet :: proc(peer: Peer, data: []u8) {
 				handle_join(slot, join.team)
 			}
 		case .Debug_Flags:
+			// The shipped client physically cannot send this (DEBUG_TOOLS is
+			// compiled out), so on a hardened server the message itself is
+			// proof of a modified client. Dev servers keep the affordance.
+			if ac_hardened() {
+				ac_flag(slot, .Debug_Message)
+				return // the slot is gone; the datagram dies with it
+			}
 			if flags, fok := protocol.read_debug_flags(&payload); fok {
 				apply_debug_flags(slot, flags)
 			}
@@ -184,6 +202,18 @@ handle_unconnected :: proc(peer: Peer, version: u8, data: []u8) {
 	if protocol.Msg_Id(protocol.read_u8(&pr)) != .Connect_Request do return
 	request, rok := protocol.read_connect_request(&pr)
 	if !rok do return
+
+	// The ban gate: a banned identity never gets as far as a slot. The
+	// steam_id was authenticated by the transport before this datagram
+	// existed; the UDP endpoint is all a dev peer has.
+	if peer.kind == .Steam && ban_has_steam(peer.steam_id) {
+		deny_and_close(peer, .Banned)
+		return
+	}
+	if peer.kind == .Udp && ban_has_ip(peer.ep) {
+		deny_and_close(peer, .Banned)
+		return
+	}
 
 	// A duplicate request from a known peer gets the same accept again --
 	// the first one may have been lost, and the handshake must be idempotent.
@@ -285,11 +315,22 @@ steam_on_validate_ticket :: proc(cb: ^steam.ValidateAuthTicketResponse) {
 
 	if slot.state == .Authenticating {
 		if cb.eAuthSessionResponse == .OK {
+			owner := u64(cb.OwnerSteamID)
+			// Family sharing is not a ban bypass: a library borrowed from a
+			// banned owner denies, and the borrowing account joins the list.
+			if owner != slot.peer.steam_id && ban_has_steam(owner) {
+				ac_ban_account(slot.peer.steam_id, owner, .Ban_Evasion)
+				send_deny(slot.peer, .Banned)
+				steam_net_close_reason(slot.peer.conn, deny_close_code(.Banned))
+				drop_client(slot)
+				return
+			}
+			slot.owner_steam_id = owner
 			slot.state = .Connected
 			log.infof(
 				"Server: client {} authenticated (owner {})",
 				client_index(slot),
-				u64(cb.OwnerSteamID),
+				owner,
 			)
 			send_accept(slot)
 		} else {
@@ -473,6 +514,17 @@ update_clients :: proc() {
 	steam_expire_unclaimed()
 }
 
+// The enforcement primitive: the reliable close reason is what the client
+// actually acts on, the datagram is the fast path -- the same shape as the
+// mid-session auth revocation above.
+kick_client :: proc(slot: ^Client_Slot, reason: protocol.Disconnect_Reason) {
+	send_server_disconnect(slot, reason)
+	if slot.peer.kind == .Steam {
+		steam_net_close_reason(slot.peer.conn, disconnect_close_code(reason))
+	}
+	drop_client(slot)
+}
+
 drop_client :: proc(slot: ^Client_Slot) {
 	was_in_game := slot.state == .In_Game
 	if slot.peer.kind == .Steam {
@@ -506,9 +558,13 @@ validate_command :: proc(cmd: ^game.Pawn_Input) {
 
 @(private = "file")
 store_input :: proc(slot: ^Client_Slot, msg: protocol.Input_Msg) {
-	// Future ticks beyond a small margin are a modified client speeding up
-	// its clock; the margin covers honest run-ahead.
-	if msg.newest_tick > sv.tick + 64 do return
+	// Future ticks beyond a small margin are a client clock running ahead;
+	// the margin covers honest run-ahead. Counted, not judged: the refusal
+	// alone already denies any advantage.
+	if msg.newest_tick > sv.tick + 64 {
+		slot.anomaly.future_inputs += 1
+		return
+	}
 
 	// The rewind anchor; a claimed-future snapshot is a lie, clamp it.
 	base := min(msg.last_snapshot_tick, sv.tick)
@@ -557,6 +613,7 @@ consume_command :: proc(slot: ^Client_Slot) -> (game.Pawn_Input, u32) {
 	// A backlog means the client ticks ahead of us; jump forward so its input
 	// lag stays bounded.
 	if slot.have_consumed && slot.newest_cmd_tick > next + MAX_INPUT_BACKLOG {
+		slot.anomaly.backlog_trims += 1
 		next = slot.newest_cmd_tick - 2
 	}
 

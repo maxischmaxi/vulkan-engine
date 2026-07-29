@@ -84,12 +84,14 @@ test:
     odin test src/physics
     odin test src/game
     odin test src/protocol
+    odin test src/anticheat
 
 check:
     odin check src -vet-unused -vet-shadowing
     odin check src/physics -vet-unused -vet-shadowing -no-entry-point
     odin check src/game -vet-unused -vet-shadowing -no-entry-point
     odin check src/protocol -vet-unused -vet-shadowing -no-entry-point
+    odin check src/anticheat -vet-unused -vet-shadowing -no-entry-point
     odin check src/server -vet-unused -vet-shadowing
     odin check src -vet-unused -vet-shadowing -define:STEAM_REQUIRED=true
     odin check src/server -vet-unused -vet-shadowing -define:STEAM_REQUIRED=true

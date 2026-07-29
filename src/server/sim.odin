@@ -219,9 +219,9 @@ spawn_human :: proc(slot: ^Client_Slot) {
 	)
 }
 
-// A dev affordance, applied loudly: every grant is one log line, and the
-// hardened server this project is aiming for deletes this proc and refuses
-// the message instead.
+// A dev affordance, applied loudly: every grant is one log line. A hardened
+// server never gets here -- the Debug_Flags tripwire in handle_packet bans
+// the sender instead (anticheat.odin).
 apply_debug_flags :: proc(slot: ^Client_Slot, flags: protocol.Debug_Flags) {
 	slot.debug_god = flags.god
 	slot.debug_infinite = flags.infinite_ammo

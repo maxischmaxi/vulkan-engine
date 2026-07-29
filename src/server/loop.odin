@@ -34,6 +34,9 @@ run_loop :: proc() {
 		// 2. who is still here
 		update_clients()
 
+		// the anti-cheat layer: window bookkeeping, periodic verdict pass
+		ac_tick()
+
 		// 3. phase transitions, spawning, reliable events
 		match_tick()
 
