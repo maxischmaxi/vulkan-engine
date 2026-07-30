@@ -136,6 +136,7 @@ master_query_stop :: proc() {
 
 // What the .Connecting screen shows. Glyph-safe: uppercase, no ? & ' @.
 connecting_label :: proc() -> string {
+	if queue_client.active do return queue_label()
 	if master_query.active {
 		return master_query.spawning ? "STARTING SERVER" : "FINDING SERVER"
 	}
@@ -162,6 +163,7 @@ master_query_send :: proc() {
 			region = mm.region_from_string(cli.region),
 			game_version = protocol.PROTOCOL_VERSION,
 			accepts = accepts,
+			mode = .TDM, // quickplay is TDM; comp goes through the queue
 		},
 	)
 	if _, err := net.send_udp(master_query.socket, buf[:w.off], master_query.master_ep);

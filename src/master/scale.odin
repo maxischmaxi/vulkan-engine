@@ -1,5 +1,6 @@
 package main
 
+import "../game"
 import "../mm"
 import "core:log"
 import "core:math/rand"
@@ -15,11 +16,17 @@ import "core:time"
 // after this long.
 DRAIN_ESCALATE_SECONDS :: 3 * mm.ENTRY_TTL_SECONDS
 
-// True when a spawn is pending or was just initiated for the region -- the
-// "Spawning" answer to a client. Empty region means any.
-ensure_region_capacity :: proc(region: mm.Region) -> bool {
+// True when a spawn of this mode is pending or was just initiated for the
+// region -- the "Spawning" answer to a client. Empty region means any. The
+// pending match is mode-aware: a comp spawn in flight must not satisfy a
+// TDM group, or vice versa.
+ensure_region_capacity :: proc(
+	region: mm.Region,
+	mode: game.Mode = .TDM,
+	expected_humans: u8 = 0,
+) -> bool {
 	for &p in pending {
-		if p.active && (region.len == 0 || p.region == region) do return true
+		if p.active && p.mode == mode && (region.len == 0 || p.region == region) do return true
 	}
 
 	for &a in agents {
@@ -39,22 +46,33 @@ ensure_region_capacity :: proc(region: mm.Region) -> bool {
 			return false
 		}
 		slot^ = {
-			active   = true,
-			spawn_id = rand.uint64(),
-			agent_id = a.agent_id,
-			region   = a.region,
-			since    = time.tick_now(),
+			active          = true,
+			spawn_id        = rand.uint64(),
+			agent_id        = a.agent_id,
+			region          = a.region,
+			mode            = mode,
+			expected_humans = expected_humans,
+			since           = time.tick_now(),
 		}
 
 		buf: [mm.MM_MAX_DATAGRAM]u8
 		w := mm.writer(buf[:])
 		mm.frame_begin(&w, .Spawn_Server)
-		mm.write_spawn_server(&w, {token = ms.token, spawn_id = slot.spawn_id})
+		mm.write_spawn_server(
+			&w,
+			{
+				token = ms.token,
+				spawn_id = slot.spawn_id,
+				mode = mode,
+				expected_humans = expected_humans,
+			},
+		)
 		master_send(a.ep, buf[:w.off])
 
 		agent_region := a.region
 		log.infof(
-			"Master: spawning in {} via agent {} (spawn {})",
+			"Master: spawning {} in {} via agent {} (spawn {})",
+			mode,
 			mm.region_string(&agent_region),
 			a.agent_id,
 			slot.spawn_id,

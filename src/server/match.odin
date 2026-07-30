@@ -4,30 +4,49 @@ import "../game"
 import "../protocol"
 import "core:log"
 
-// The match state machine. Idle waits for a human; a join spawns both teams
-// and starts the countdown; Live runs the clock; Post shows the score and
-// resets. Game_Mode is the seam other modes plug into later: team deathmatch
-// is the first instance, not a special case.
+// The match state machine. Idle waits for a human; a join fills both teams
+// with bots around the humans and starts the mode's opening phase; the mode
+// then owns the clock. Game_Mode is the seam other modes plug into: team
+// deathmatch runs the default machine below, competitive brings its own tick.
 
 Game_Mode :: struct {
-	name:        string,
-	bot_count:   int, // the OPPOSING team is filled with this many bots
-	countdown_s: f32,
-	match_len_s: f32,
-	post_s:      f32,
-	respawn_s:   f32,
+	id:              game.Mode,
+	name:            string,
+	team_size:       int, // pawns per side; bots fill what humans leave empty
+	countdown_s:     f32, // length of the opening phase (.Countdown / .Warmup)
+	match_len_s:     f32,
+	post_s:          f32,
+	respawn_s:       f32,
+	// Phases in which the dead come back on their own. TDM respawns during
+	// .Live; comp only during .Warmup -- rounds bring everyone back at once.
+	respawn_phases:  bit_set[game.Match_Phase],
+	drop_in:         bool, // humans may join mid-.Live, displacing a bot
+	// Whether joins and leaves rebalance bots on the spot. TDM does; comp
+	// keeps its warmup bot-free and backfills at each round start instead.
+	fill_on_join:    bool,
+	opening_phase:   game.Match_Phase,
 	// Scoring: called for every confirmed kill with pawn ids.
-	on_kill:     proc(killer, victim: int),
+	on_kill:         proc(killer, victim: int),
+	// The mode's own phase machine; nil runs the default TDM one in match_tick.
+	tick:            proc(),
+	on_join:         proc(slot: ^Client_Slot),
+	// Called before a leaver's pawn is zeroed (comp drops the bomb here).
+	on_pawn_removed: proc(pawn_id: int),
 }
 
 TDM_MODE := Game_Mode {
-	name        = "team deathmatch",
-	bot_count   = 5,
-	countdown_s = 3,
-	match_len_s = 60,
-	post_s      = 5,
-	respawn_s   = 3,
-	on_kill     = tdm_on_kill,
+	id             = .TDM,
+	name           = "team deathmatch",
+	team_size      = 5,
+	countdown_s    = 3,
+	match_len_s    = 60,
+	post_s         = 5,
+	respawn_s      = 3,
+	respawn_phases = {.Live},
+	drop_in        = true,
+	fill_on_join   = true,
+	opening_phase  = .Countdown,
+	on_kill        = tdm_on_kill,
 }
 
 Match :: struct {
@@ -37,21 +56,45 @@ Match :: struct {
 	// reach the client, so refusals are only held against it after a grace
 	// period measured from here -- see note_fire_block.
 	phase_start_tick: u32,
-	human_team:       game.Team,
 	t_score:          int,
 	ct_score:         int,
+	// What the last phase message said, kept so a resync repeats it: comp's
+	// round number and the last decided round's winner and reason.
+	round:            int,
+	winner:           u8, // game.Team as u8; game.NO_WINNER = none
+	reason:           game.Round_End_Reason,
 	mode:             Game_Mode,
 }
 
 match: Match
 
-// Bots occupy the pawn slots behind the client slots.
-BOT_PAWN_FIRST :: MAX_CLIENTS
-#assert(BOT_PAWN_FIRST + 5 <= game.MAX_PAWNS)
+// Pawn ids are one shared pool: a human reserves one for its whole session at
+// connect (the accept already names it), bots claim what is left per round.
+// An id is held while any non-empty slot names it or the pawn itself is active.
+alloc_pawn_id :: proc() -> int {
+	for id in 0 ..< game.MAX_PAWNS {
+		if sv.gs.pawns[id].active do continue
+		held := false
+		for &slot in clients {
+			if slot.state != .Empty && slot.pawn_id == id {
+				held = true
+				break
+			}
+		}
+		if !held do return id
+	}
+	return -1
+}
 
-init_match :: proc() {
-	match.mode = TDM_MODE
+init_match :: proc(mode: game.Mode) {
+	switch mode {
+	case .TDM:
+		match.mode = TDM_MODE
+	case .Comp:
+		match.mode = COMP_MODE
+	}
 	match.phase = .Idle
+	match.winner = game.NO_WINNER
 }
 
 // Seconds until the current phase ends; what the snapshot carries and the
@@ -62,38 +105,142 @@ match_time_left :: proc() -> f32 {
 	return f32(match.phase_end_tick - sv.tick) * game.TICK_DT
 }
 
-handle_join :: proc(slot: ^Client_Slot, team: game.Team) {
-	if match.phase != .Idle {
-		// A second join mid-match (or a duplicate) just gets told where the
-		// match stands; with one human this is a resync, not a rejection.
+handle_join :: proc(slot: ^Client_Slot, wished: game.Team) {
+	if slot.state == .In_Game {
+		// A duplicate Join just gets told where the match stands.
 		queue_phase_msg(slot)
 		return
+	}
+
+	accepting :=
+		match.phase == .Idle ||
+		match.phase == match.mode.opening_phase ||
+		(match.mode.drop_in && match.phase == .Live)
+	if !accepting {
+		queue_phase_msg(slot)
+		return
+	}
+
+	team, ok := balance_team(wished)
+	if !ok {
+		queue_phase_msg(slot)
+		return
+	}
+
+	starting := match.phase == .Idle
+	if starting {
+		match.t_score = 0
+		match.ct_score = 0
 	}
 
 	slot.state = .In_Game
 	slot.team = team
 	slot.loadout = game.default_loadout(team)
-	match.human_team = team
-	match.t_score = 0
-	match.ct_score = 0
 
 	spawn_human(slot)
-
-	enemy: game.Team = team == .T ? .CT : .T
-	for i in 0 ..< match.mode.bot_count {
-		spawn_bot(BOT_PAWN_FIRST + i, enemy)
-	}
+	if match.mode.fill_on_join do fill_bots()
+	if match.mode.on_join != nil do match.mode.on_join(slot)
 
 	log.infof(
-		"Server: match starting -- human on {}, {} bots on {}",
+		"Server: client {} joined {} ({} human(s) in game)",
+		client_index(slot),
 		team,
-		match.mode.bot_count,
-		enemy,
+		count_humans_in_game(),
 	)
-	set_phase(.Countdown, sv.tick + u32(match.mode.countdown_s * game.TICK_RATE))
+
+	if starting {
+		log.infof("Server: match starting -- {}", match.mode.name)
+		set_phase(
+			match.mode.opening_phase,
+			sv.tick + u32(match.mode.countdown_s * game.TICK_RATE),
+		)
+	} else {
+		queue_phase_msg(slot)
+	}
+}
+
+// The team with fewer humans wins the newcomer; a tie honors the wish. Both
+// sides full of humans means no seat, however many bots could yield.
+@(private = "file")
+balance_team :: proc(wished: game.Team) -> (game.Team, bool) {
+	counts: [game.Team]int
+	for &slot in clients {
+		if slot.state == .In_Game do counts[slot.team] += 1
+	}
+
+	team := wished
+	if counts[.T] < counts[.CT] do team = .T
+	else if counts[.CT] < counts[.T] do team = .CT
+
+	if counts[team] >= match.mode.team_size {
+		other: game.Team = team == .T ? .CT : .T
+		if counts[other] >= match.mode.team_size do return team, false
+		team = other
+	}
+	return team, true
+}
+
+count_humans_in_game :: proc() -> int {
+	n := 0
+	for &slot in clients {
+		if slot.state == .In_Game do n += 1
+	}
+	return n
+}
+
+team_pawn_count :: proc(team: game.Team) -> int {
+	n := 0
+	for &p in sv.gs.pawns {
+		if p.active && p.team == team do n += 1
+	}
+	return n
+}
+
+// Brings both teams to the mode's size: bots fill empty seats, crowded teams
+// shed bots first (a drop-in human displaces a bot, never a player). Safe to
+// call at any time; a full roster is a no-op.
+fill_bots :: proc() {
+	for team in game.Team {
+		for team_pawn_count(team) > match.mode.team_size {
+			if !despawn_one_bot(team) do break
+		}
+		for team_pawn_count(team) < match.mode.team_size {
+			id := alloc_pawn_id()
+			if id < 0 {
+				log.warn("Server: no free pawn id for a bot, team plays short")
+				break
+			}
+			spawn_bot(id, team)
+		}
+	}
+	log.infof(
+		"Server: roster -- {} T pawns, {} CT pawns",
+		team_pawn_count(.T),
+		team_pawn_count(.CT),
+	)
+}
+
+// Prefers a dead bot so a displacement is invisible; any bot failing that.
+@(private = "file")
+despawn_one_bot :: proc(team: game.Team) -> bool {
+	pick := -1
+	for &p, i in sv.gs.pawns {
+		if !p.active || !p.is_bot || p.team != team do continue
+		pick = i
+		if !p.alive do break
+	}
+	if pick < 0 do return false
+	sv.gs.pawns[pick] = {}
+	brains[pick] = {}
+	return true
 }
 
 match_tick :: proc() {
+	if match.mode.tick != nil {
+		match.mode.tick()
+		return
+	}
+
 	if match.phase == .Idle do return
 	if sv.tick < match.phase_end_tick do return
 
@@ -103,7 +250,12 @@ match_tick :: proc() {
 
 	case .Live:
 		// Post IS the match-end message; the final scores ride in it.
-		set_phase(.Post, sv.tick + u32(match.mode.post_s * game.TICK_RATE))
+		set_phase(
+			.Post,
+			sv.tick + u32(match.mode.post_s * game.TICK_RATE),
+			game.NO_WINNER,
+			.Match_Over,
+		)
 		log.infof("Server: match over -- T {} : {} CT", match.t_score, match.ct_score)
 
 	case .Post:
@@ -111,14 +263,26 @@ match_tick :: proc() {
 	}
 }
 
-// The human vanished mid-anything: nobody is left to play, so the match ends
-// on the spot.
+// A human left. Play continues as long as one remains; the last one out ends
+// the match on the spot.
 match_human_left :: proc() {
 	if match.phase == .Idle do return
+	if count_humans_in_game() > 0 {
+		// Keep the teams even: the leaver's seat goes back to a bot. Comp
+		// waits for the next round start instead of spawning one mid-round.
+		if match.mode.fill_on_join do fill_bots()
+		return
+	}
+	// A fleet comp server is single-use: everyone leaving (which the match
+	// end does on its own -- clients disconnect at Post) retires it and the
+	// fleet spawns a fresh one. Dev servers just reset for the next join.
+	if match.mode.id == .Comp && hb.enabled {
+		begin_shutdown()
+		return
+	}
 	reset_to_idle()
 }
 
-@(private = "file")
 reset_to_idle :: proc() {
 	for &p in sv.gs.pawns {
 		p = {}
@@ -129,14 +293,23 @@ reset_to_idle :: proc() {
 	match.phase = .Idle
 	match.phase_end_tick = 0
 	match.phase_start_tick = sv.tick
+	match.round = 0
+	match.winner = game.NO_WINNER
+	match.reason = .None
 	log.info("Server: back to idle, waiting for a join")
 }
 
-@(private = "file")
-set_phase :: proc(phase: game.Match_Phase, end_tick: u32) {
+set_phase :: proc(
+	phase: game.Match_Phase,
+	end_tick: u32,
+	winner: u8 = game.NO_WINNER,
+	reason: game.Round_End_Reason = .None,
+) {
 	match.phase = phase
 	match.phase_end_tick = end_tick
 	match.phase_start_tick = sv.tick
+	match.winner = winner
+	match.reason = reason
 	for &slot in clients {
 		if slot.state != .In_Game do continue
 		// One warning per phase per client, not one per tick.
@@ -156,6 +329,9 @@ queue_phase_msg :: proc(slot: ^Client_Slot) {
 			param_tick = match.phase_end_tick,
 			t_score = u8(clamp(match.t_score, 0, 255)),
 			ct_score = u8(clamp(match.ct_score, 0, 255)),
+			round = u8(clamp(match.round, 0, 255)),
+			winner = match.winner,
+			reason = match.reason,
 		},
 	)
 	if !ok {

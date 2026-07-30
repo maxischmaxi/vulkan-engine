@@ -1,5 +1,6 @@
 package main
 
+import "../game"
 import "../mm"
 import "core:fmt"
 import "core:log"
@@ -36,7 +37,11 @@ children_running :: proc() -> int {
 	return n
 }
 
-children_spawn :: proc(spawn_id: u64) -> (port: u16, ok: bool) {
+children_spawn :: proc(
+	spawn_id: u64,
+	mode: game.Mode,
+	expected_humans: u8,
+) -> (port: u16, ok: bool) {
 	// A duplicated datagram must not double-spawn; answer with what exists.
 	for &c in children {
 		if c.active && c.server_id == spawn_id do return c.port, true
@@ -56,7 +61,7 @@ children_spawn :: proc(spawn_id: u64) -> (port: u16, ok: bool) {
 	if slot < 0 do return 0, false
 	port = u16(ag.port_base + slot)
 
-	cmd: [8]string
+	cmd: [10]string
 	n := 0
 	cmd[n] = ag.server_bin; n += 1
 	cmd[n] = fmt.tprintf("-port={}", port); n += 1
@@ -64,6 +69,10 @@ children_spawn :: proc(spawn_id: u64) -> (port: u16, ok: bool) {
 	cmd[n] = fmt.tprintf("-region={}", mm.region_string(&ag.region)); n += 1
 	cmd[n] = fmt.tprintf("-server-id={}", spawn_id); n += 1
 	cmd[n] = fmt.tprintf("-token={}", ag.token_str); n += 1
+	cmd[n] = fmt.tprintf("-mode={}", mode == .Comp ? "comp" : "tdm"); n += 1
+	if expected_humans > 0 {
+		cmd[n] = fmt.tprintf("-expected-humans={}", expected_humans); n += 1
+	}
 	if ag.insecure {
 		cmd[n] = "-insecure"; n += 1
 	}

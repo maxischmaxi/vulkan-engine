@@ -43,9 +43,6 @@ Bot_Brain :: struct {
 brains: [game.MAX_PAWNS]Bot_Brain
 
 spawn_bot :: proc(pawn_id: int, team: game.Team) {
-	p := &sv.gs.pawns[pawn_id]
-	brain := &brains[pawn_id]
-
 	probe := physics.Body {
 		radius = BOT_RADIUS,
 		height = BOT_HEIGHT,
@@ -53,6 +50,7 @@ spawn_bot :: proc(pawn_id: int, team: game.Team) {
 	position, ok := server_find_spawn(probe)
 	if !ok {
 		log.warn("Server: no free spawn for a bot, retrying next tick")
+		p := &sv.gs.pawns[pawn_id]
 		p.active = true
 		p.is_bot = true
 		p.team = team
@@ -60,8 +58,16 @@ spawn_bot :: proc(pawn_id: int, team: game.Team) {
 		p.respawn_in = 0.5
 		return
 	}
+	spawn_bot_at(pawn_id, team, position, 0)
+}
 
-	game.init_pawn(p, position, 0)
+// The placed variant comp round starts use: no roaming probe, the caller
+// already owns the spot.
+spawn_bot_at :: proc(pawn_id: int, team: game.Team, position: [3]f32, yaw: f32) {
+	p := &sv.gs.pawns[pawn_id]
+	brain := &brains[pawn_id]
+
+	game.init_pawn(p, position, yaw)
 	p.is_bot = true
 	p.team = team
 	// The bot hull, not the player's -- the shared move code is hull-agnostic.
@@ -86,14 +92,18 @@ pick_direction :: proc(brain: ^Bot_Brain) {
 }
 
 tick_server_bots :: proc(dt: f32) {
-	for pawn_id in BOT_PAWN_FIRST ..< game.MAX_PAWNS {
+	for pawn_id in 0 ..< game.MAX_PAWNS {
 		p := &sv.gs.pawns[pawn_id]
 		if !p.active || !p.is_bot do continue
 		brain := &brains[pawn_id]
 
 		if !p.alive {
+			// Same rule as the humans: only modes with free respawns bring a
+			// dead bot back -- comp bots stay down until the round resets them.
 			p.respawn_in -= dt
-			if p.respawn_in <= 0 do spawn_bot(pawn_id, p.team)
+			if p.respawn_in <= 0 && match.phase in match.mode.respawn_phases {
+				spawn_bot(pawn_id, p.team)
+			}
 			continue
 		}
 

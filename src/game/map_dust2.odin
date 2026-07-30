@@ -394,3 +394,10 @@ MAP_SPAWN_AREAS := []Spawn_Area {
 	{{11, 6}, {17, 18}, 1.8}, // catwalk
 	{{16, 22}, {44, 42}, 1.4}, // A site
 }
+
+// The plantable pads, pulled a few metres in from the site rooms above so a
+// plant means standing on the site, not in its doorway.
+MAP_BOMBSITES := []Bombsite {
+	{{20, 25}, {40, 39}, 1.4, 'A'},
+	{{-42, 21}, {-26, 39}, GROUND_Z, 'B'},
+}

@@ -21,6 +21,7 @@ Master :: struct {
 	token:      mm.Token,
 	idle_stop:  f64, // seconds an empty spawned server may idle before draining
 	floor:      int, // joinable servers to keep per region with an agent
+	min_humans: int, // queued humans before a fresh match forms (-min-humans)
 	last_sweep: time.Tick,
 	running:    bool,
 }
@@ -36,6 +37,7 @@ main :: proc() {
 	port := mm.MM_DEFAULT_PORT
 	ms.idle_stop = 300
 	ms.floor = 1
+	ms.min_humans = 1
 	have_token := false
 
 	for arg in os.args[1:] {
@@ -68,13 +70,22 @@ main :: proc() {
 			}
 			ms.floor = value
 
+		case strings.has_prefix(arg, "-min-humans="):
+			value, ok := strconv.parse_int(arg[len("-min-humans="):])
+			if !ok || value < 1 {
+				log.errorf("-min-humans wants a count of at least 1, got {}", arg)
+				os.exit(1)
+			}
+			ms.min_humans = value
+
 		case arg == "-help" || arg == "--help":
 			log.info(
 				"Options:\n" +
 				"  -port=N       listen on UDP port N (default 27050)\n" +
 				"  -token=STR    shared secret for server/agent traffic (required)\n" +
 				"  -idle-stop=S  drain spawned servers empty for S seconds (default 300)\n" +
-				"  -floor=N      joinable servers to keep per agent region (default 1)",
+				"  -floor=N      joinable servers to keep per agent region (default 1)\n" +
+				"  -min-humans=N queued humans before a fresh match forms (default 1)",
 			)
 			os.exit(0)
 
@@ -117,6 +128,7 @@ main :: proc() {
 		if time.duration_seconds(time.tick_since(ms.last_sweep)) >= SWEEP_SECONDS {
 			ms.last_sweep = time.tick_now()
 			registry_sweep()
+			queue_sweep()
 			scale_sweep()
 		}
 

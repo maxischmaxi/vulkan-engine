@@ -84,8 +84,16 @@ buy_allowed :: proc() -> bool {
 		!settings_ui.open &&
 		!bench_active() &&
 		net_client.joined &&
-		(net_client.phase == .Countdown || net_client.phase == .Live) \
+		buy_phase_open() \
 	)
+}
+
+// Comp buys during warmup and freeze only; TDM additionally accepts a buy
+// mid-match, delivered on respawn. Same split the server enforces.
+@(private = "file")
+buy_phase_open :: proc() -> bool {
+	if game.phase_can_buy(net_client.phase) do return true
+	return net_client.mode == .TDM && net_client.phase == .Live
 }
 
 @(private = "file")
@@ -142,8 +150,36 @@ buy_page_items :: proc(page: Buy_Page) -> (items: [9]Buy_Item, count: int) {
 	return items, count
 }
 
+// What this row would cost right now: nothing for a rebuy or the armor
+// toggle-off, the sticker price otherwise. Mirrors game.buy_cost so the
+// client refuses exactly what the server would.
+@(private = "file")
+buy_item_cost :: proc(item: Buy_Item) -> int {
+	if item.weapon < 0 {
+		return buy_menu.pending.armor ? 0 : game.ECON_ARMOR_PRICE
+	}
+	if i8(item.weapon) == buy_menu.pending.primary ||
+	   i8(item.weapon) == buy_menu.pending.secondary {
+		return 0
+	}
+	return game.WEAPONS[item.weapon].price
+}
+
+// Money only binds in a comp freeze; warmup, TDM and the range stay free.
+@(private = "file")
+buy_money_enforced :: proc() -> bool {
+	return competitive_active() && net_client.phase == .Freeze
+}
+
+@(private = "file")
+buy_item_affordable :: proc(item: Buy_Item) -> bool {
+	return !buy_money_enforced() || buy_item_cost(item) <= net_client.money
+}
+
 @(private = "file")
 buy_item :: proc(item: Buy_Item) {
+	if !buy_item_affordable(item) do return
+
 	before := buy_menu.pending
 
 	if item.weapon < 0 {
@@ -167,7 +203,7 @@ buy_item :: proc(item: Buy_Item) {
 	// moment it arrives, so the local mirror does the same, with the same rule
 	// deciding what ends up in the hands. The range delivers the same way --
 	// immediately, no death required.
-	if (practice_active() || net_client.phase == .Countdown) && player.alive {
+	if (practice_active() || game.phase_can_buy(net_client.phase)) && player.alive {
 		held := weapon_state.index
 		player.loadout = buy_menu.pending
 		refill_all_ammo()
@@ -230,11 +266,16 @@ buy_cursor_in :: proc(x, y, w, h: f32) -> bool {
 // A menu row: key hint, label, right-aligned price, hover and click. The tag
 // column marks what the pending loadout already holds.
 @(private = "file")
-buy_row :: proc(x, y, w, h: f32, key_hint, label, price: string, equipped: bool) -> bool {
+buy_row :: proc(
+	x, y, w, h: f32,
+	key_hint, label, price: string,
+	equipped: bool,
+	affordable := true,
+) -> bool {
 	scale := hud_scale()
 	hovered := buy_cursor_in(x, y, w, h)
 
-	hud_rect(x, y, w, h, hovered ? MENU_HOVER_BG : HUD_PANEL, radius = 3 * scale)
+	hud_rect(x, y, w, h, hovered && affordable ? MENU_HOVER_BG : HUD_PANEL, radius = 3 * scale)
 	if equipped {
 		hud_frame(x, y, w, h, 2 * scale, HUD_GOOD)
 	}
@@ -242,14 +283,16 @@ buy_row :: proc(x, y, w, h: f32, key_hint, label, price: string, equipped: bool)
 	size := hud_font_size(HUD_TEXT_SMALL * scale)
 	pad := 12 * scale
 	text_y := y + (h - size) * 0.5
-	color := hovered ? HUD_WHITE : HUD_DIM
+	color := hovered && affordable ? HUD_WHITE : HUD_DIM
+	if !affordable do color = HUD_FAINT
 
-	hud_text(x + pad, text_y, key_hint, size, hovered ? HUD_WARN : HUD_FAINT)
+	hud_text(x + pad, text_y, key_hint, size, hovered && affordable ? HUD_WARN : HUD_FAINT)
 	hud_text(x + pad + 34 * scale, text_y, label, size, color)
 	if equipped {
 		hud_text(x + w - pad, text_y, "OWNED", size, HUD_GOOD, .Right)
 	} else {
-		hud_text(x + w - pad, text_y, price, size, hovered ? HUD_WHITE : HUD_FAINT, .Right)
+		price_color := affordable ? (hovered ? HUD_WHITE : HUD_FAINT) : HUD_BAD
+		hud_text(x + w - pad, text_y, price, size, price_color, .Right)
 	}
 
 	return hovered && consume_click()
@@ -282,7 +325,11 @@ draw_buy_menu :: proc(width, height: f32) {
 
 	cursor := y + pad
 	title := buy_menu.page == .Categories ? "BUY MENU" : buy_page_title(buy_menu.page)
-	hud_text(x + pad, cursor, title, size, HUD_WARN)
+	title_end := hud_text(x + pad, cursor, title, size, HUD_WARN)
+	if competitive_active() {
+		money := net_client.phase == .Warmup ? "$INF" : fmt.tprintf("$%d", net_client.money)
+		hud_text(title_end + 24 * scale, cursor, money, size, HUD_GOOD)
+	}
 	if practice_active() {
 		// no team on the range; the pages offer both arsenals
 		hud_text(x + panel_w - pad, cursor, "ALL", size, HUD_DIM, .Right)
@@ -326,7 +373,7 @@ draw_buy_menu :: proc(width, height: f32) {
 			equipped: bool
 			if item.weapon < 0 {
 				label = "KEVLAR"
-				price = buy_price_label(650)
+				price = buy_price_label(game.ECON_ARMOR_PRICE)
 				equipped = buy_menu.pending.armor
 			} else {
 				weapon := game.WEAPONS[item.weapon]
@@ -336,7 +383,18 @@ draw_buy_menu :: proc(width, height: f32) {
 					i8(item.weapon) == buy_menu.pending.primary ||
 					i8(item.weapon) == buy_menu.pending.secondary
 			}
-			if buy_row(x + pad, cursor, panel_w - 2 * pad, row_h, hint, label, price, equipped) {
+			affordable := buy_item_affordable(item)
+			if buy_row(
+				x + pad,
+				cursor,
+				panel_w - 2 * pad,
+				row_h,
+				hint,
+				label,
+				price,
+				equipped,
+				affordable,
+			) {
 				buy_item(items[i])
 			}
 			cursor += row_h + gap

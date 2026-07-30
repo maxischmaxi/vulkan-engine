@@ -179,8 +179,9 @@ test_damage_roundtrip :: proc(t: ^testing.T) {
 	}
 }
 
-// header 17 + present 2: the fixed cost of every snapshot on the wire
-SNAP_FIXED_BYTES :: 19
+// header 17 + bomb block 4 + present 2: the fixed cost of every snapshot on
+// the wire (a dropped or planted bomb adds its 12-byte position)
+SNAP_FIXED_BYTES :: 23
 
 @(test)
 test_snapshot_roundtrip :: proc(t: ^testing.T) {
@@ -222,8 +223,8 @@ test_snapshot_roundtrip :: proc(t: ^testing.T) {
 	w := writer(buf[:])
 	write_snapshot(&w, s, &zero)
 	testing.expect(t, !w.overflow)
-	// full: fixed + 2 x (mask 1 + fields 18) + has_private 1 + private 24
-	testing.expect_value(t, w.off, SNAP_FIXED_BYTES + 2 * 19 + 1 + 24)
+	// full: fixed + 2 x (mask 1 + fields 18) + has_private 1 + private 26
+	testing.expect_value(t, w.off, SNAP_FIXED_BYTES + 2 * 19 + 1 + 26)
 
 	r := reader(buf[:w.off])
 	got, ok := read_snapshot(&r, &zero)
@@ -563,7 +564,15 @@ test_queue_reliable_msg_serializes :: proc(t: ^testing.T) {
 			&a,
 			.Match_Phase,
 			write_match_phase,
-			Match_Phase_Msg{phase = .Post, param_tick = 3840, t_score = 7, ct_score = 9},
+			Match_Phase_Msg {
+				phase = .Round_End,
+				param_tick = 3840,
+				t_score = 7,
+				ct_score = 9,
+				round = 17,
+				winner = u8(game.Team.CT),
+				reason = .Bomb_Defused,
+			},
 		),
 	)
 
@@ -575,8 +584,88 @@ test_queue_reliable_msg_serializes :: proc(t: ^testing.T) {
 	r := reader(slot.payload[:slot.size])
 	m, mok := read_match_phase(&r)
 	testing.expect(t, mok)
-	testing.expect_value(t, m.phase, game.Match_Phase.Post)
+	testing.expect_value(t, m.phase, game.Match_Phase.Round_End)
 	testing.expect_value(t, m.param_tick, u32(3840))
 	testing.expect_value(t, m.t_score, u8(7))
 	testing.expect_value(t, m.ct_score, u8(9))
+	testing.expect_value(t, m.round, u8(17))
+	testing.expect_value(t, m.winner, u8(game.Team.CT))
+	testing.expect_value(t, m.reason, game.Round_End_Reason.Bomb_Defused)
+}
+
+// The bomb block: four flat bytes normally, the position only while the bomb
+// lies somewhere -- and the reader must key that off the state alone.
+@(test)
+test_snapshot_bomb_block :: proc(t: ^testing.T) {
+	s: Snapshot
+	s.server_tick = 7
+	s.bomb_state = .Planted
+	s.bomb_carrier = game.BOMB_NO_PAWN
+	s.bomb_progress = 128
+	s.bomb_defuser = 3
+	s.bomb_position = {22.5, 31, 1.4}
+
+	zero: Snapshot
+	buf: [MTU]u8
+	w := writer(buf[:])
+	write_snapshot(&w, s, &zero)
+	testing.expect(t, !w.overflow)
+	testing.expect_value(t, w.off, SNAP_FIXED_BYTES + 12 + 1) // + position + no private
+
+	r := reader(buf[:w.off])
+	got, ok := read_snapshot(&r, &zero)
+	testing.expect(t, ok)
+	testing.expect_value(t, got.bomb_state, game.Bomb_State.Planted)
+	testing.expect_value(t, got.bomb_carrier, game.BOMB_NO_PAWN)
+	testing.expect_value(t, got.bomb_progress, u8(128))
+	testing.expect_value(t, got.bomb_defuser, u8(3))
+	testing.expect_value(t, got.bomb_position, [3]f32{22.5, 31, 1.4})
+
+	// carried: no position bytes
+	s.bomb_state = .Carried
+	s.bomb_carrier = 2
+	w = writer(buf[:])
+	write_snapshot(&w, s, &zero)
+	testing.expect_value(t, w.off, SNAP_FIXED_BYTES + 1)
+	r = reader(buf[:w.off])
+	got, ok = read_snapshot(&r, &zero)
+	testing.expect(t, ok)
+	testing.expect_value(t, got.bomb_state, game.Bomb_State.Carried)
+	testing.expect_value(t, got.bomb_carrier, u8(2))
+	testing.expect_value(t, got.bomb_position, [3]f32{})
+}
+
+// The worst snapshot the wire can carry: every pawn present and sent full,
+// the bomb lying somewhere, the private block attached. Must clear the MTU
+// with room to spare.
+@(test)
+test_snapshot_worst_case_fits_mtu :: proc(t: ^testing.T) {
+	s: Snapshot
+	s.bomb_state = .Planted
+	s.bomb_position = {1, 2, 3}
+	s.has_private = true
+	for i in 0 ..< game.MAX_PAWNS {
+		s.present += {i}
+		s.entities[i] = {
+			flags    = {.Alive, .Fired},
+			position = {f32(i) * 3.3, -f32(i), 1.5},
+			yaw      = f32(i) * 20,
+			pitch    = 45,
+			health   = 100,
+			weapon   = u8(i % 10),
+		}
+	}
+
+	zero: Snapshot
+	buf: [MTU]u8
+	w := writer(buf[:])
+	write_snapshot(&w, s, &zero)
+	testing.expect(t, !w.overflow)
+	testing.expect(t, w.off < MTU / 2, "worst-case snapshot should stay far below the MTU")
+
+	r := reader(buf[:w.off])
+	got, ok := read_snapshot(&r, &zero)
+	testing.expect(t, ok)
+	testing.expect_value(t, got.present, s.present)
+	testing.expect_value(t, got.private.money, s.private.money)
 }

@@ -55,10 +55,19 @@ Net_Client :: struct {
 	latest_tick:        u32,
 	have_snapshot:      bool,
 	// the match as the server last described it
+	mode:               game.Mode, // from the accept; zero value = TDM
 	phase:              game.Match_Phase,
 	time_left:          f32,
 	t_score:            int,
 	ct_score:           int,
+	round:              int, // comp round number; 0 in TDM
+	money:              int, // comp money from the private block; 0 in TDM
+	// the bomb block, mirrored for the HUD; edges fire the banners
+	bomb_state:         game.Bomb_State,
+	bomb_carrier:       int, // pawn id, -1 for none
+	bomb_defuser:       int,
+	bomb_progress:      f32, // 0..1, plant or defuse depending on state
+	bomb_position:      [3]f32,
 	// diagnostics for the stats line
 	corrections:        int,
 	snap_full:          int, // full snapshots since the last stats line
@@ -262,6 +271,9 @@ net_client_pump :: proc() {
 net_fail :: proc(text: string) {
 	log.warnf("NET: {}", text)
 	net_disconnect()
+	// A failure on a queue-launched connect gets one silent requeue: the
+	// server may have died between assignment and join.
+	if queue_relaunch() do return
 	scene.error_text = text
 	enter_scene(.Menu)
 }
@@ -281,7 +293,9 @@ deny_text :: proc(reason: protocol.Deny_Reason) -> string {
 		return "BANNED"
 	case .Auth_Timeout:
 		return "STEAM AUTH TIMED OUT"
-	case .None, .In_Match:
+	case .In_Match:
+		return "MATCH ALREADY RUNNING"
+	case .None:
 	}
 	return "CONNECTION REFUSED"
 }
@@ -317,6 +331,7 @@ handle_server_packet :: proc(data: []u8) {
 			net_client.got_accept = true
 			net_client.pawn_id = int(accept.pawn_id)
 			net_client.phase = accept.phase
+			net_client.mode = accept.mode
 			protocol.connection_init(&net_client.conn, net_client.client_salt ~ accept.server_salt)
 			// Commands are stamped ahead of the server's clock so they arrive
 			// before the tick that consumes them.
@@ -447,13 +462,29 @@ handle_match_phase :: proc(m: protocol.Match_Phase_Msg) {
 	// match's phase must not pull the range into .Playing or .Match_End.
 	if net_client.practice do return
 
-	log.infof("NET: match phase {} (T {} : {} CT)", m.phase, m.t_score, m.ct_score)
+	log.infof(
+		"NET: match phase {} (T {} : {} CT, round {}, winner {}, {})",
+		m.phase,
+		m.t_score,
+		m.ct_score,
+		m.round,
+		m.winner,
+		m.reason,
+	)
 	net_client.phase = m.phase
 	net_client.t_score = int(m.t_score)
 	net_client.ct_score = int(m.ct_score)
+	net_client.round = int(m.round)
+
+	if net_client.mode == .Comp {
+		round_hud_note_phase(m)
+		if m.phase == .Freeze && cli.auto_buy != "" {
+			auto_buy_send()
+		}
+	}
 
 	#partial switch m.phase {
-	case .Countdown, .Live:
+	case .Countdown, .Live, .Warmup, .Freeze, .Bomb, .Round_End, .Halftime:
 		if scene.current == .Connecting {
 			net_client.joined = true
 			net_client.last_snapshot_time = time.tick_now()
@@ -461,9 +492,12 @@ handle_match_phase :: proc(m: protocol.Match_Phase_Msg) {
 		}
 
 	case .Post:
-		// Post IS the match end: freeze the result, thank the server, leave.
+		// Post IS the match end: freeze the result BEFORE the disconnect
+		// wipes net_client and remote -- the outro reads only scene fields.
 		scene.final_t = int(m.t_score)
 		scene.final_ct = int(m.ct_score)
+		scene.final_mode = net_client.mode
+		scene.final_winner = m.winner
 		if scene.current == .Playing {
 			log.infof("NET: match end T {} : {} CT", m.t_score, m.ct_score)
 			net_disconnect()
@@ -541,6 +575,30 @@ handle_snapshot :: proc(s: protocol.Snapshot) {
 	net_client.time_left = s.time_left
 	net_client.t_score = int(s.t_score)
 	net_client.ct_score = int(s.ct_score)
+	if s.has_private {
+		net_client.money = int(s.private.money)
+	}
+
+	if net_client.bomb_state != s.bomb_state {
+		bomb_hud_note_state(s.bomb_state)
+	}
+	net_client.bomb_state = s.bomb_state
+	net_client.bomb_carrier = s.bomb_carrier == game.BOMB_NO_PAWN ? -1 : int(s.bomb_carrier)
+	net_client.bomb_defuser = s.bomb_defuser == game.BOMB_NO_PAWN ? -1 : int(s.bomb_defuser)
+	net_client.bomb_progress = f32(s.bomb_progress) / 255
+	net_client.bomb_position = s.bomb_position
+
+	// The own team follows the own entity's flag, which is what makes the
+	// halftime swap reach the buy pages and the HUD without its own message.
+	if net_client.pawn_id in s.present {
+		own_team: game.Team =
+			.Team_CT in s.entities[net_client.pawn_id].flags ? .CT : .T
+		if own_team != net_client.team {
+			log.infof("NET: now playing {}", own_team)
+			net_client.team = own_team
+			scene.chosen_team = own_team
+		}
+	}
 
 	if first {
 		log.infof("NET: first snapshot at tick {} ({} entities)", s.server_tick, card(s.present))
@@ -642,6 +700,37 @@ net_send_debug_flags :: proc() {
 }
 
 // The snapshot stored for a given server tick, if the ring still holds it.
+// --auto-buy: the headless economy probe. Fires one full buy (weapon by
+// name, armor on top) at every freeze; the server log shows which of them
+// the price gate let through.
+@(private = "file")
+auto_buy_send :: proc() {
+	index := -1
+	for weapon, i in game.WEAPONS {
+		if weapon.name == cli.auto_buy do index = i
+	}
+	if index < 0 {
+		log.warnf("NET: --auto-buy names no weapon: {:q}", cli.auto_buy)
+		return
+	}
+	loadout := game.default_loadout(net_client.team)
+	if game.WEAPONS[index].slot == 0 {
+		loadout.primary = i8(index)
+	} else {
+		loadout.secondary = i8(index)
+	}
+	loadout.armor = true
+	log.infof("NET: auto-buy {} + kevlar", cli.auto_buy)
+	net_send_loadout(loadout)
+}
+
+// Whether the competitive HUD set (top bar, round banners, money) owns the
+// frame. The preview flag forces it on the range for screenshots.
+competitive_active :: proc() -> bool {
+	if hud_preview_active() do return true
+	return net_client.joined && !net_client.practice && net_client.mode == .Comp
+}
+
 snapshot_at :: proc(tick: u32) -> ^protocol.Snapshot {
 	slot := tick % SNAPSHOT_CAP
 	if !net_client.valid[slot] do return nil

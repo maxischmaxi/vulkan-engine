@@ -15,7 +15,7 @@ package protocol
 //     connection.odin (join, match phases, kills, disconnects)
 
 PROTOCOL_MAGIC :: u16(0xB0F5)
-PROTOCOL_VERSION :: u8(9)
+PROTOCOL_VERSION :: u8(10)
 
 // Well under every real-world MTU, so a packet is never fragmented. The worst
 // snapshot today is ~400 bytes; this is headroom, not a target.

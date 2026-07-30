@@ -69,6 +69,8 @@ Private_State :: struct {
 	// and adopts the depth only when locally idle (predict.odin).
 	spray_progress: u8,
 	spray_seed:     u32,
+	// Competitive money; TDM sends 0. u16 covers the $16000 cap comfortably.
+	money:          u16,
 }
 
 Snapshot :: struct {
@@ -76,9 +78,17 @@ Snapshot :: struct {
 	baseline_tick:   u32, // 0 = delta against an empty world, i.e. full
 	last_input_tick: u32, // newest client command applied before this tick
 	phase:           game.Match_Phase,
-	time_left:       f32, // seconds left in the phase
+	time_left:       f32, // seconds left in the phase; the fuse during .Bomb
 	t_score:         u8,
 	ct_score:        u8,
+	// The bomb, always sent in full: continuous state that self-heals under
+	// loss, and small enough (4 bytes, 16 while it lies somewhere) that delta
+	// machinery would cost more than it saves. TDM sends state None.
+	bomb_state:      game.Bomb_State,
+	bomb_carrier:    u8, // pawn id, game.BOMB_NO_PAWN = nobody
+	bomb_progress:   u8, // plant (Carried) or defuse (Planted) progress, 0..255
+	bomb_defuser:    u8, // pawn id currently defusing, game.BOMB_NO_PAWN = nobody
+	bomb_position:   [3]f32, // meaningful only when bomb_has_position(state)
 	present:         Present_Mask,
 	entities:        [game.MAX_PAWNS]Snapshot_Entity, // indexed by pawn id
 	has_private:     bool,
@@ -117,6 +127,16 @@ write_snapshot :: proc(w: ^Writer, s: Snapshot, base: ^Snapshot) {
 	write_u8(w, s.t_score)
 	write_u8(w, s.ct_score)
 
+	write_u8(w, u8(s.bomb_state))
+	write_u8(w, s.bomb_carrier)
+	write_u8(w, s.bomb_progress)
+	write_u8(w, s.bomb_defuser)
+	if game.bomb_has_position(s.bomb_state) {
+		write_f32(w, s.bomb_position.x)
+		write_f32(w, s.bomb_position.y)
+		write_f32(w, s.bomb_position.z)
+	}
+
 	write_u16(w, transmute(u16)s.present)
 	for i in 0 ..< game.MAX_PAWNS {
 		if i not_in s.present do continue
@@ -154,6 +174,7 @@ write_snapshot :: proc(w: ^Writer, s: Snapshot, base: ^Snapshot) {
 		write_u8(w, p.deaths)
 		write_u8(w, p.spray_progress)
 		write_u32(w, p.spray_seed)
+		write_u16(w, p.money)
 	}
 }
 
@@ -168,6 +189,16 @@ read_snapshot :: proc(r: ^Reader, base: ^Snapshot) -> (s: Snapshot, ok: bool) {
 	s.time_left = f32(read_u16(r)) / 100
 	s.t_score = read_u8(r)
 	s.ct_score = read_u8(r)
+
+	s.bomb_state = game.Bomb_State(read_u8(r))
+	s.bomb_carrier = read_u8(r)
+	s.bomb_progress = read_u8(r)
+	s.bomb_defuser = read_u8(r)
+	if game.bomb_has_position(s.bomb_state) {
+		s.bomb_position.x = read_f32(r)
+		s.bomb_position.y = read_f32(r)
+		s.bomb_position.z = read_f32(r)
+	}
 
 	s.present = transmute(Present_Mask)read_u16(r)
 	for i in 0 ..< game.MAX_PAWNS {
@@ -202,6 +233,7 @@ read_snapshot :: proc(r: ^Reader, base: ^Snapshot) -> (s: Snapshot, ok: bool) {
 		p.deaths = read_u8(r)
 		p.spray_progress = read_u8(r)
 		p.spray_seed = read_u32(r)
+		p.money = read_u16(r)
 	}
 	return s, !r.error
 }

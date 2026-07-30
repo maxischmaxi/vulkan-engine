@@ -111,6 +111,13 @@ sim_tick :: proc(dt: f32) {
 		cmd, base := consume_command(&slot)
 		p.prev_position = p.body.position
 
+		// Hands on the bomb: the trigger comes off the command before the
+		// weapon sees it. No ev.blocked is set, so the anti-cheat counters
+		// never mistake a plant for an illegal pull.
+		if bomb_hands_busy(slot.pawn_id, cmd) {
+			cmd.buttons -= {.Fire, .Fire_Pressed}
+		}
+
 		// Before any branch: the telemetry's turn stream must see every
 		// command, or death and countdown would tear holes into it.
 		telemetry_note_angles(&slot.aim, cmd)
@@ -123,7 +130,7 @@ sim_tick :: proc(dt: f32) {
 
 		if !p.alive {
 			p.respawn_in -= dt
-			if p.respawn_in <= 0 && match.phase == .Live {
+			if p.respawn_in <= 0 && match.phase in match.mode.respawn_phases {
 				respawn_human(&slot)
 				continue
 			}
@@ -136,9 +143,9 @@ sim_tick :: proc(dt: f32) {
 			continue
 		}
 
-		if match.phase != .Live {
-			// Countdown and Post: the feet are frozen, the holster is not.
-			// Nothing here can fire, so the rewind is skipped outright.
+		if !game.phase_is_action(match.phase) {
+			// Countdown, Freeze, Round_End...: the feet are frozen, the
+			// holster is not. Nothing here can fire, so the rewind is skipped.
 			note_fire_block(
 				&slot,
 				game.tick_pawn_weapon(&sv.gs, slot.pawn_id, cmd, dt, match.phase),
@@ -188,7 +195,7 @@ sim_tick :: proc(dt: f32) {
 		}
 	}
 
-	if match.phase == .Live {
+	if game.phase_is_action(match.phase) {
 		tick_server_bots(dt)
 	}
 
@@ -244,7 +251,6 @@ apply_debug_flags :: proc(slot: ^Client_Slot, flags: protocol.Debug_Flags) {
 
 // T faces north up mid, CT faces south back down it -- each toward the map,
 // never into their own back wall.
-@(private = "file")
 team_spawn_yaw :: proc(team: game.Team) -> f32 {
 	return team == .T ? game.SPAWN_YAW : -game.SPAWN_YAW
 }
@@ -267,17 +273,54 @@ respawn_human :: proc(slot: ^Client_Slot) {
 	apply_loadout_to_pawn(p, slot.loadout)
 }
 
+// The two rooms the map already names.
+MAP_T_SPAWN_AREA :: 0
+MAP_CT_SPAWN_AREA :: 8
+
 // T starts in T-spawn, CT in CT-spawn -- the two rooms the map already names.
 @(private = "file")
 team_spawn_position :: proc(team: game.Team) -> [3]f32 {
 	if team == .T do return game.SPAWN_POSITION
 
-	area := game.MAP_SPAWN_AREAS[8] // CT spawn
+	area := game.MAP_SPAWN_AREAS[MAP_CT_SPAWN_AREA]
 	x := (area.min.x + area.max.x) * 0.5
 	y := (area.min.y + area.max.y) * 0.5
 	z, found := physics.grid_ground_below(&sv.gs.grid, {x, y, area.floor + 2}, 5)
 	if !found do z = area.floor
 	return {x, y, z + 0.25}
+}
+
+// The nth spot in a team's spawn zone: a deterministic left-to-right line
+// through the room, ground-probed and fit-checked, so a comp round start can
+// place ten pawns without stacking bodies. Falls back to the roaming probe
+// (and finally the room's center) when a spot is blocked.
+team_spawn_position_n :: proc(team: game.Team, n: int) -> [3]f32 {
+	area_index := team == .T ? MAP_T_SPAWN_AREA : MAP_CT_SPAWN_AREA
+	area := game.MAP_SPAWN_AREAS[area_index]
+
+	columns :: 5
+	margin :: f32(1.5)
+	col := f32(n % columns)
+	row := f32(n / columns)
+	t := columns == 1 ? f32(0.5) : col / f32(columns - 1)
+	x := area.min.x + margin + (area.max.x - area.min.x - 2 * margin) * t
+	y := (area.min.y + area.max.y) * 0.5 + row * 1.5
+
+	probe := physics.Body {
+		radius = game.PLAYER_RADIUS,
+		height = game.PLAYER_HEIGHT,
+	}
+	z, found := physics.grid_ground_below(&sv.gs.grid, {x, y, area.floor + 2}, 5)
+	if found {
+		candidate := [3]f32{x, y, z + 0.01}
+		if !physics.grid_overlaps_any(&sv.gs.grid, physics.body_aabb_at(probe, candidate)) {
+			return candidate
+		}
+	}
+	if fallback, ok := server_find_spawn(probe); ok {
+		return fallback
+	}
+	return team_spawn_position(team)
 }
 
 // The spawn probe every respawn uses: a random room, a random point in it,
@@ -318,6 +361,11 @@ send_snapshots :: proc() {
 	snap.time_left = match_time_left()
 	snap.t_score = u8(clamp(match.t_score, 0, 255))
 	snap.ct_score = u8(clamp(match.ct_score, 0, 255))
+	// The bomb block; comp overwrites this from its own state (server/bomb.odin).
+	snap.bomb_state = .None
+	snap.bomb_carrier = game.BOMB_NO_PAWN
+	snap.bomb_defuser = game.BOMB_NO_PAWN
+	fill_bomb_snapshot(&snap)
 
 	for &p, i in sv.gs.pawns {
 		if !p.active do continue
@@ -373,6 +421,7 @@ send_snapshots :: proc() {
 					deaths         = u8(clamp(p.deaths, 0, 255)),
 					spray_progress = u8(clamp(int(p.weapon.spray.progress * 8), 0, 255)),
 					spray_seed     = p.weapon.spray.seed,
+					money          = u16(clamp(slot.money, 0, 65535)),
 				}
 			}
 		}

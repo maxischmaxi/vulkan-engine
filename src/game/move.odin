@@ -77,6 +77,7 @@ Button :: enum u8 {
 	Fire_Pressed, // the edge, for semi-automatics
 	Reload,
 	Zoom, // held while scoped; slows the walk on both ends of the wire
+	Use, // held: plant or defuse, the bomb's one verb
 }
 
 Buttons :: bit_set[Button;u16]

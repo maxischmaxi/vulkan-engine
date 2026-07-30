@@ -45,6 +45,16 @@ dispatch :: proc(ep: net.Endpoint, data: []u8) {
 		if m, mok := mm.read_find_server(&r); mok {
 			handle_find(m, ep)
 		}
+
+	case .Queue_Enter:
+		if m, mok := mm.read_queue_enter(&r); mok {
+			handle_queue_enter(m, ep)
+		}
+
+	case .Queue_Leave:
+		if m, mok := mm.read_queue_leave(&r); mok {
+			handle_queue_leave(m, ep)
+		}
 	}
 }
 
@@ -103,10 +113,13 @@ handle_find :: proc(m: mm.Find_Server, ep: net.Endpoint) {
 	best: ^Server_Entry
 	for &e in servers {
 		if !e.active do continue
+		if e.mode != m.mode do continue
 		if m.region.len != 0 && e.region != m.region do continue
 		if !e.joinable || e.draining || e.drain_requested do continue
 		if e.players >= e.max_players do continue
 		if server_reserved(&e) do continue
+		// Seats the queue already promised are not quickplay's to take.
+		if held_seats(e.server_id) > 0 do continue
 		kind_bit := e.addr.kind == .Udp ? mm.ACCEPT_UDP : mm.ACCEPT_STEAM
 		if m.accepts & kind_bit == 0 do continue
 		// Fill first: the fullest joinable server keeps the fleet dense.
@@ -127,7 +140,7 @@ handle_find :: proc(m: mm.Find_Server, ep: net.Endpoint) {
 			mm.region_string(&region),
 		)
 	} else {
-		resp.status = ensure_region_capacity(m.region) ? .Spawning : .No_Capacity
+		resp.status = ensure_region_capacity(m.region, m.mode) ? .Spawning : .No_Capacity
 	}
 	send_find_response(ep, resp)
 }

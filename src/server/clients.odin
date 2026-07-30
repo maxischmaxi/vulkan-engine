@@ -13,7 +13,7 @@ import steam "../../steamworks"
 // game. validate_command below is the one gate all gameplay input passes --
 // the place future anti-cheat checks accumulate.
 
-MAX_CLIENTS :: 4
+MAX_CLIENTS :: 10
 
 // Commands buffered per client: covers the 8-deep redundancy plus jitter.
 INPUT_BUFFER :: 64
@@ -61,6 +61,8 @@ Client_Slot :: struct {
 	// The buy menu's choice, kept on the slot for the same reason: the next
 	// spawn reads it, whenever that is.
 	loadout:            game.Loadout,
+	// Competitive economy. Meaningless in TDM, where everything stays free.
+	money:              int,
 	// The newest snapshot the client confirms holding: the delta baseline.
 	// Distinct from command_base, which keeps each command's first-delivery
 	// value for the rewind; this one always advances to the newest.
@@ -237,6 +239,13 @@ handle_unconnected :: proc(peer: Peer, version: u8, data: []u8) {
 		return
 	}
 
+	// A comp match past its warmup takes no new players; matchmaking only
+	// routes here before that, so anyone else gets the honest reason.
+	if !server_accepting_players() {
+		deny_and_close(peer, .In_Match)
+		return
+	}
+
 	if peer.kind == .Steam {
 		// The transport already authenticated the SteamID; the ticket is the
 		// ownership/ban check on top. Real tickets run ~234 bytes -- anything
@@ -267,6 +276,15 @@ handle_unconnected :: proc(peer: Peer, version: u8, data: []u8) {
 		return
 	}
 
+	// The pawn id comes from the shared pool, not the slot index: bots take
+	// whatever humans leave free, so a full comp match still fits MAX_PAWNS.
+	// The accept carries it, so it must exist before the handshake completes.
+	pawn_id := alloc_pawn_id()
+	if pawn_id < 0 {
+		deny_and_close(peer, .Full)
+		return
+	}
+
 	index := client_index(slot)
 	slot^ = {}
 	// The command ring tests "does this slot hold tick N" by equality; a fresh
@@ -277,7 +295,7 @@ handle_unconnected :: proc(peer: Peer, version: u8, data: []u8) {
 	slot.server_salt = rand.uint32()
 	slot.name = request.name
 	slot.name_len = request.name_len
-	slot.pawn_id = index
+	slot.pawn_id = pawn_id
 	slot.last_recv = time.tick_now()
 	protocol.connection_init(&slot.conn, request.client_salt ~ slot.server_salt)
 
@@ -432,6 +450,7 @@ send_accept :: proc(slot: ^Client_Slot) {
 			pawn_id = u8(slot.pawn_id),
 			tick_rate = game.TICK_RATE,
 			phase = match.phase,
+			mode = match.mode.id,
 		},
 	)
 	send_to(slot.peer, w.buf[:w.off])
@@ -542,7 +561,14 @@ drop_client :: proc(slot: ^Client_Slot) {
 		// connection dies.
 		steam_net_close_conn(slot.peer.conn, true)
 	}
-	sv.gs.pawns[slot.pawn_id] = {}
+	// Only an In_Game slot owns a live pawn; clearing unconditionally would
+	// let a Connected slot's teardown zero a pawn a bot has since claimed.
+	if was_in_game && slot.pawn_id >= 0 {
+		if match.mode.on_pawn_removed != nil {
+			match.mode.on_pawn_removed(slot.pawn_id)
+		}
+		sv.gs.pawns[slot.pawn_id] = {}
+	}
 	slot^ = {}
 	if was_in_game {
 		match_human_left()

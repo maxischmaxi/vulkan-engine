@@ -279,6 +279,7 @@ update :: proc() {
 	// first and the new ticks predict on top of corrected state.
 	steam_pump()
 	master_query_pump()
+	queue_pump()
 	net_client_pump()
 	update_scene()
 

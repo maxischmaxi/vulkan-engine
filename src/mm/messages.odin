@@ -1,5 +1,6 @@
 package mm
 
+import "../game"
 import "../protocol"
 
 // One struct and one write/read pair per message, protocol/messages.odin
@@ -79,6 +80,7 @@ Server_Heartbeat :: struct {
 	spawn_id:    u64, // 0 = hand-started, otherwise the agent spawn it came from
 	region:      Region,
 	addr:        Server_Addr,
+	mode:        game.Mode, // what this server runs; the queue matches on it
 	players:     u8,
 	max_players: u8,
 	phase:       u8, // raw match phase, master only logs it
@@ -92,6 +94,7 @@ write_server_heartbeat :: proc(w: ^Writer, m: Server_Heartbeat) {
 	write_u64(w, m.spawn_id)
 	write_region(w, m.region)
 	write_server_addr(w, m.addr)
+	write_u8(w, u8(m.mode))
 	write_u8(w, m.players)
 	write_u8(w, m.max_players)
 	write_u8(w, m.phase)
@@ -105,6 +108,7 @@ read_server_heartbeat :: proc(r: ^Reader) -> (m: Server_Heartbeat, ok: bool) {
 	m.spawn_id = read_u64(r)
 	m.region = read_region(r)
 	m.addr = read_server_addr(r)
+	m.mode = game.Mode(read_u8(r))
 	m.players = read_u8(r)
 	m.max_players = read_u8(r)
 	m.phase = read_u8(r)
@@ -177,20 +181,27 @@ read_agent_heartbeat :: proc(r: ^Reader) -> (m: Agent_Heartbeat, ok: bool) {
 
 // The spawn_id is the correlation id end to end: the agent passes it to the
 // child as -server-id, the child heartbeats it, the master's pending entry
-// clears on it.
+// clears on it. Mode and expected_humans become the child's -mode= and
+// -expected-humans= flags; zero expected means open quickplay.
 Spawn_Server :: struct {
-	token:    Token,
-	spawn_id: u64,
+	token:           Token,
+	spawn_id:        u64,
+	mode:            game.Mode,
+	expected_humans: u8,
 }
 
 write_spawn_server :: proc(w: ^Writer, m: Spawn_Server) {
 	write_token(w, m.token)
 	write_u64(w, m.spawn_id)
+	write_u8(w, u8(m.mode))
+	write_u8(w, m.expected_humans)
 }
 
 read_spawn_server :: proc(r: ^Reader) -> (m: Spawn_Server, ok: bool) {
 	m.token = read_token(r)
 	m.spawn_id = read_u64(r)
+	m.mode = game.Mode(read_u8(r))
+	m.expected_humans = read_u8(r)
 	return m, !r.error
 }
 
@@ -240,6 +251,7 @@ Find_Server :: struct {
 	region:       Region, // empty = any region
 	game_version: u8, // protocol.PROTOCOL_VERSION of the asking client
 	accepts:      u8, // ACCEPT_* bitmask
+	mode:         game.Mode, // quickplay is mode-filtered too
 }
 
 write_find_server :: proc(w: ^Writer, m: Find_Server) {
@@ -247,6 +259,7 @@ write_find_server :: proc(w: ^Writer, m: Find_Server) {
 	write_region(w, m.region)
 	write_u8(w, m.game_version)
 	write_u8(w, m.accepts)
+	write_u8(w, u8(m.mode))
 }
 
 read_find_server :: proc(r: ^Reader) -> (m: Find_Server, ok: bool) {
@@ -254,6 +267,7 @@ read_find_server :: proc(r: ^Reader) -> (m: Find_Server, ok: bool) {
 	m.region = read_region(r)
 	m.game_version = read_u8(r)
 	m.accepts = read_u8(r)
+	m.mode = game.Mode(read_u8(r))
 	return m, !r.error
 }
 
@@ -272,6 +286,99 @@ write_find_response :: proc(w: ^Writer, m: Find_Response) {
 read_find_response :: proc(r: ^Reader) -> (m: Find_Response, ok: bool) {
 	m.nonce = read_u32(r)
 	m.status = Find_Status(read_u8(r))
+	m.addr = read_server_addr(r)
+	return m, !r.error
+}
+
+// ----------------------------------------------------------- queue messages
+
+// Enter and stay: sent once a second for as long as the player queues. The
+// (source endpoint, nonce) pair IS the queue identity -- no account, no
+// auth, the Find_Server trust model. Re-sending after a master restart
+// re-enters transparently; going silent for QUEUE_TTL_SECONDS leaves.
+Queue_Enter :: struct {
+	nonce:        u32, // random per queue attempt
+	region:       Region, // empty = any
+	game_version: u8, // protocol.PROTOCOL_VERSION
+	accepts:      u8, // ACCEPT_* bitmask
+	mode:         game.Mode,
+}
+
+write_queue_enter :: proc(w: ^Writer, m: Queue_Enter) {
+	write_u32(w, m.nonce)
+	write_region(w, m.region)
+	write_u8(w, m.game_version)
+	write_u8(w, m.accepts)
+	write_u8(w, u8(m.mode))
+}
+
+read_queue_enter :: proc(r: ^Reader) -> (m: Queue_Enter, ok: bool) {
+	m.nonce = read_u32(r)
+	m.region = read_region(r)
+	m.game_version = read_u8(r)
+	m.accepts = read_u8(r)
+	m.mode = game.Mode(read_u8(r))
+	return m, !r.error
+}
+
+// Courtesy cancel so the seat frees now, not at TTL. Sent a few times, best
+// effort.
+Queue_Leave :: struct {
+	nonce: u32,
+}
+
+write_queue_leave :: proc(w: ^Writer, m: Queue_Leave) {
+	write_u32(w, m.nonce)
+}
+
+read_queue_leave :: proc(r: ^Reader) -> (m: Queue_Leave, ok: bool) {
+	m.nonce = read_u32(r)
+	return m, !r.error
+}
+
+// The answer to every Queue_Enter while no server is assigned. queued and
+// needed let the UI say "2 OF 5" without the master promising anything.
+Queue_Reply :: struct {
+	nonce:  u32,
+	status: Queue_Status,
+	queued: u8, // humans currently grouped with you (same mode and region)
+	needed: u8, // the master's min-humans threshold
+}
+
+write_queue_reply :: proc(w: ^Writer, m: Queue_Reply) {
+	write_u32(w, m.nonce)
+	write_u8(w, u8(m.status))
+	write_u8(w, m.queued)
+	write_u8(w, m.needed)
+}
+
+read_queue_reply :: proc(r: ^Reader) -> (m: Queue_Reply, ok: bool) {
+	m.nonce = read_u32(r)
+	m.status = Queue_Status(read_u8(r))
+	m.queued = read_u8(r)
+	m.needed = read_u8(r)
+	return m, !r.error
+}
+
+// The match: sent unsolicited at assignment and again in answer to every
+// further Queue_Enter until the entry dies, so a lost datagram costs one
+// resend interval. match_id correlates logs; with no client auth the server
+// cannot enforce it anyway.
+Match_Assign :: struct {
+	nonce:    u32,
+	match_id: u64,
+	addr:     Server_Addr,
+}
+
+write_match_assign :: proc(w: ^Writer, m: Match_Assign) {
+	write_u32(w, m.nonce)
+	write_u64(w, m.match_id)
+	write_server_addr(w, m.addr)
+}
+
+read_match_assign :: proc(r: ^Reader) -> (m: Match_Assign, ok: bool) {
+	m.nonce = read_u32(r)
+	m.match_id = read_u64(r)
 	m.addr = read_server_addr(r)
 	return m, !r.error
 }

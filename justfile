@@ -52,8 +52,8 @@ server:
 # one terminal, `just agent` in another (which builds the server binary the
 # agent spawns), then clients with --master=127.0.0.1:27050 --join=t.
 
-master:
-    odin run src/master -debug -- -token=dev -idle-stop=60 -floor=1
+master min="1":
+    odin run src/master -debug -- -token=dev -idle-stop=60 -floor=1 -min-humans={{min}}
 
 # the dev fleet's server binary; the agent spawns copies of it
 server-bin:

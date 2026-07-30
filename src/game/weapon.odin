@@ -34,7 +34,7 @@ Weapon :: struct {
 	slot:          int,
 	category:      Buy_Category,
 	teams:         Team_Mask, // who may buy it; set explicitly on every entry
-	price:         int, // display only -- everything is free, like casual deathmatch
+	price:         int, // charged in comp freezes (economy.odin); free elsewhere
 	damage:        int,
 	// Rounds in a full magazine and the most that can be carried behind it.
 	// A melee weapon leaves both at zero and skips ammo entirely.

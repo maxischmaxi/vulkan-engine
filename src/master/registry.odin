@@ -1,5 +1,6 @@
 package main
 
+import "../game"
 import "../mm"
 import "core:log"
 import "core:net"
@@ -20,6 +21,7 @@ Server_Entry :: struct {
 	spawn_id:        u64, // 0 = hand-started; only spawned servers get drained
 	agent_id:        u64, // who spawned it (0 when unknown); the Stop escalation target
 	region:          mm.Region,
+	mode:            game.Mode,
 	addr:            mm.Server_Addr,
 	hb_ep:           net.Endpoint, // where Server_Drain goes
 	players:         u8,
@@ -47,11 +49,13 @@ Agent_Entry :: struct {
 // first heartbeat clears it (or the timeout declares the boot failed). This is
 // the double-spawn guard.
 Pending_Spawn :: struct {
-	active:   bool,
-	spawn_id: u64,
-	agent_id: u64,
-	region:   mm.Region,
-	since:    time.Tick,
+	active:          bool,
+	spawn_id:        u64,
+	agent_id:        u64,
+	region:          mm.Region,
+	mode:            game.Mode,
+	expected_humans: u8,
+	since:           time.Tick,
 }
 
 servers: [MAX_SERVERS]Server_Entry
@@ -124,6 +128,7 @@ upsert_server :: proc(m: mm.Server_Heartbeat, ep: net.Endpoint) {
 	}
 
 	e.region = m.region
+	e.mode = m.mode
 	e.addr = addr
 	e.hb_ep = ep
 	e.players = m.players

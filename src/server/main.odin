@@ -18,13 +18,16 @@ import "core:strings"
 // cheaper to hold from day one than to retrofit.
 
 Server :: struct {
-	socket:   net.UDP_Socket,
-	gs:       game.Game_State,
-	tick:     u32,
-	running:  bool,
+	socket:          net.UDP_Socket,
+	gs:              game.Game_State,
+	tick:            u32,
+	running:         bool,
 	// Pure-UDP mode: skip Steam entirely. Dev only; STEAM_REQUIRED builds
 	// refuse the flag.
-	insecure: bool,
+	insecure:        bool,
+	// What the matchmaker said to expect (-expected-humans). Informational in
+	// v1: bots fill regardless, the log line is the value.
+	expected_humans: int,
 }
 
 sv: Server
@@ -34,8 +37,32 @@ main :: proc() {
 
 	port := protocol.DEFAULT_PORT
 	ban_path := BAN_FILE_DEFAULT
+	mode := game.Mode.TDM
 	for arg in os.args[1:] {
 		switch {
+		case strings.has_prefix(arg, "-mode="):
+			switch arg[len("-mode="):] {
+			case "tdm":
+				mode = .TDM
+			case "comp":
+				mode = .Comp
+			case:
+				log.errorf("-mode wants tdm or comp, got {}", arg)
+				os.exit(1)
+			}
+
+		case arg == "-comp-fast":
+			comp.fast = true
+			COMP_MODE.countdown_s = COMP_FAST_WARMUP_S
+
+		case strings.has_prefix(arg, "-expected-humans="):
+			value, ok := strconv.parse_int(arg[len("-expected-humans="):])
+			if !ok || value < 0 {
+				log.errorf("-expected-humans wants a count, got {}", arg)
+				os.exit(1)
+			}
+			sv.expected_humans = value
+
 		case strings.has_prefix(arg, "-port="):
 			value, ok := strconv.parse_int(arg[len("-port="):])
 			if !ok || value <= 0 || value > 65535 {
@@ -106,6 +133,9 @@ main :: proc() {
 			log.info(
 				"Options:\n" +
 				"  -port=N          listen on UDP port N (default 27015)\n" +
+				"  -mode=tdm|comp   game mode this server runs (default tdm)\n" +
+				"  -comp-fast       shortened comp timings for testing\n" +
+				"  -expected-humans=N  how many humans matchmaking intends to send\n" +
 				"  -insecure        UDP only, no Steam (dev builds)\n" +
 				"  -banlist=F       ban list file (default bans.txt)\n" +
 				"  -master=H:P      register with the master at H:P and heartbeat\n" +
@@ -147,13 +177,17 @@ main :: proc() {
 	if !heartbeat_init() do os.exit(1)
 	signal_install()
 
-	init_match()
+	init_match(mode)
 
 	log.infof(
-		"Server: up at {} Hz, map dust2 ({} colliders)",
+		"Server: up at {} Hz, mode {}, map dust2 ({} colliders)",
 		game.TICK_RATE,
+		match.mode.name,
 		len(sv.gs.collision),
 	)
+	if sv.expected_humans > 0 {
+		log.infof("Server: matchmaking expects {} human(s)", sv.expected_humans)
+	}
 
 	sv.running = true
 	run_loop()

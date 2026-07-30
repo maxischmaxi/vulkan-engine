@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "game"
 import "vendor:glfw"
 
 // The menu screens, drawn with the HUD's own primitives. Immediate mode: a
@@ -47,6 +48,8 @@ draw_scene_screens :: proc(width, height: f32) {
 	switch scene.current {
 	case .Menu:
 		draw_main_menu(width, height)
+	case .Mode_Select:
+		draw_mode_select(width, height)
 	case .Team_Select:
 		draw_team_select(width, height)
 	case .Connecting:
@@ -69,14 +72,6 @@ draw_main_menu :: proc(width, height: f32) {
 
 	hud_rect(0, 0, width, height, MENU_DIM)
 	hud_text_shadow(cx, height * 0.24, "DUST2", hud_font_size(88 * scale), HUD_WHITE, .Center)
-	hud_text(
-		cx,
-		height * 0.24 + 96 * scale,
-		"TEAM DEATHMATCH",
-		HUD_TEXT_SMALL * scale,
-		HUD_DIM,
-		.Center,
-	)
 
 	if scene.error_text != "" {
 		hud_text(cx, height * 0.38, scene.error_text, HUD_TEXT_SMALL * scale, HUD_BAD, .Center)
@@ -87,7 +82,7 @@ draw_main_menu :: proc(width, height: f32) {
 	y := height * 0.46
 
 	if menu_button(cx - w * 0.5, y, w, h, "PLAY") {
-		enter_scene(.Team_Select)
+		enter_scene(.Mode_Select)
 		return
 	}
 	if menu_button(cx - w * 0.5, y + h + 20 * scale, w, h, "PRACTICE") {
@@ -145,6 +140,48 @@ team_card :: proc(x, y, w, h: f32, tag, role: string, color: [4]f32) -> bool {
 	return hovered && consume_click()
 }
 
+// TDM leads to the team pick; competitive queues right away, the server
+// assigns the side. Until the matchmaking queue exists, both cards end at the
+// same dev server -- the accept tells the client what that server runs.
+@(private = "file")
+draw_mode_select :: proc(width, height: f32) {
+	scale := hud_scale()
+	cx := width * 0.5
+
+	hud_rect(0, 0, width, height, MENU_DIM)
+	hud_text_shadow(
+		cx,
+		height * 0.22,
+		"CHOOSE MODE",
+		hud_font_size(48 * scale),
+		HUD_WHITE,
+		.Center,
+	)
+
+	card_w := 380 * scale
+	card_h := 240 * scale
+	gap := 40 * scale
+	y := height * 0.36
+
+	if team_card(cx - card_w - gap * 0.5, y, card_w, card_h, "TDM", "TEAM DEATHMATCH", HUD_DIM) {
+		scene.chosen_mode = .TDM
+		enter_scene(.Team_Select)
+		return
+	}
+	if team_card(cx + gap * 0.5, y, card_w, card_h, "COMP", "5V5 - FIRST TO 13", HUD_WARN) {
+		scene.chosen_mode = .Comp
+		scene.chosen_team = .T // a wish; the server balances
+		scene.queue_pending = true
+		enter_scene(.Connecting)
+		return
+	}
+
+	w := MENU_BUTTON_W * scale
+	if menu_button(cx - w * 0.5, height * 0.74, w, 56 * scale, "BACK") {
+		enter_scene(.Menu)
+	}
+}
+
 @(private = "file")
 draw_team_select :: proc(width, height: f32) {
 	scale := hud_scale()
@@ -184,15 +221,30 @@ draw_team_select :: proc(width, height: f32) {
 
 @(private = "file")
 start_game :: proc() {
+	// Menu play goes through the queue whenever a master is configured; the
+	// legacy quickplay query stays for --join and master-less dev loops.
+	scene.queue_pending = true
 	enter_scene(.Connecting)
 }
 
+// Doubles as the queue screen: the elapsed clock spans queue, server spawn
+// and handshake, so a player always sees how long they have been waiting.
 @(private = "file")
 draw_connecting :: proc(width, height: f32) {
 	scale := hud_scale()
 	cx := width * 0.5
 
 	hud_rect(0, 0, width, height, MENU_DIM)
+
+	elapsed := max(int(glfw.GetTime() - scene.queue_started), 0)
+	hud_text_shadow(
+		cx,
+		height * 0.34,
+		fmt.tprintf("{}:{:02d}", elapsed / 60, elapsed % 60),
+		hud_font_size(HUD_TEXT_BIG * scale),
+		HUD_WHITE,
+		.Center,
+	)
 
 	// The dots animate after the fixed label so the label itself never shifts.
 	label := connecting_label()
@@ -209,6 +261,11 @@ draw_connecting :: proc(width, height: f32) {
 
 @(private = "file")
 draw_match_end :: proc(width, height: f32) {
+	if scene.final_mode == .Comp {
+		draw_match_outro(width, height)
+		return
+	}
+
 	scale := hud_scale()
 	cx := width * 0.5
 
@@ -261,6 +318,90 @@ draw_match_end :: proc(width, height: f32) {
 
 	w := MENU_BUTTON_W * scale
 	if menu_button(cx - w * 0.5, height * 0.62, w, 56 * scale, "CONTINUE") {
+		enter_scene(.Menu)
+	}
+}
+
+// The competitive outro: the winning team on a podium of plain rectangles --
+// five bodies with heads, the middle one tallest -- under the final score.
+// Real models replace the rectangles one day; the composition stays. Reads
+// only scene fields: the connection is long gone by now.
+@(private = "file")
+draw_match_outro :: proc(width, height: f32) {
+	scale := hud_scale()
+	cx := width * 0.5
+
+	hud_rect(0, 0, width, height, MENU_DIM)
+
+	draw := scene.final_winner == game.NO_WINNER
+	win_color := HUD_DIM
+	headline := "MATCH DRAW"
+	if !draw {
+		winner := game.Team(scene.final_winner)
+		win_color = winner == .T ? MENU_T_COLOR : MENU_CT_COLOR
+		headline = winner == .T ? "TERRORISTS WIN THE MATCH" : "COUNTER-TERRORISTS WIN THE MATCH"
+	}
+	hud_text_shadow(cx, height * 0.14, headline, hud_font_size(48 * scale), win_color, .Center)
+
+	// the final score, T and CT tagged in their colours
+	score := fmt.tprintf("{} : {}", scene.final_t, scene.final_ct)
+	size := hud_font_size(56 * scale)
+	score_w := hud_text_width(score, size)
+	score_y := height * 0.14 + 70 * scale
+	hud_text_shadow(cx, score_y, score, size, HUD_WHITE, .Center)
+	hud_text(cx - score_w * 0.5 - 24 * scale, score_y, "T", size, MENU_T_COLOR, .Right)
+	hud_text(cx + score_w * 0.5 + 24 * scale, score_y, "CT", size, MENU_CT_COLOR)
+
+	// the podium: five winner-coloured figures, skipped on a draw
+	if !draw {
+		body_w := 56 * scale
+		gap := 20 * scale
+		heights := [5]f32{120, 145, 170, 145, 120}
+		base_y := height * 0.72
+		total := 5 * body_w + 4 * gap
+
+		hud_rect(
+			cx - total * 0.5 - 30 * scale,
+			base_y,
+			total + 60 * scale,
+			14 * scale,
+			{0.10, 0.11, 0.13, 0.95},
+			radius = 4 * scale,
+		)
+		x := cx - total * 0.5
+		for i in 0 ..< 5 {
+			h := heights[i] * scale
+			head := 26 * scale
+			hud_rect(x, base_y - h, body_w, h, win_color, radius = 6 * scale)
+			hud_rect(
+				x + (body_w - head) * 0.5,
+				base_y - h - head - 6 * scale,
+				head,
+				head,
+				win_color,
+				radius = head * 0.5,
+			)
+			x += body_w + gap
+		}
+	}
+
+	remaining := max(0, int(scene.end_at - glfw.GetTime()) + 1)
+	hud_text(
+		cx,
+		height * 0.80,
+		fmt.tprintf("MENU IN {}", remaining),
+		HUD_TEXT_SMALL * scale,
+		HUD_FAINT,
+		.Center,
+	)
+
+	w := MENU_BUTTON_W * scale
+	if menu_button(cx - w * 0.5, height * 0.86, w, 56 * scale, "CONTINUE") {
+		enter_scene(.Menu)
+		return
+	}
+	// a click anywhere else skips the outro too
+	if consume_click() {
 		enter_scene(.Menu)
 	}
 }

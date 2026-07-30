@@ -325,6 +325,40 @@ via logs, 2026-07-29:
    and the client hands off to the existing `--connect` machinery. Everything
    up to that handoff is proven by 1-7. *Not yet run.*
 
+## Matchmaking queue (mm v2)
+
+Both modes (`tdm`, `comp`) queue through the master: the client sends
+`Queue_Enter` once a second (it is enter, heartbeat and post-restart re-entry
+in one; identity is endpoint + nonce, the `Find_Server` trust model), the
+master groups entries by (mode, region) FIFO and answers each enter with
+`Queue_Reply {status, queued, needed}` until a `Match_Assign {match_id, addr}`
+hands out a server. There is no accept step and no give-up timer -- leaving
+the queue is `Queue_Leave` (or going silent for `QUEUE_TTL_SECONDS`).
+
+Assembly (`src/master/queue.odin`, `queue_match_make`) is three steps, first
+hit wins: **backfill** into a live warmup of the mode with free seats
+(threshold-free, this is how players trickle into a running warmup);
+**formation** of a new match once `-min-humans` (default 1) queued entries
+meet a fresh idle server of the mode; **spawn** one through an agent
+otherwise (`Spawn_Server` now carries `mode` and `expected_humans`, the agent
+passes them as `-mode=` / `-expected-humans=`). Seats promised to assigned
+players are `held_seats` for `ASSIGN_GRACE_SECONDS` -- conservative
+accounting that can under-fill for a few seconds but never double-books; the
+quickplay Find path skips servers with held seats entirely.
+
+There is no Lobby object and no reservation token: after assignment the
+server's own heartbeat (`players`, `joinable`, `mode`) is the source of
+truth. A comp server accepts handshakes while Idle or in Warmup with seats
+left and answers `In_Match` afterwards; when its match ends (everyone
+disconnects at Post) it retires via the normal drain machinery and the fleet
+spawns a fresh one. A queue-launched connect that fails gets one silent
+requeue (`queue_relaunch`), then the normal error screen.
+
+Client side: `src/queue_client.odin` (`queue_start/pump/stop`), driven by the
+menu's play flow whenever `--master` is configured, headless via
+`--queue=tdm|comp`. Deploy note: MM_VERSION 2 -- master, agent and server
+must ship together; v1 binaries are dropped by the frame check, silently.
+
 ## Future work
 
 - Cloud provider integration: a second implementation of "run an agent
@@ -335,5 +369,6 @@ via logs, 2026-07-29:
   documented seams; the master is the natural distribution point.
 - Server browser / region auto-selection by measured ping (SDR ping locations
   could estimate latency without connecting).
-- Multi-human matches, which turn the joinable predicate and the reservation
-  into real capacity management.
+- A real accept step for the queue: `Server_Reserve` (reserved msg id 0x34)
+  delivered over the heartbeat socket with a `match_id` echo would turn the
+  open warmup window into closed lobbies.

@@ -186,7 +186,7 @@ handle_master :: proc(data: []u8) {
 	#partial switch msg {
 	case .Spawn_Server:
 		if m, mok := mm.read_spawn_server(&r); mok && m.token == ag.token {
-			port, sok := children_spawn(m.spawn_id)
+			port, sok := children_spawn(m.spawn_id, m.mode, m.expected_humans)
 			result := mm.Spawn_Result {
 				token    = ag.token,
 				spawn_id = m.spawn_id,

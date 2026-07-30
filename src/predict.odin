@@ -51,7 +51,7 @@ predict_tick :: proc(dt: f32) {
 	// Predict with the exact angles the server will decode off the wire.
 	cmd.yaw, cmd.pitch = protocol.wire_angles(cmd.yaw, cmd.pitch)
 
-	if net_client.phase == .Live && player.alive {
+	if game.phase_is_action(net_client.phase) && player.alive {
 		ev := game.pawn_move(&gs, player, cmd, dt)
 		view_note_step(ev.stepped)
 		if ev.jumped do view_note_airborne()
@@ -237,7 +237,7 @@ reconcile :: proc(s: ^protocol.Snapshot) {
 	for tick := acked + 1; tick < predictor.input_tick; tick += 1 {
 		p := &predictor.pending[tick % PENDING_CAP]
 		if p.tick != tick do break
-		if net_client.phase == .Live {
+		if game.phase_is_action(net_client.phase) {
 			game.pawn_move(&gs, player, p.cmd, game.TICK_DT)
 		}
 		p.predicted_pos = player.body.position

@@ -56,6 +56,7 @@ build_hud :: proc() {
 	// shipped build should be able to do too.
 	if key_pressed(glfw.KEY_F12) do hud.visible = !hud.visible
 
+	hud_preview_apply()
 	update_minimap(game.clock.frame_dt)
 
 	hud_begin_frame()
@@ -82,12 +83,24 @@ build_hud :: proc() {
 
 	if hud.visible {
 		draw_minimap(margin, margin, HUD_MINIMAP_SIZE * scale)
-		draw_status(width, margin)
+		if competitive_active() {
+			// The top bar replaces draw_status wholesale: clock, score and
+			// alive state live up there, the K/D line rides under it.
+			draw_topbar(width, margin)
+		} else {
+			draw_status(width, margin)
+		}
 		draw_health(margin, height - margin)
 		draw_ammo(width - margin, height - margin)
 		draw_slots(width * 0.5, height - margin)
 		draw_speed(width * 0.5, height - margin - HUD_SLOT_HEIGHT * scale)
 		draw_weapon_prompt(width * 0.5, height * 0.5)
+
+		if competitive_active() {
+			draw_round_hud(width, height)
+			draw_bomb_hud(width, height)
+			draw_money(margin, height - margin)
+		}
 
 		if debug_active() do draw_debug_panel(width - margin, margin)
 		if !player.alive do draw_death_overlay(width, height)
@@ -221,6 +234,19 @@ draw_countdown :: proc(width, height: f32) {
 		HUD_WARN,
 		.Center,
 	)
+}
+
+// The balance, stacked above the health/armour block in the same corner CS
+// keeps it. Warmup shows INF because the font has no infinity glyph.
+@(private = "file")
+draw_money :: proc(x, bottom: f32) {
+	scale := hud_scale()
+	health_y := bottom - HUD_TEXT_BIG * scale
+	armor_y := health_y - HUD_TEXT_MEDIUM * scale - 8 * scale
+	money_y := armor_y - HUD_TEXT_MEDIUM * scale - 8 * scale
+
+	text := net_client.phase == .Warmup ? "$INF" : fmt.tprintf("$%d", net_client.money)
+	hud_text_shadow(x, money_y, text, HUD_TEXT_MEDIUM * scale, HUD_GOOD)
 }
 
 // Bottom left, counter-strike's corner for it: health over armour, each behind

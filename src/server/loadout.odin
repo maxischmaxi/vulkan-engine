@@ -17,23 +17,43 @@ apply_loadout_to_pawn :: proc(p: ^game.Pawn, l: game.Loadout) {
 }
 
 // The wire handler. Validation repairs rather than rejects; the choice is
-// stored on the slot for the next spawn. Only during the countdown does it go
-// straight into the live pawn's hands -- waiting for a round that has not
-// begun would be waiting for nothing. Mid-round, death delivers it.
+// stored on the slot for the next spawn or, during a buy phase, applied to
+// the live pawn immediately.
 //
-// phase   pawn   action
-// Countdown alive  store + apply immediately, bought weapon into the hand
-// Live      any    store; (re)spawn applies it
-// Post/Idle any    store only; a rematch resets to defaults on join anyway
+// TDM: everything free. Countdown applies now, Live stores for the respawn.
+// Comp: only during warmup (free) and freeze (charged against the slot's
+// money). Too expensive keeps the old loadout -- no wire nack, because the
+// client's mirror of buy_cost already predicted the refusal.
 handle_loadout :: proc(slot: ^Client_Slot, m: protocol.Loadout_Msg) {
 	if slot.state != .In_Game do return
 
 	l := game.validate_loadout({m.primary, m.secondary, m.armor}, slot.team)
 	before := slot.loadout
+
+	if match.mode.id == .Comp {
+		if !game.phase_can_buy(match.phase) {
+			log.infof("Server: client {} buy outside buy time, ignored", client_index(slot))
+			return
+		}
+		if match.phase != .Warmup {
+			cost := game.buy_cost(before, l)
+			if cost > slot.money {
+				log.infof(
+					"Server: client {} insufficient funds (${} for ${})",
+					client_index(slot),
+					slot.money,
+					cost,
+				)
+				return
+			}
+			slot.money -= cost
+		}
+	}
+
 	slot.loadout = l
 
 	p := &sv.gs.pawns[slot.pawn_id]
-	apply_now := match.phase == .Countdown && p.active && p.alive
+	apply_now := game.phase_can_buy(match.phase) && p.active && p.alive
 	if apply_now {
 		held := p.weapon.index
 		apply_loadout_to_pawn(p, l)

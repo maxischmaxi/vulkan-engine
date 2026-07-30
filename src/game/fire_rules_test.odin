@@ -48,9 +48,24 @@ FIRE :: Pawn_Input {
 }
 
 @(test)
+test_fire_allowed_in_action_phases :: proc(t: ^testing.T) {
+	// Warmup is free play and Bomb is still the round being fought: the
+	// trigger works in both, exactly as in Live.
+	for phase in ([]Match_Phase{.Live, .Warmup, .Bomb}) {
+		gs := make_range()
+		defer destroy_range(&gs)
+
+		ev := tick_pawn_weapon(&gs, 0, FIRE, TICK_DT, phase)
+
+		testing.expectf(t, ev.fired, "refused during {}", phase)
+		testing.expect_value(t, ev.blocked, Fire_Block.None)
+	}
+}
+
+@(test)
 test_no_fire_outside_live :: proc(t: ^testing.T) {
 	// every phase that is not the match proper, with the trigger held down
-	for phase in ([]Match_Phase{.Idle, .Countdown, .Post}) {
+	for phase in ([]Match_Phase{.Idle, .Countdown, .Post, .Freeze, .Round_End, .Halftime}) {
 		gs := make_range()
 		defer destroy_range(&gs)
 

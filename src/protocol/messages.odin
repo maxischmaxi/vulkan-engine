@@ -49,6 +49,7 @@ Connect_Accept :: struct {
 	pawn_id:     u8,
 	tick_rate:   u8,
 	phase:       game.Match_Phase,
+	mode:        game.Mode, // what this server runs; the HUD branches on it
 }
 
 write_connect_accept :: proc(w: ^Writer, m: Connect_Accept) {
@@ -57,6 +58,7 @@ write_connect_accept :: proc(w: ^Writer, m: Connect_Accept) {
 	write_u8(w, m.pawn_id)
 	write_u8(w, m.tick_rate)
 	write_u8(w, u8(m.phase))
+	write_u8(w, u8(m.mode))
 }
 
 read_connect_accept :: proc(r: ^Reader) -> (m: Connect_Accept, ok: bool) {
@@ -65,6 +67,7 @@ read_connect_accept :: proc(r: ^Reader) -> (m: Connect_Accept, ok: bool) {
 	m.pawn_id = read_u8(r)
 	m.tick_rate = read_u8(r)
 	m.phase = game.Match_Phase(read_u8(r))
+	m.mode = game.Mode(read_u8(r))
 	return m, !r.error
 }
 
@@ -175,6 +178,11 @@ Match_Phase_Msg :: struct {
 	param_tick: u32,
 	t_score:    u8,
 	ct_score:   u8,
+	// Comp round bookkeeping; TDM sends round 0, NO_WINNER, reason None
+	// (except the final Post, whose reason is Match_Over in both modes).
+	round:      u8,
+	winner:     u8, // game.Team of the round winner; game.NO_WINNER = none
+	reason:     game.Round_End_Reason,
 }
 
 write_match_phase :: proc(w: ^Writer, m: Match_Phase_Msg) {
@@ -182,6 +190,9 @@ write_match_phase :: proc(w: ^Writer, m: Match_Phase_Msg) {
 	write_u32(w, m.param_tick)
 	write_u8(w, m.t_score)
 	write_u8(w, m.ct_score)
+	write_u8(w, m.round)
+	write_u8(w, m.winner)
+	write_u8(w, u8(m.reason))
 }
 
 read_match_phase :: proc(r: ^Reader) -> (m: Match_Phase_Msg, ok: bool) {
@@ -189,6 +200,9 @@ read_match_phase :: proc(r: ^Reader) -> (m: Match_Phase_Msg, ok: bool) {
 	m.param_tick = read_u32(r)
 	m.t_score = read_u8(r)
 	m.ct_score = read_u8(r)
+	m.round = read_u8(r)
+	m.winner = read_u8(r)
+	m.reason = game.Round_End_Reason(read_u8(r))
 	return m, !r.error
 }
 

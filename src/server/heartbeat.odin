@@ -88,7 +88,7 @@ heartbeat_tick :: proc() {
 	// After the bye went out, more heartbeats would only resurrect the entry.
 	if shutting_down() do return
 
-	joinable := match.phase == .Idle && !hb.draining
+	joinable := server_accepting_players() && !hb.draining && count_clients() < MAX_CLIENTS
 	sig :=
 		u32(count_clients()) |
 		u32(match.phase) << 8 |
@@ -132,6 +132,7 @@ heartbeat_tick :: proc() {
 			spawn_id = hb.spawn_id,
 			region = hb.region,
 			addr = addr,
+			mode = match.mode.id,
 			players = u8(count_clients()),
 			max_players = MAX_CLIENTS,
 			phase = u8(match.phase),
@@ -159,6 +160,18 @@ heartbeat_bye :: proc() {
 // cut by a drain (the master only drains empty servers anyway).
 server_refusing_joins :: proc() -> bool {
 	return hb.draining || shutting_down()
+}
+
+// Whether a fresh handshake could still become a player: an empty server, a
+// comp warmup with seats left, or a TDM match (drop-in). Distinct from
+// refusing joins above -- a comp match past its warmup answers In_Match, not
+// Full, so the client can say why.
+server_accepting_players :: proc() -> bool {
+	return(
+		match.phase == .Idle ||
+		match.phase == .Warmup ||
+		(match.mode.drop_in && match.phase != .Post) \
+	)
 }
 
 count_clients :: proc() -> int {

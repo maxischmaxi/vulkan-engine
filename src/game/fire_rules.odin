@@ -19,7 +19,7 @@ Fire_Block :: enum u8 {
 }
 
 pawn_fire_block :: proc(phase: Match_Phase, p: ^Pawn) -> Fire_Block {
-	if !p.active || phase != .Live do return .Not_In_Match
+	if !p.active || !phase_is_action(phase) do return .Not_In_Match
 	if !p.alive do return .Dead
 	return .None
 }

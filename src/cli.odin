@@ -43,6 +43,16 @@ Cli :: struct {
 	// so the server's anti-cheat pipeline is testable headless. "debugmsg" is
 	// the only probe today; the seam future probes extend.
 	cheat_probe:   string,
+	// Force a competitive HUD state with synthetic data on the practice range,
+	// so every element can be screenshot without a server. See hud_preview.odin
+	// for the accepted views.
+	hudpreview:    string,
+	// Headless economy probe: send a buy for this weapon at every comp freeze,
+	// so the server's price gate is testable from logs alone.
+	auto_buy:      string,
+	// Skip the menu and enter the matchmaking queue: "tdm" or "comp".
+	// Needs --master; the headless twin of the menu's play flow.
+	queue:         string,
 }
 
 cli: Cli
@@ -52,11 +62,14 @@ CLI_USAGE :: `Options:
   --gpu-timing  measure each pass on the GPU and show it in the overlay
   --bench=N     run the fixed camera path for N frames, print one line, exit
   --join=TEAM   skip the menu and join the local server as t or ct
+  --queue=MODE  skip the menu and queue for tdm or comp (needs --master)
   --connect=ID  join the server with this steamid64 over Steam
   --master=H:P  ask the master at H:P for a server to join
   --region=STR  region preference for the master query
   --practice    skip the menu and enter the practice range
   --weapon=NAME start holding a weapon by name, e.g. ak, glock, awp, knife
+  --hudpreview=V  forced comp HUD state: topbar, warmup, freeze, roundend, bomb, outro
+  --auto-buy=NAME send a buy for this weapon at every comp freeze (economy E2E)
   --no-steam    run without Steam, dev builds only
   --cheat-probe=K  dev builds only: send illegal message K after connect (debugmsg)
   --no-light-cull  shade every light in every tile, to measure the culling
@@ -111,6 +124,14 @@ parse_cli :: proc() {
 			}
 			cli.join = value
 
+		case strings.has_prefix(arg, "--queue="):
+			value := arg[len("--queue="):]
+			if value != "tdm" && value != "comp" {
+				log.errorf("--queue wants tdm or comp, got {}", arg)
+				continue
+			}
+			cli.queue = value
+
 		case arg == "--practice":
 			cli.practice = true
 
@@ -133,6 +154,12 @@ parse_cli :: proc() {
 		case strings.has_prefix(arg, "--weapon="):
 			cli.weapon = arg[len("--weapon="):]
 
+		case strings.has_prefix(arg, "--hudpreview="):
+			cli.hudpreview = arg[len("--hudpreview="):]
+
+		case strings.has_prefix(arg, "--auto-buy="):
+			cli.auto_buy = arg[len("--auto-buy="):]
+
 		case strings.has_prefix(arg, "--bench="):
 			value, ok := strconv.parse_int(arg[len("--bench="):])
 			if !ok || value <= 0 {
@@ -153,5 +180,13 @@ parse_cli :: proc() {
 	if cli.practice && cli.join != "" {
 		log.warn("--practice wins over --join")
 		cli.join = ""
+	}
+	if cli.queue != "" && cli.join != "" {
+		log.warn("--queue wins over --join")
+		cli.join = ""
+	}
+	if cli.queue != "" && cli.master == "" {
+		log.error("--queue needs --master")
+		os.exit(1)
 	}
 }

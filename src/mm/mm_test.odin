@@ -44,6 +44,7 @@ test_server_heartbeat_roundtrip :: proc(t: ^testing.T) {
 		steam_id = 76561198000000001,
 		port     = 27015,
 	}
+	m.mode = .Comp
 	m.players = 3
 	m.max_players = 4
 	m.phase = 2
@@ -117,7 +118,7 @@ test_agent_spawn_roundtrip :: proc(t: ^testing.T) {
 		capacity = 8,
 		running  = 3,
 	}
-	spawn := Spawn_Server{hb.token, 12345}
+	spawn := Spawn_Server{hb.token, 12345, .Comp, 10}
 	result := Spawn_Result{hb.token, 12345, true, 27101}
 
 	buf: [MM_MAX_DATAGRAM]u8
@@ -144,6 +145,7 @@ test_find_roundtrip :: proc(t: ^testing.T) {
 		region       = region_from_string("eu"),
 		game_version = 9,
 		accepts      = ACCEPT_STEAM,
+		mode         = .TDM,
 	}
 	a := Find_Response {
 		nonce = q.nonce,
@@ -178,4 +180,71 @@ test_region_helpers :: proc(t: ^testing.T) {
 	// oversized region truncates to the block, consistently on both ends
 	long := region_from_string("a-very-long-region-name")
 	testing.expect_value(t, long.len, u8(MM_MAX_REGION))
+}
+
+@(test)
+test_queue_roundtrip :: proc(t: ^testing.T) {
+	enter := Queue_Enter {
+		nonce        = 0xBADC0DE,
+		region       = region_from_string("eu"),
+		game_version = 10,
+		accepts      = ACCEPT_UDP | ACCEPT_STEAM,
+		mode         = .Comp,
+	}
+	leave := Queue_Leave {
+		nonce = enter.nonce,
+	}
+	reply := Queue_Reply {
+		nonce  = enter.nonce,
+		status = .Queued,
+		queued = 2,
+		needed = 5,
+	}
+	assign := Match_Assign {
+		nonce    = enter.nonce,
+		match_id = 0xFEED_F00D_0000_0001,
+		addr     = {kind = .Udp, ip4 = {10, 0, 0, 2}, port = 27101},
+	}
+
+	buf: [MM_MAX_DATAGRAM]u8
+	w := writer(buf[:])
+	write_queue_enter(&w, enter)
+	write_queue_leave(&w, leave)
+	write_queue_reply(&w, reply)
+	write_match_assign(&w, assign)
+	testing.expect(t, !w.overflow)
+
+	r := reader(buf[:w.off])
+	enter2, ok1 := read_queue_enter(&r)
+	leave2, ok2 := read_queue_leave(&r)
+	reply2, ok3 := read_queue_reply(&r)
+	assign2, ok4 := read_match_assign(&r)
+	testing.expect(t, ok1 && ok2 && ok3 && ok4)
+	testing.expect(t, enter2 == enter)
+	testing.expect(t, leave2 == leave)
+	testing.expect(t, reply2 == reply)
+	testing.expect(t, assign2 == assign)
+
+	// truncated flags, not crashes
+	r2 := reader(buf[:3])
+	_, rok := read_queue_enter(&r2)
+	testing.expect(t, !rok)
+}
+
+@(test)
+test_queue_datagram_sizes :: proc(t: ^testing.T) {
+	// each queue message must fit a control datagram alone, frame included
+	buf: [MM_MAX_DATAGRAM]u8
+
+	w := writer(buf[:])
+	frame_begin(&w, .Queue_Enter)
+	write_queue_enter(&w, {region = region_from_string("a-very-long-regio")})
+	testing.expect(t, !w.overflow)
+	testing.expect(t, w.off < MM_MAX_DATAGRAM / 4)
+
+	w = writer(buf[:])
+	frame_begin(&w, .Match_Assign)
+	write_match_assign(&w, {addr = {kind = .Steam, steam_id = max(u64)}})
+	testing.expect(t, !w.overflow)
+	testing.expect(t, w.off < MM_MAX_DATAGRAM / 4)
 }

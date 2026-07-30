@@ -63,6 +63,8 @@ build_local_input :: proc() -> game.Pawn_Input {
 	if key_down(glfw.KEY_SPACE) do input_.buttons += {.Jump}
 	if key_down(glfw.KEY_LEFT_CONTROL) do input_.buttons += {.Crouch}
 	if key_down(glfw.KEY_LEFT_SHIFT) do input_.buttons += {.Slow}
+	// Plant/defuse: held, the server does the counting.
+	if key_down(glfw.KEY_E) do input_.buttons += {.Use}
 
 	// Noclip kept its old down-key; mapping C to crouch outside noclip would
 	// hand the stance a second key nobody asked for.

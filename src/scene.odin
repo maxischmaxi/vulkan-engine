@@ -10,6 +10,7 @@ import "vendor:glfw"
 
 Scene :: enum u8 {
 	Menu,
+	Mode_Select,
 	Team_Select,
 	Connecting,
 	Playing,
@@ -22,23 +23,35 @@ Scene_State :: struct {
 	// Playing/Practice only: the ESC overlay is up and the cursor is loose.
 	// The match keeps running on the server regardless.
 	paused:            bool,
+	chosen_mode:       game.Mode,
 	chosen_team:       game.Team,
+	// When the current wait for a match began (enter .Connecting): the queue
+	// screen's elapsed clock, spanning queue and handshake alike.
+	queue_started:     f64,
 	// The next .Connecting leads to the range rather than a match. Set by the
 	// menu's PRACTICE button and --practice, cleared on the way back out.
 	practice_pending:  bool,
+	// The next .Connecting enters the matchmaking queue (menu play or
+	// --queue) instead of the legacy quickplay query. Needs --master.
+	queue_pending:     bool,
 	// A static literal, shown on the main menu after a failed connect. Not
 	// owned memory: assigning a new one never frees the old.
 	error_text:        string,
 	// Match_End: wall clock at which the menu takes over by itself, and the
-	// final score frozen at the moment the server called it.
+	// final result frozen at the moment the server called it -- the outro may
+	// read nothing else, net_disconnect wipes net_client and remote.
 	end_at:            f64,
 	final_t, final_ct: int,
+	final_mode:        game.Mode,
+	final_winner:      u8, // game.Team as u8; game.NO_WINNER = draw
 }
 
 scene: Scene_State
 
 // How long the end screen lingers before returning to the menu on its own.
+// The comp outro gets a longer beat: there is a podium to look at.
 MATCH_END_SECONDS :: 5.0
+MATCH_OUTRO_SECONDS :: 8.0
 
 // Where the menu parks the camera: above spawn, looking gently down, so the
 // map itself is the backdrop. The world keeps rendering because leaving it up
@@ -53,10 +66,32 @@ init_scene :: proc() {
 		scene.current = .Playing
 		return
 	}
+	// The HUD preview is a pure client affair: straight onto the range with no
+	// server registration to depend on -- a screenshot must not need a server.
+	if cli.hudpreview == "outro" {
+		scene.final_mode = .Comp
+		scene.final_winner = u8(game.Team.T)
+		scene.final_t = 13
+		scene.final_ct = 7
+		enter_scene(.Match_End)
+		scene.end_at = glfw.GetTime() + 3600 // hold still for the camera
+		return
+	}
+	if cli.hudpreview != "" {
+		enter_scene(.Practice)
+		return
+	}
 	// --practice and --join skip the clicking for development and headless
 	// testing. parse_cli already made the two flags mutually exclusive.
 	if cli.practice {
 		start_practice()
+		return
+	}
+	if cli.queue != "" {
+		scene.chosen_mode = cli.queue == "comp" ? .Comp : .TDM
+		scene.chosen_team = .T // a wish; the server balances
+		scene.queue_pending = true
+		enter_scene(.Connecting)
 		return
 	}
 	if cli.join != "" {
@@ -78,10 +113,18 @@ enter_scene :: proc(next: Scene) {
 		grab_cursor(false)
 		net_disconnect() // safe when idle; the menu never keeps a connection
 		master_query_stop() // same: a pending server search dies with the scene
+		queue_stop() // leaving the scene is leaving the queue
+		queue_launch_disarm()
 		scene.practice_pending = false
+		scene.queue_pending = false
 		camera.position = game.SPAWN_POSITION + {0, 0, MENU_CAM_HEIGHT}
 		camera.yaw = game.SPAWN_YAW
 		camera.pitch = MENU_CAM_PITCH
+
+	case .Mode_Select:
+		grab_cursor(false)
+		scene.error_text = ""
+		scene.practice_pending = false
 
 	case .Team_Select:
 		grab_cursor(false)
@@ -90,10 +133,13 @@ enter_scene :: proc(next: Scene) {
 
 	case .Connecting:
 		grab_cursor(false)
+		scene.queue_started = glfw.GetTime()
 		if scene.practice_pending {
 			net_practice_start(protocol.DEFAULT_PORT)
 		} else if cli.connect_id != 0 {
 			net_connect_start_steam(cli.connect_id, scene.chosen_team)
+		} else if scene.queue_pending && cli.master != "" {
+			queue_start(scene.chosen_mode, scene.chosen_team)
 		} else if cli.master != "" {
 			master_query_start(scene.chosen_team)
 		} else {
@@ -110,6 +156,7 @@ enter_scene :: proc(next: Scene) {
 
 	case .Playing:
 		reset_match()
+		queue_launch_disarm() // the queue delivered; failures are real now
 		grab_cursor(true)
 
 	case .Practice:
@@ -117,7 +164,8 @@ enter_scene :: proc(next: Scene) {
 
 	case .Match_End:
 		grab_cursor(false)
-		scene.end_at = glfw.GetTime() + MATCH_END_SECONDS
+		linger: f64 = scene.final_mode == .Comp ? MATCH_OUTRO_SECONDS : MATCH_END_SECONDS
+		scene.end_at = glfw.GetTime() + linger
 	}
 }
 
@@ -166,8 +214,11 @@ scene_handle_esc :: proc() {
 	case .Menu:
 	// nothing: QUIT is a button, ESC quitting a game by accident is worse
 
-	case .Team_Select, .Match_End:
+	case .Mode_Select, .Match_End:
 		enter_scene(.Menu)
+
+	case .Team_Select:
+		enter_scene(.Mode_Select) // back one step, not all the way out
 
 	case .Connecting:
 		net_disconnect()
