@@ -28,6 +28,10 @@ Cli :: struct {
 	// Start holding this weapon by name. The only way to look at a viewmodel
 	// without a keyboard, which is what makes a screenshot of one repeatable.
 	weapon:        string,
+	// Start scoped, for the same reason: the scope is a right click, and what it
+	// does to the lens is exactly what a screenshot has to be able to catch.
+	// Ignored by a weapon without a scope.
+	zoom:          bool,
 	// Skip Steam init entirely. Dev builds also fall back on their own when
 	// Steam is not running; the flag exists to test that path deliberately.
 	no_steam:      bool,
@@ -68,6 +72,7 @@ CLI_USAGE :: `Options:
   --region=STR  region preference for the master query
   --practice    skip the menu and enter the practice range
   --weapon=NAME start holding a weapon by name, e.g. ak, glock, awp, knife
+  --zoom        start scoped, if the weapon has a scope
   --hudpreview=V  forced comp HUD state: topbar, warmup, freeze, roundend, bomb, outro
   --auto-buy=NAME send a buy for this weapon at every comp freeze (economy E2E)
   --no-steam    run without Steam, dev builds only
@@ -153,6 +158,9 @@ parse_cli :: proc() {
 
 		case strings.has_prefix(arg, "--weapon="):
 			cli.weapon = arg[len("--weapon="):]
+
+		case arg == "--zoom":
+			cli.zoom = true
 
 		case strings.has_prefix(arg, "--hudpreview="):
 			cli.hudpreview = arg[len("--hudpreview="):]

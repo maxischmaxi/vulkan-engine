@@ -130,6 +130,21 @@ camera_half_tangents :: proc(fov_horizontal: f32) -> (half_w, half_h: f32) {
 	return
 }
 
+// What the player is actually shown, which is not what the projection covers:
+// the scope masks the picture down to a centred square (draw_scope), so a scoped
+// view is narrower than its own frustum. Anything that has to land on a
+// particular pixel asks for this rather than for the frustum.
+visible_half_tangents :: proc(fov_horizontal: f32, masked: bool) -> (half_w, half_h: f32) {
+	half_w, half_h = camera_half_tangents(fov_horizontal)
+	if masked {
+		// The mask is min(width, height) on a side, so the wider axis is the one
+		// that loses.
+		side := min(half_w, half_h)
+		half_w, half_h = side, side
+	}
+	return
+}
+
 camera_projection :: proc() -> linalg.Matrix4f32 {
 	half_w, half_h := camera_half_tangents(camera.fov_horizontal)
 	return perspective_tangents(half_w, half_h, camera.near, camera.far)

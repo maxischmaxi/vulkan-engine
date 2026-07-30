@@ -50,7 +50,17 @@ viewpunch_note_shot :: proc() {
 
 // The angles the world is rendered through. Clamped just inside MAX_PITCH so
 // a punched view can never degenerate the look-at.
+//
+// Scaled by the lens the same way camera_apply_mouse scales the mouse: a punch
+// is a distance across the screen, not an angle the player reads, and the same
+// degrees cover three times that distance through a 30 degree scope. Unscaled,
+// a scoped shot threw the whole picture -- and with it the streak the shot left
+// behind -- a tenth of the sight picture downward on the frame it fired.
+//
+// The state stays lens-independent; only this read scales. Nothing here reaches
+// the wire or the prediction: camera.yaw and camera.pitch are untouched.
 punched_view_angles :: proc() -> (yaw, pitch: f32) {
-	return camera.yaw + viewpunch.current.x,
-		clamp(camera.pitch + viewpunch.current.y, -MAX_PITCH + 0.5, MAX_PITCH - 0.5)
+	lens := camera.fov_horizontal / DEFAULT_FOV
+	return camera.yaw + viewpunch.current.x * lens,
+		clamp(camera.pitch + viewpunch.current.y * lens, -MAX_PITCH + 0.5, MAX_PITCH - 0.5)
 }

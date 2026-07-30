@@ -43,6 +43,12 @@ Weapon :: struct {
 	reload_time:   f32,
 	melee:         bool,
 	muzzle:        [3]f32, // where the flash sits, view space
+	// How fast the visible streak travels (tracer.odin). Not ballistics -- the
+	// hit is decided the moment the trigger falls -- but calibre is what a
+	// tracer reads as, so it comes off the same table as the rest of the weapon.
+	// Damped to about 60% of the real muzzle velocity: the point is a flight the
+	// eye can follow, not one that is over before the frame is.
+	tracer_speed:  f32, // metres per second; 0 on anything that draws no streak
 	fire_interval: f32, // seconds between shots
 	automatic:     bool,
 	range:         f32,
@@ -134,6 +140,7 @@ WEAPONS := [?]Weapon {
 		reserve_max   = 120,
 		reload_time   = 2.2,
 		muzzle        = {0.075, 0.47, -0.12},
+		tracer_speed  = 240, // 9x19
 		fire_interval = 0.15,
 		automatic     = false,
 		range         = 120,
@@ -167,6 +174,7 @@ WEAPONS := [?]Weapon {
 		reserve_max   = 24,
 		reload_time   = 2.2,
 		muzzle        = {0.075, 0.51, -0.13},
+		tracer_speed  = 200, // .45 acp, subsonic
 		fire_interval = 0.17,
 		automatic     = false,
 		range         = 120,
@@ -203,6 +211,7 @@ WEAPONS := [?]Weapon {
 		reserve_max = 35,
 		reload_time = 2.2,
 		muzzle = {0.075, 0.55, -0.14},
+		tracer_speed = 300, // .50 ae
 		fire_interval = 0.22,
 		automatic = false,
 		range = 150,
@@ -236,6 +245,7 @@ WEAPONS := [?]Weapon {
 		reserve_max = 100,
 		reload_time = 2.6,
 		muzzle = {0.09, 0.54, -0.13},
+		tracer_speed = 200, // .45 acp
 		fire_interval = 0.075,
 		automatic = true,
 		range = 100,
@@ -269,6 +279,7 @@ WEAPONS := [?]Weapon {
 		reserve_max = 120,
 		reload_time = 2.1,
 		muzzle = {0.09, 0.56, -0.13},
+		tracer_speed = 250, // 9x19 out of a longer barrel
 		fire_interval = 0.07,
 		automatic = true,
 		range = 100,
@@ -293,6 +304,7 @@ WEAPONS := [?]Weapon {
 		reserve_max   = 32,
 		reload_time   = 2.9,
 		muzzle        = {0.09, 0.97, -0.15},
+		tracer_speed  = 240, // 12 gauge buckshot
 		fire_interval = 0.9,
 		automatic     = false,
 		range         = 40,
@@ -331,6 +343,7 @@ WEAPONS := [?]Weapon {
 		reserve_max   = 90,
 		reload_time   = 2.4,
 		muzzle        = {0.09, 0.99, -0.15},
+		tracer_speed  = 430, // 7.62x39
 		fire_interval = 0.1, // 600 rounds per minute
 		automatic     = true,
 		range         = 200,
@@ -367,6 +380,7 @@ WEAPONS := [?]Weapon {
 		reserve_max   = 90,
 		reload_time   = 3.1,
 		muzzle        = {0.09, 0.75, -0.15},
+		tracer_speed  = 540, // 5.56x45, the fastest round in the table
 		fire_interval = 0.09, // 666 rounds per minute
 		automatic     = true,
 		range         = 200,
@@ -392,6 +406,7 @@ WEAPONS := [?]Weapon {
 		reserve_max   = 30,
 		reload_time   = 3.7,
 		muzzle        = {0.09, 1.04, -0.15},
+		tracer_speed  = 530, // .338 lapua
 		fire_interval = 1.5, // the bolt cycle
 		automatic     = false,
 		range         = 250,

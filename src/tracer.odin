@@ -15,21 +15,41 @@ import vk "vendor:vulkan"
 
 MAX_TRACERS :: 64
 
-// Fast enough to read as gunfire, slow enough to be seen travelling: a long
-// dust2 sightline (~70 m) takes about a quarter of a second, and even a shot
-// into a close wall lives for a few frames.
-TRACER_SPEED :: 250.0 // metres per second
+// How long one point of the path glows. Speed is the weapon's own business
+// (game/weapon.odin), and the length follows from the two -- so a fast round
+// draws a long dash and a slow one a short one, both on screen for the same
+// handful of frames. It doubles as the floor on a streak's life: a shot into a
+// wall two metres away has a path shorter than its own dash, so it lives this
+// long rather than for the two metres.
+TRACER_DWELL :: 0.022 // seconds
 
-// The glowing part of the flight. Much shorter than any sightline, so the
-// streak is a moving dash rather than a standing beam.
-TRACER_LENGTH :: 4.0
+// A weapon the table forgot still draws something.
+TRACER_MIN_SPEED :: 200.0
 
-TRACER_HALF_WIDTH :: 0.02
+// Half width as a fraction of the vertical half tangent of whatever lens is in
+// front of it, which makes it a constant thread of pixels -- about 2.8 of them
+// across at 1080p -- at one metre and at seventy, scoped and not. A width fixed
+// in metres is a wedge instead: fifty pixels at the muzzle through a scope, and
+// sub-pixel at the far end of the same sightline.
+TRACER_SCREEN_HALF :: 0.0026
+// The one metric limit on it, and only as insurance: past this the far end of a
+// very long streak is a quad wide enough to fray against the surface it ends on.
+// There is deliberately no lower limit -- the width above is a constant count of
+// pixels, so it never thins toward nothing, and a floor in metres would only
+// bring back the wedge it replaced.
+TRACER_MAX_HALF_WIDTH :: 0.10
+
+// The streak stops just short of what the shot hit. Its tip is otherwise
+// coplanar with that surface, and a depth test it cannot win eats the last
+// centimetres exactly where the eye goes looking for the impact.
+TRACER_END_BIAS :: 0.03
 
 Tracer :: struct {
 	start:  [3]f32,
 	dir:    [3]f32, // unit vector, muzzle toward impact
 	length: f32, // muzzle to impact
+	speed:  f32, // metres per second, off the weapon table
+	streak: f32, // the glowing part: speed * TRACER_DWELL
 	head:   f32, // metres the head has flown so far
 	active: bool,
 }
@@ -148,16 +168,22 @@ destroy_tracer_renderer :: proc() {
 	destroy_buffer(tracer_renderer.index_buffer, tracer_renderer.index_memory)
 }
 
-add_tracer :: proc(start, end: [3]f32) {
+// `speed` is the weapon's tracer_speed; anything at or below zero falls back
+// rather than drawing a streak that never moves.
+add_tracer :: proc(start, end: [3]f32, speed: f32) {
 	span := end - start
-	length := linalg.length(span)
+	distance := linalg.length(span)
+	length := distance - TRACER_END_BIAS
 	// Point-blank leaves nothing to draw.
 	if length < 0.01 do return
 
+	v := max(speed, TRACER_MIN_SPEED)
 	tracer_renderer.tracers[tracer_renderer.next] = {
 		start  = start,
-		dir    = span / length,
+		dir    = span / distance,
 		length = length,
+		speed  = v,
+		streak = v * TRACER_DWELL,
 		active = true,
 	}
 	tracer_renderer.next = (tracer_renderer.next + 1) % MAX_TRACERS
@@ -168,11 +194,16 @@ add_tracer :: proc(start, end: [3]f32) {
 update_tracers :: proc(dt: f32) {
 	tracer_renderer.quad_count = 0
 
+	// One lens read for the frame -- every streak is measured through the same
+	// eye -- and only the vertical half angle, which no aspect or scope mask
+	// changes.
+	_, half_h := camera_half_tangents(camera.fov_horizontal)
+
 	for &t in tracer_renderer.tracers {
 		if !t.active do continue
 
-		t.head += TRACER_SPEED * dt
-		tail := t.head - TRACER_LENGTH
+		t.head += t.speed * dt
+		tail := t.head - t.streak
 		if tail >= t.length {
 			t.active = false
 			continue
@@ -187,15 +218,28 @@ update_tracers :: proc(dt: f32) {
 		mid := (head_pos + tail_pos) * 0.5
 		side := linalg.cross(t.dir, camera.position - mid)
 		if linalg.dot(side, side) < 1e-8 do continue
-		side = linalg.normalize(side) * TRACER_HALF_WIDTH
+		side = linalg.normalize(side)
+
+		// One width per end, each from its own distance: the quad comes out a
+		// trapezoid, and the perspective divide turns it back into a thread of
+		// constant thickness.
+		head_side := side * tracer_half_width(head_pos, half_h)
+		tail_side := side * tracer_half_width(tail_pos, half_h)
 
 		slot := tracer_renderer.quad_count
-		tracer_renderer.vertices[slot * 4 + 0] = {tail_pos - side, {0, -1}}
-		tracer_renderer.vertices[slot * 4 + 1] = {tail_pos + side, {0, 1}}
-		tracer_renderer.vertices[slot * 4 + 2] = {head_pos + side, {1, 1}}
-		tracer_renderer.vertices[slot * 4 + 3] = {head_pos - side, {1, -1}}
+		tracer_renderer.vertices[slot * 4 + 0] = {tail_pos - tail_side, {0, -1}}
+		tracer_renderer.vertices[slot * 4 + 1] = {tail_pos + tail_side, {0, 1}}
+		tracer_renderer.vertices[slot * 4 + 2] = {head_pos + head_side, {1, 1}}
+		tracer_renderer.vertices[slot * 4 + 3] = {head_pos - head_side, {1, -1}}
 		tracer_renderer.quad_count += 1
 	}
+}
+
+// The metres a point has to be wide to cover the same pixels wherever it sits.
+@(private = "file")
+tracer_half_width :: proc(point: [3]f32, half_h: f32) -> f32 {
+	distance := linalg.length(point - camera.position)
+	return min(TRACER_SCREEN_HALF * half_h * distance, TRACER_MAX_HALF_WIDTH)
 }
 
 // Every frame with tracers in flight uploads, unlike the decals' dirty flag:

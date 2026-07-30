@@ -190,7 +190,7 @@ scan_remote_fire :: proc() {
 				end = hit.point
 			}
 
-			add_tracer(muzzle, end)
+			add_tracer(muzzle, end, weapon.tracer_speed)
 			add_transient_light(muzzle, {1.0, 0.82, 0.5}, 26, 7, MUZZLE_FLASH_TIME)
 		}
 	}

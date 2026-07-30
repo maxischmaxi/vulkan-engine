@@ -2,6 +2,7 @@ package main
 
 import "core:log"
 import "core:math"
+import "core:math/linalg"
 import "core:math/rand"
 import "game"
 import "physics"
@@ -114,6 +115,8 @@ init_weapons :: proc() {
 	weapon_state = {}
 	weapon_state.index = default_weapon_index()
 	refill_all_ammo()
+	// Last, so it reads the weapon that was just drawn. A no-op without a scope.
+	if cli.zoom do weapon_toggle_zoom()
 
 	log.infof("Weapons: {} ({} selected)", game.WEAPON_COUNT, current_weapon().name)
 }
@@ -368,14 +371,19 @@ fire :: proc(alpha: f32) {
 	weapon_state.shots += 1
 	weapon_state.recoil = 1
 
-	muzzle: [3]f32
+	streak_start: [3]f32
 	if !weapon.melee {
 		weapon_state.flash = MUZZLE_FLASH_TIME
 
 		// The flash lights the surroundings for a moment. It is a real light, so
 		// walls near the muzzle brighten the way they should.
-		muzzle = muzzle_world_position()
+		muzzle := muzzle_world_position()
 		add_transient_light(muzzle, {1.0, 0.82, 0.5}, 26, 7, MUZZLE_FLASH_TIME)
+
+		// The streak starts near the muzzle rather than at it -- tracer_origin
+		// holds it at the same place on screen through any lens, which the light
+		// above has no reason to care about.
+		streak_start = tracer_origin()
 	}
 
 	// The same spray step and pellet pattern the server traces, from the raw
@@ -415,11 +423,11 @@ fire :: proc(alpha: f32) {
 		shot := trace_shot(alpha, dir)
 
 		// The tracer flies to wherever the trace ended: the impact when it hit,
-		// the end of the weapon's reach when it did not. From the muzzle, never
-		// the eye -- an eye-aligned streak collapses to a dot on the crosshair.
+		// the end of the weapon's reach when it did not. At the weapon's own
+		// speed, which is what tells a pistol shot from a rifle round in the air.
 		if !weapon.melee {
 			end := shot.hit ? shot.point : player_eye() + dir * weapon.range
-			add_tracer(muzzle, end)
+			add_tracer(streak_start, end, weapon.tracer_speed)
 		}
 
 		if !shot.hit do continue
@@ -591,6 +599,36 @@ muzzle_world_position :: proc() -> [3]f32 {
 	m := current_weapon().muzzle
 	origin, right, forward, up := weapon_origin()
 	return origin + right * m.x + forward * m.y + up * m.z
+}
+
+// Where a tracer leaves the weapon. The muzzle is centimetres of world offset,
+// but where a streak *starts* is a screen fact: the 13 cm that read as "out of
+// the barrel" at 90 degrees put the start two thirds of the way to the edge of a
+// 30 degree scope and all but on its bottom rim -- with the weapon not even
+// drawn there to explain it. Scaling the lateral part with the lens puts the
+// start back on the same pixel whatever the fov.
+//
+// The forward part is left alone: how far in front of the eye the barrel ends is
+// a depth, not a screen quantity, and the streak needs that parallax or it
+// collapses to a dot on the crosshair.
+tracer_origin :: proc() -> [3]f32 {
+	right, forward, up := camera_basis()
+	offset := muzzle_world_position() - camera.position
+
+	// Both lenses measured the way the player sees them, the scope's mask
+	// included: it crops the width to a square, so the two axes do not shrink by
+	// the same amount.
+	w, h := visible_half_tangents(camera.fov_horizontal, weapon_state.zoom_active)
+	w0, h0 := visible_half_tangents(DEFAULT_FOV, false)
+
+	// The basis is orthonormal, so taking the offset apart and putting it back
+	// together is exact.
+	return(
+		camera.position +
+		right * (linalg.dot(offset, right) * w / w0) +
+		forward * linalg.dot(offset, forward) +
+		up * (linalg.dot(offset, up) * h / h0) \
+	)
 }
 
 // The weapon mesh, plus the one part of it still made of blocks.
