@@ -15,9 +15,12 @@ OVERDRAW_FRAG_CODE :: #load("../shaders/overdraw.frag.spv")
 SHADOW_VERT_CODE :: #load("../shaders/shadow.vert.spv")
 SHADOW_PROP_VERT_CODE :: #load("../shaders/shadow_prop.vert.spv")
 SHADOW_MODEL_VERT_CODE :: #load("../shaders/shadow_model.vert.spv")
+SHADOW_CHARACTER_VERT_CODE :: #load("../shaders/shadow_character.vert.spv")
 
-// Imported meshes share world.frag; only the vertex stage differs.
+// Imported meshes share world.frag; only the vertex stage differs. So do the
+// characters -- a posed surface is still a surface.
 MODEL_VERT_CODE :: #load("../shaders/model.vert.spv")
+CHARACTER_VERT_CODE :: #load("../shaders/character.vert.spv")
 
 PROP_VERT_CODE :: #load("../shaders/prop.vert.spv")
 PROP_FRAG_CODE :: #load("../shaders/prop.frag.spv")

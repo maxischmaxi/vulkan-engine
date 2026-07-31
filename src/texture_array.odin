@@ -33,6 +33,7 @@ TEXTURE_SETS := []string {
 	"PropPalette",
 	"GunPalette",
 	"ModularPalette",
+	"CharPalette",
 }
 
 TEXTURE_DIR :: "textures"

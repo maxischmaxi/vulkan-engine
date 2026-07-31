@@ -57,6 +57,16 @@ create_descriptor_layouts :: proc() {
 			descriptorCount = 1,
 			stageFlags = {.FRAGMENT},
 		},
+		// Every posed character's joint matrices, also rewritten every frame.
+		// They belong here rather than in a set of their own because the shadow
+		// pass needs them too and binds nothing but this set -- a character
+		// whose shadow stood in the bind pose would be worse than no shadow.
+		{
+			binding = 4,
+			descriptorType = .STORAGE_BUFFER,
+			descriptorCount = 1,
+			stageFlags = {.VERTEX},
+		},
 	}
 
 	material_bindings := []vk.DescriptorSetLayoutBinding {
@@ -122,8 +132,8 @@ create_descriptor_layouts :: proc() {
 create_descriptor_pool :: proc() {
 	pool_sizes := []vk.DescriptorPoolSize {
 		{type = .UNIFORM_BUFFER, descriptorCount = MAX_FRAMES_IN_FLIGHT},
-		// per-frame lights and tile masks, plus the one material table
-		{type = .STORAGE_BUFFER, descriptorCount = 2 * MAX_FRAMES_IN_FLIGHT + 1},
+		// per-frame lights, tile masks and joint matrices, plus the one material table
+		{type = .STORAGE_BUFFER, descriptorCount = 3 * MAX_FRAMES_IN_FLIGHT + 1},
 		// per-frame shadow array, the three texture arrays, the glyph atlas
 		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = MAX_FRAMES_IN_FLIGHT + 4},
 	}
@@ -198,6 +208,10 @@ write_frame_sets :: proc() {
 			buffer = light_tiles.buffers[i],
 			range  = LIGHT_TILES_BYTES,
 		}
+		joints_info := vk.DescriptorBufferInfo {
+			buffer = character_renderer.joint_buffers[i],
+			range  = CHARACTER_JOINT_BYTES,
+		}
 
 		writes := []vk.WriteDescriptorSet {
 			{
@@ -231,6 +245,14 @@ write_frame_sets :: proc() {
 				descriptorCount = 1,
 				descriptorType = .STORAGE_BUFFER,
 				pBufferInfo = &tiles_info,
+			},
+			{
+				sType = .WRITE_DESCRIPTOR_SET,
+				dstSet = descriptors.frame_sets[i],
+				dstBinding = 4,
+				descriptorCount = 1,
+				descriptorType = .STORAGE_BUFFER,
+				pBufferInfo = &joints_info,
 			},
 		}
 		vk.UpdateDescriptorSets(g.device, u32(len(writes)), raw_data(writes), 0, nil)

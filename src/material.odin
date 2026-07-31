@@ -248,6 +248,62 @@ MATERIALS := []Material {
 		normal_scale  = 1.0,
 		saturation    = 0.55,
 	},
+	// The players, twice over. The character mesh carries the T pair's indices
+	// and the CT instance adds an offset to reach its own, which is how one mesh
+	// and one draw cover both teams -- see character.vert. That makes the order
+	// load-bearing: T before CT, main before joints, all four adjacent, and
+	// create_material_buffer checks it rather than trusting this comment.
+	{
+		// char_t_main: the attacker's body
+		tint          = {TEAM_COLORS[.T].r, TEAM_COLORS[.T].g, TEAM_COLORS[.T].b, 1},
+		layer         = 14,
+		uv_scale      = 1.0,
+		roughness_mul = 1.0,
+		metallic      = 0,
+		normal_scale  = 1.0,
+		saturation    = 1.0,
+	},
+	{
+		// char_t_joints: the mannequin's exposed joints, darkened so the figure
+		// reads as a body with limbs rather than one flat colour field
+		tint          = {
+			TEAM_COLORS[.T].r * 0.35,
+			TEAM_COLORS[.T].g * 0.35,
+			TEAM_COLORS[.T].b * 0.35,
+			1,
+		},
+		layer         = 14,
+		uv_scale      = 1.0,
+		roughness_mul = 0.8,
+		metallic      = 0,
+		normal_scale  = 1.0,
+		saturation    = 1.0,
+	},
+	{
+		// char_ct_main: the defender's body
+		tint          = {TEAM_COLORS[.CT].r, TEAM_COLORS[.CT].g, TEAM_COLORS[.CT].b, 1},
+		layer         = 14,
+		uv_scale      = 1.0,
+		roughness_mul = 1.0,
+		metallic      = 0,
+		normal_scale  = 1.0,
+		saturation    = 1.0,
+	},
+	{
+		// char_ct_joints
+		tint          = {
+			TEAM_COLORS[.CT].r * 0.35,
+			TEAM_COLORS[.CT].g * 0.35,
+			TEAM_COLORS[.CT].b * 0.35,
+			1,
+		},
+		layer         = 14,
+		uv_scale      = 1.0,
+		roughness_mul = 0.8,
+		metallic      = 0,
+		normal_scale  = 1.0,
+		saturation    = 1.0,
+	},
 }
 
 // Model materials are appended past the map's, so game.Material_ID keeps meaning
@@ -260,7 +316,13 @@ MODEL_MAT_PROP_PALETTE :: MODEL_MAT_RETRO_ARMS + 2
 MODEL_MAT_GUN_MATTE :: MODEL_MAT_RETRO_ARMS + 3
 MODEL_MAT_GUN_METAL :: MODEL_MAT_RETRO_ARMS + 4
 MODEL_MAT_MOD_PALETTE :: MODEL_MAT_RETRO_ARMS + 5
-MODEL_MATERIAL_COUNT :: 6
+// The character's four: two materials per team, T first. The mesh is authored
+// against the T pair and the CT instance adds CHARACTER_MATERIAL_STRIDE, so
+// these four have to stay adjacent and in this order.
+MODEL_MAT_CHAR_MAIN :: MODEL_MAT_RETRO_ARMS + 6
+MODEL_MAT_CHAR_JOINTS :: MODEL_MAT_RETRO_ARMS + 7
+CHARACTER_MATERIAL_STRIDE :: u32(2)
+MODEL_MATERIAL_COUNT :: 10
 
 // Everything behind descriptor set 1: the material table and the texture arrays
 // it indexes into. None of it changes after load.
@@ -284,6 +346,13 @@ create_material_buffer :: proc() {
 			log.panicf("Material {} points at layer {}, which does not exist", i, m.layer)
 		}
 	}
+
+	// character.vert reaches the CT rows by adding a constant to the vertex's
+	// material index, so the four character rows have to be adjacent and in the
+	// order the table above claims. Nothing else would notice if they were not:
+	// the defenders would simply come out in the attackers' colour.
+	#assert(MODEL_MAT_CHAR_JOINTS == MODEL_MAT_CHAR_MAIN + 1)
+	#assert(MODEL_MAT_CHAR_MAIN + CHARACTER_MATERIAL_STRIDE == MODEL_MAT_MOD_PALETTE + 3)
 
 	// The model material constants are offsets into this table rather than
 	// entries of an enum, so this is what keeps them pointing at the right rows.

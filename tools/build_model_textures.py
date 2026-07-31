@@ -17,6 +17,8 @@ Three sets come out of this:
   GunPalette    one swatch per gun-pack material name; see gun_palette.py.
   ModularPalette  the modular prototyping pack's 8x8 palette, same treatment
                 as PropPalette.
+  CharPalette   two grey swatches for the player mannequin. The team colour is
+                a material tint, not a swatch -- see build_char_palette.
 
 Run through `just models`; convert_models.py assumes the atlas layout below.
 """
@@ -180,6 +182,29 @@ def build_gun_palette():
     )
 
 
+def build_char_palette():
+    # The character's two swatches, and they are deliberately colourless. The
+    # mannequin has no textures at all, so the only thing this layer contributes
+    # is a surface to tint -- and the team colours live in MATERIALS on the Odin
+    # side, next to the ones the menu and the HUD use. Putting colour here too
+    # would mean two places to change it and one of them silently wrong.
+    #
+    # Keep the cell order in sync with PALETTE_CELLS in convert_characters.py.
+    grid = 2
+    color = Image.new("RGB", (grid, grid), (128, 128, 128))
+    color.putpixel((0, 0), (196, 196, 196))  # char_main
+    color.putpixel((1, 0), (150, 150, 150))  # char_joints
+    write(
+        "CharPalette",
+        {
+            "Color": color.resize((LAYER, LAYER), Image.NEAREST),
+            "NormalGL": flat_normal(LAYER),
+            "Roughness": constant(LAYER, 175),
+            "AmbientOcclusion": constant(LAYER, 255),
+        },
+    )
+
+
 def main():
     if not ASSETS.exists():
         sys.exit("assets/ missing -- run tools/extract_models.sh first")
@@ -188,6 +213,7 @@ def main():
     build_prop_palette()
     build_modular_palette()
     build_gun_palette()
+    build_char_palette()
 
 
 if __name__ == "__main__":

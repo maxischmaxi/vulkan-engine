@@ -25,6 +25,14 @@ Remote_Draw :: struct {
 	position:  [3]f32,
 	height:    f32,
 	radius:    f32,
+	yaw:       f32,
+	pitch:     f32,
+	weapon:    int,
+	health:    u8,
+	// Not on the wire -- the snapshot carries positions only. Derived from the
+	// pair this entity is being interpolated between, which is the same two
+	// numbers with the tick gap between them.
+	velocity:  [3]f32,
 }
 
 Remote_View :: struct {
@@ -121,10 +129,23 @@ interpolate_remotes :: proc() {
 		if .Alive not_in e.flags do continue
 
 		position := e.position
+		yaw := e.yaw
+		pitch := e.pitch
+		velocity: [3]f32
 		if to != nil && id in to.present {
 			other := &to.entities[id]
 			if .Alive in other.flags {
 				position = linalg.lerp(e.position, other.position, factor)
+				// Angles, not numbers: lerping 359 to 1 the plain way passes
+				// through 180 and spins the character around its own axis.
+				yaw = lerp_angle(e.yaw, other.yaw, factor)
+				pitch = linalg.lerp(e.pitch, other.pitch, factor)
+				// The pair is already here, and so is the tick gap between
+				// them, so the velocity the wire does not carry costs one
+				// subtraction. It is the average over at least a tick, which is
+				// what a locomotion blend wants anyway.
+				dt := f32(to.server_tick - from.server_tick) / game.TICK_RATE
+				if dt > 0 do velocity = (other.position - e.position) / dt
 			}
 		}
 
@@ -137,6 +158,11 @@ interpolate_remotes :: proc() {
 			position  = position,
 			height    = height,
 			radius    = radius,
+			yaw       = yaw,
+			pitch     = pitch,
+			weapon    = int(e.weapon),
+			health    = e.health,
+			velocity  = velocity,
 		}
 		remote.drawn_count += 1
 	}
@@ -200,13 +226,36 @@ scan_remote_fire :: proc() {
 	remote.fire_scanned = max(remote.fire_scanned, t0)
 }
 
-// Hands every interpolated entity to the prop renderer, in its team's colour.
+// Shortest way round between two angles in degrees. The wire quantizes yaw to
+// a u16 over the full turn, so the wrap is not a corner case -- it is where
+// every player standing near due west spends their time.
+@(private = "file")
+lerp_angle :: proc(a, b, t: f32) -> f32 {
+	delta := b - a
+	for delta > 180 do delta -= 360
+	for delta < -180 do delta += 360
+	return a + delta * t
+}
+
+// Hands every interpolated entity to the character renderer, posed and facing
+// where it is looking.
 submit_remote_entities :: proc() {
 	for i in 0 ..< remote.drawn_count {
 		d := &remote.drawn[i]
-		center := d.position + [3]f32{0, 0, d.height * 0.5}
-		size := [3]f32{d.radius * 2, d.radius * 2, d.height}
-		add_world_prop(prop_transform(center, size), TEAM_COLORS[d.team], roughness = 0.7)
+		submit_character(
+			{
+				id = d.id,
+				position = d.position,
+				yaw = d.yaw,
+				pitch = d.pitch,
+				velocity = d.velocity,
+				height = d.height,
+				team = d.team,
+				weapon = d.weapon,
+				crouching = d.crouching,
+				health = d.health,
+			},
+		)
 	}
 }
 

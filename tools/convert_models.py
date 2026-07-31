@@ -183,7 +183,10 @@ def hand_matrix():
 
 def attach_weapon(spec):
     """Imports a weapon the scene does not already hold and parks it in the
-    right hand. Only the knife needs this; the two guns come posed."""
+    right hand. Only the knife needs this; the two guns come posed.
+
+    Returns the objects it added, which is what lets the world variant export
+    the gun on its own."""
     before = set(bpy.data.objects)
     bpy.ops.import_scene.fbx(filepath=str(ASSETS / spec["fbx"]))
     added = [o for o in bpy.data.objects if o not in before]
@@ -216,6 +219,7 @@ def attach_weapon(spec):
     # object scale, and dropping that is how a knife ends up 19 metres long.
     root.matrix_world = m @ root.matrix_world
     bpy.context.view_layer.update()
+    return added
 
 
 def exportable_meshes(exclude=()):
@@ -576,6 +580,47 @@ def build_viewmodel(spec):
     builder.write(OUT / f"{spec['name']}.mesh")
 
 
+def build_world_weapon(spec):
+    """The same gun again, without the arms and posed about the hand rather than
+    about the eye -- what another player is seen carrying.
+
+    The viewmodel meshes cannot serve: they have the first-person arms welded
+    into them and their origin is the camera. This one's origin is the grip, so
+    the runtime can hang it off the character's hand joint with nothing but that
+    joint's matrix."""
+    if "attach" not in spec:
+        return
+    print(f"{spec['name']} (world):")
+    open_blend(spec["blend"])
+    apply_actions(spec.get("actions", {}), spec.get("frame", 1))
+
+    material_map = {}
+    for index, (mat_name, _) in enumerate(gun_palette.swatches(ASSETS)):
+        material_map[mat_name] = (
+            gun_palette.engine_material(mat_name),
+            ("swatch", gun_palette.swatch_uv(index)),
+        )
+
+    added = attach_weapon(spec["attach"])
+
+    # Re-anchor onto the hand. Moving the objects rather than the exported
+    # vertices keeps every normal and tangent consistent with the positions,
+    # and leaves the Builder's one axis convention doing the rest.
+    into_hand = hand_matrix().inverted()
+    for obj in added:
+        if obj.parent is None:
+            obj.matrix_world = into_hand @ obj.matrix_world
+    bpy.context.view_layer.update()
+
+    builder = Builder("viewmodel", bpy.context.scene.unit_settings.scale_length)
+    meshes = [o for o in added if o.type == "MESH" and o.data.materials and o.data.polygons]
+    if not meshes:
+        sys.exit(f"{spec['name']}: the attachment brought no mesh to export")
+    for obj in meshes:
+        builder.add_object(obj, material_map)
+    builder.write(OUT / f"world_{spec['name'][len('view_'):]}.mesh")
+
+
 def build_props():
     sources = sorted((ASSETS / "props" / "models").glob("*.dae"))
     if not sources:
@@ -664,6 +709,7 @@ def main():
     if "modular" not in args:
         for spec in VIEWMODELS:
             build_viewmodel(spec)
+            build_world_weapon(spec)
         build_props()
     build_modular()
     print(f"models written to {OUT}")

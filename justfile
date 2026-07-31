@@ -33,6 +33,7 @@ sounds:
 models:
     ./tools/extract_models.sh
     python3 tools/build_model_textures.py
+    python3 tools/convert_characters.py
     blender -b -P tools/convert_models.py
 
 # libsteam_api.so has SONAME libsteam_api.so, so the binary needs an rpath to

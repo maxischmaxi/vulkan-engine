@@ -14,6 +14,8 @@ SKY_COLOR :: [4]f32{0.42, 0.55, 0.75, 1.0}
 build_frame :: proc(alpha: f32) {
 	prop_begin_frame()
 	model_begin_frame()
+	character_begin_frame()
+	character_begin_pawns()
 	// The world stays up behind the menu; the actors in it do not. Networked
 	// play draws the server's entities; the benchmark and the practice range
 	// draw their local bots.
@@ -157,6 +159,7 @@ record_scene_pass :: proc(cmd: vk.CommandBuffer, image_index, frame: u32) {
 
 	record_prop_pass(cmd, frame)
 	record_model_pass(cmd, frame)
+	record_character_pass(cmd, frame)
 	gpu_timer_mark(cmd, frame, .Props)
 
 	record_decal_pass(cmd, frame)
@@ -335,6 +338,7 @@ draw_frame :: proc() {
 	upload_world_order(frame)
 	upload_prop_instances(frame)
 	upload_model_instances(frame)
+	upload_character_instances(frame)
 	upload_decals(frame)
 	upload_tracers(frame)
 	upload_hud_quads(frame)

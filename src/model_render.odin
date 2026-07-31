@@ -3,6 +3,7 @@ package main
 import "core:log"
 import "core:math/linalg"
 import "core:mem"
+import "game"
 import vk "vendor:vulkan"
 
 // Draws the meshes mesh.odin loaded: the props standing on the map and the
@@ -14,7 +15,10 @@ import vk "vendor:vulkan"
 // a single instanced draw on the way in. The viewmodel is rewritten every frame
 // and gets a mapped buffer, like every other per-frame stream in the renderer.
 
-MAX_VIEW_MODEL_INSTANCES :: 8
+// The weapon in the player's hands, plus one in every other player's hands.
+// World and view instances share the buffer, world first -- the same split
+// prop_render.odin makes, for the same reason: each draw is then a range.
+MAX_VIEW_MODEL_INSTANCES :: 8 + game.MAX_PAWNS
 
 // std430-compatible and the layout the instance attributes describe.
 Model_Instance :: struct {
@@ -47,6 +51,10 @@ Model_Renderer :: struct {
 	view_mapped:    [MAX_FRAMES_IN_FLIGHT]rawptr,
 	view_batches:   [dynamic]Model_Batch,
 	view_instances: [dynamic]Model_Instance,
+	// Meshes that move but are not props: the weapons other players carry.
+	// They ride the per-frame buffer with the viewmodel and are drawn with the
+	// world's projection instead of the weapon's.
+	world_batches:  [dynamic]Model_Batch,
 }
 
 model_renderer: Model_Renderer
@@ -119,6 +127,7 @@ create_model_renderer :: proc() {
 
 	model_renderer.view_batches = make([dynamic]Model_Batch, 0, MAX_VIEW_MODEL_INSTANCES)
 	model_renderer.view_instances = make([dynamic]Model_Instance, 0, MAX_VIEW_MODEL_INSTANCES)
+	model_renderer.world_batches = make([dynamic]Model_Batch, 0, game.MAX_PAWNS)
 }
 
 create_model_pipeline :: proc() {
@@ -159,6 +168,7 @@ destroy_model_renderer :: proc() {
 	delete(model_renderer.static_batches)
 	delete(model_renderer.view_batches)
 	delete(model_renderer.view_instances)
+	delete(model_renderer.world_batches)
 }
 
 // ------------------------------------------------------------------ building
@@ -215,6 +225,24 @@ build_static_models :: proc(placements: []Model_Placement) {
 model_begin_frame :: proc() {
 	clear(&model_renderer.view_batches)
 	clear(&model_renderer.view_instances)
+	clear(&model_renderer.world_batches)
+}
+
+// A mesh somewhere in the world that moves: today, the weapon in another
+// player's hands. Shadowed, unlike the viewmodel -- it is out there with the
+// character carrying it.
+add_world_model :: proc(mesh_name: string, model: linalg.Matrix4f32) {
+	if len(model_renderer.view_instances) >= MAX_VIEW_MODEL_INSTANCES do return
+
+	append(
+		&model_renderer.world_batches,
+		Model_Batch {
+			mesh = find_mesh(mesh_name),
+			first_instance = u32(len(model_renderer.view_instances)),
+			instance_count = 1,
+		},
+	)
+	append(&model_renderer.view_instances, Model_Instance{model = model, params = {1, 0, 0, 0}})
 }
 
 // Viewmodel geometry for this frame. Never shadowed: it sits centimetres from
@@ -281,16 +309,22 @@ push_view_projection :: proc(cmd: vk.CommandBuffer, vp: linalg.Matrix4f32) {
 	)
 }
 
-// The props. Drawn with the world's view-projection, after the world itself.
+// The props, and whatever else stands in the world this frame. Drawn with the
+// world's view-projection, after the world itself.
 record_model_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
-	if model_renderer.static_count == 0 do return
+	if model_renderer.static_count == 0 && len(model_renderer.world_batches) == 0 do return
 
 	vk.CmdBindPipeline(cmd, .GRAPHICS, model_renderer.pipeline.pipeline)
 	bind_frame_set(cmd, model_renderer.pipeline.layout, frame)
 	bind_material_set(cmd, model_renderer.pipeline.layout)
 	push_view_projection(cmd, camera_view_projection())
 
-	draw_batches(cmd, model_renderer.static_buffer, model_renderer.static_batches)
+	if model_renderer.static_count > 0 {
+		draw_batches(cmd, model_renderer.static_buffer, model_renderer.static_batches)
+	}
+	if len(model_renderer.world_batches) > 0 {
+		draw_batches(cmd, model_renderer.view_buffers[frame], model_renderer.world_batches[:])
+	}
 }
 
 // The weapon, on the depth buffer the viewmodel block already cleared.
@@ -307,7 +341,15 @@ record_view_model_draws :: proc(cmd: vk.CommandBuffer, frame: u32) {
 
 // Props into a shadow cascade. The pipeline and the cascade push constant are
 // set by the caller, which owns the cascade loop.
-record_model_shadow_draw :: proc(cmd: vk.CommandBuffer) {
-	if model_renderer.static_count == 0 do return
-	draw_batches(cmd, model_renderer.static_buffer, model_renderer.static_batches)
+record_model_shadow_draw :: proc(cmd: vk.CommandBuffer, frame: u32) {
+	if model_renderer.static_count > 0 {
+		draw_batches(cmd, model_renderer.static_buffer, model_renderer.static_batches)
+	}
+	if len(model_renderer.world_batches) > 0 {
+		draw_batches(cmd, model_renderer.view_buffers[frame], model_renderer.world_batches[:])
+	}
+}
+
+model_world_count :: proc() -> int {
+	return len(model_renderer.world_batches)
 }

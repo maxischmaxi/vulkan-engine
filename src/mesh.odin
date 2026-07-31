@@ -81,6 +81,12 @@ mesh_material_index :: proc(name: string) -> (u32, bool) {
 		return MODEL_MAT_GUN_METAL, true
 	case "mod_palette":
 		return MODEL_MAT_MOD_PALETTE, true
+	// The character's two. They name the T rows; the CT instance offsets past
+	// them, so the skin needs only one set of names.
+	case "char_main":
+		return MODEL_MAT_CHAR_MAIN, true
+	case "char_joints":
+		return MODEL_MAT_CHAR_JOINTS, true
 	}
 	return 0, false
 }
@@ -173,6 +179,18 @@ MESH_FILES := []string {
 	"view_usp",
 	"view_deagle",
 	"view_knife",
+	// The same weapons without the first-person arms, for the hands of every
+	// other player. One per viewmodel, and world_weapon_mesh derives the name.
+	"world_ak",
+	"world_m4",
+	"world_awp",
+	"world_mac10",
+	"world_mp9",
+	"world_nova",
+	"world_glock",
+	"world_usp",
+	"world_deagle",
+	"world_knife",
 	"prop_crate_01",
 	"prop_crate_02",
 	"prop_box_01",

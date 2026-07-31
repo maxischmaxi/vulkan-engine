@@ -353,16 +353,27 @@ bot_hit_box :: proc(pawn: ^game.Pawn, alpha: f32) -> physics.Aabb {
 	return physics.body_aabb_at(pawn.body, pawn_render_position(pawn, alpha))
 }
 
-// Hands every living bot to the prop renderer.
+// Hands every living bot to the character renderer. These pawns are simulated
+// right here, so unlike a networked remote their velocity and aim need no
+// deriving -- the body has both.
 submit_bots :: proc(alpha: f32) {
 	for i in 0 ..< BOT_COUNT {
 		pawn := bot_pawn(i)
 		if !pawn.alive do continue
 
-		position := pawn_render_position(pawn, alpha)
-		center := position + [3]f32{0, 0, pawn.body.height * 0.5}
-		size := [3]f32{pawn.body.radius * 2, pawn.body.radius * 2, pawn.body.height}
-
-		add_world_prop(prop_transform(center, size), bot_color(i), roughness = 0.7)
+		submit_character(
+			{
+				id = BOT_FIRST + i,
+				position = pawn_render_position(pawn, alpha),
+				yaw = pawn.yaw,
+				pitch = pawn.pitch,
+				velocity = pawn.body.velocity,
+				height = pawn.body.height,
+				team = pawn.team,
+				weapon = pawn.weapon.index,
+				crouching = pawn.crouching,
+				health = u8(clamp(pawn.health, 0, 255)),
+			},
+		)
 	}
 }

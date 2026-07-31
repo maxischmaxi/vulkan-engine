@@ -181,6 +181,9 @@ main :: proc() {
 	create_mesh_store()
 	defer destroy_mesh_store()
 
+	create_skeleton_store()
+	defer destroy_skeleton_store()
+
 	init_lights()
 	defer destroy_lights()
 
@@ -198,6 +201,9 @@ main :: proc() {
 
 	create_prop_renderer()
 	create_model_renderer()
+	// Before create_descriptor_sets below: the frame set points at this
+	// renderer's joint buffers, which have to exist by then.
+	create_character_renderer()
 	create_decal_renderer()
 	create_tracer_renderer()
 
@@ -221,6 +227,7 @@ main :: proc() {
 	defer destroy_shadow_map()
 	defer destroy_prop_renderer()
 	defer destroy_model_renderer()
+	defer destroy_character_renderer()
 	defer destroy_decal_renderer()
 	defer destroy_tracer_renderer()
 	defer destroy_hud_renderer()

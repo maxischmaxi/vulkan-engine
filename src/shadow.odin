@@ -64,8 +64,9 @@ Shadow_Map :: struct {
 	split_depths: [SHADOW_CASCADES_MAX]f32, // view-space distance where each cascade ends
 	texel_world:  [SHADOW_CASCADES_MAX]f32, // metres covered by one shadow texel
 	world_pipe:   Pipeline, // baked map geometry
-	prop_pipe:    Pipeline, // instanced boxes
-	model_pipe:   Pipeline, // imported meshes
+	prop_pipe:      Pipeline, // instanced boxes
+	model_pipe:     Pipeline, // imported meshes
+	character_pipe: Pipeline, // skinned players
 }
 
 shadow: Shadow_Map
@@ -235,6 +236,27 @@ create_shadow_pipelines :: proc() {
 			vert_spv = SHADOW_MODEL_VERT_CODE,
 			bindings = model_bindings[:],
 			attributes = model_attributes[:],
+			set_layouts = {descriptors.frame_layout},
+			push_constants = cascade_push,
+			depth_format = SHADOW_FORMAT,
+			cull = .None,
+			depth_test = .Forward_Less,
+			depth_bias = true,
+		},
+	)
+
+	// The one depth pipeline that does real work per vertex: it has to run the
+	// same skinning the colour pass does, or the shadow would be cast by a
+	// figure standing in the bind pose.
+	character_bindings := character_binding_descriptions()
+	character_attributes := character_shadow_attribute_descriptions()
+
+	shadow.character_pipe = build_pipeline(
+		{
+			name = "shadow/characters",
+			vert_spv = SHADOW_CHARACTER_VERT_CODE,
+			bindings = character_bindings[:],
+			attributes = character_attributes[:],
 			set_layouts = {descriptors.frame_layout},
 			push_constants = cascade_push,
 			depth_format = SHADOW_FORMAT,
@@ -452,7 +474,7 @@ record_shadow_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
 			record_prop_shadow_draw(cmd, frame)
 		}
 
-		if model_renderer.static_count > 0 {
+		if model_renderer.static_count > 0 || model_world_count() > 0 {
 			vk.CmdBindPipeline(cmd, .GRAPHICS, shadow.model_pipe.pipeline)
 			vk.CmdPushConstants(
 				cmd,
@@ -463,7 +485,21 @@ record_shadow_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
 				&cascade,
 			)
 			bind_frame_set(cmd, shadow.model_pipe.layout, frame)
-			record_model_shadow_draw(cmd)
+			record_model_shadow_draw(cmd, frame)
+		}
+
+		if character_instance_count() > 0 {
+			vk.CmdBindPipeline(cmd, .GRAPHICS, shadow.character_pipe.pipeline)
+			vk.CmdPushConstants(
+				cmd,
+				shadow.character_pipe.layout,
+				{.VERTEX},
+				0,
+				size_of(u32),
+				&cascade,
+			)
+			bind_frame_set(cmd, shadow.character_pipe.layout, frame)
+			record_character_shadow_draw(cmd, frame)
 		}
 
 		vk.CmdEndRendering(cmd)
