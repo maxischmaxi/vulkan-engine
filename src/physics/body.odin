@@ -108,6 +108,9 @@ step_move :: proc(body: ^Body, boxes: []Aabb, dx, dy: f32) -> (blocked_x, blocke
 
 	if !body.on_ground do return
 
+	// Every grounded exit below leaves the body glued to a floor it can reach.
+	defer snap_to_ground(body, boxes)
+
 	// close enough to the requested move means nothing worth stepping over
 	wanted := math.sqrt(dx * dx + dy * dy)
 	got := horizontal_distance(flat, start)
@@ -132,6 +135,20 @@ step_move :: proc(body: ^Body, boxes: []Aabb, dx, dy: f32) -> (blocked_x, blocke
 		return
 	}
 	return raised_x, raised_y
+}
+
+// Source's StayOnGround, run after a grounded horizontal move: if a floor lies
+// within one step below, settle onto it. Walking down stairs is then a slide
+// rather than a chain of half-tick falls -- on_ground never flickers, the
+// camera never "lands" on every tread. Anything deeper than one step is a real
+// ledge and stays a fall.
+//
+// Grounded implies velocity.z == 0 here: a jump clears on_ground before the
+// horizontal move runs, so this can never swallow one.
+snap_to_ground :: proc(body: ^Body, boxes: []Aabb) {
+	before := body.position.z
+	if move_axis(body, boxes, 2, -body.step) do return // settled on a floor
+	body.position.z = before // nothing within a step below: a real drop
 }
 
 // Gravity plus the vertical move and its ground/ceiling response. Shared by the

@@ -181,6 +181,7 @@ grid_step_move :: proc(body: ^Body, g: ^Grid, dx, dy: f32) -> (blocked_x, blocke
 	bounds.min.y -= abs(dy)
 	bounds.max.y += abs(dy)
 	bounds.max.z += body.step
+	bounds.min.z -= body.step // the snap-down probe after the move
 	return step_move(body, grid_candidates(g, expand(bounds, 0.001)), dx, dy)
 }
 
