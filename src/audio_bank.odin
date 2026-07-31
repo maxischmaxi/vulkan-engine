@@ -68,6 +68,7 @@ Audio_Spec :: struct {
 	max_distance:       f32, // metres; inaudible beyond
 	cooldown:           f32, // seconds; per-kind flood guard, 0 = none
 	scale_by_intensity: bool, // landing thud, damage grunt
+	chrome:             bool, // interface narration; survives the scene-change cut
 }
 
 AUDIO_BANK := [Audio_Event_Kind]Audio_Spec {
@@ -139,7 +140,13 @@ AUDIO_BANK := [Audio_Event_Kind]Audio_Spec {
 		scale_by_intensity = true,
 	},
 	.Kill = {files = {"ui/kill_01.ogg"}, bus = .Effects, volume = 0.5, cooldown = 0.1},
-	.Ui_Click = {files = {"ui/click_01.ogg"}, bus = .Effects, volume = 0.4, cooldown = 0.05},
+	.Ui_Click = {
+		files = {"ui/click_01.ogg"},
+		bus = .Effects,
+		volume = 0.4,
+		cooldown = 0.05,
+		chrome = true,
+	},
 	// The click file quiet and jittered stands in for a real hover tick until
 	// the sound pass curates sounds/ui/hover_01.ogg.
 	.Ui_Hover = {
@@ -148,16 +155,26 @@ AUDIO_BANK := [Audio_Event_Kind]Audio_Spec {
 		volume = 0.12,
 		pitch_jitter = 0.06,
 		cooldown = 0.06,
+		chrome = true,
 	},
 	.Buy = {files = {"ui/buy_01.ogg"}, bus = .Effects, volume = 0.5, cooldown = 0.1},
 	.Bomb_Planted = {files = {"ui/bomb_planted_01.ogg"}, bus = .Effects, volume = 0.6},
+	// The round jingles are chrome: the end-of-match one is emitted on the same
+	// packet that switches the scene, and the cut must not swallow it.
 	.Round_Start = {
 		files = {"ui/round_start_01.ogg"},
 		bus = .Effects,
 		volume = 0.5,
 		cooldown = 0.5,
+		chrome = true,
 	},
-	.Round_End = {files = {"ui/round_end_01.ogg"}, bus = .Effects, volume = 0.5, cooldown = 0.5},
+	.Round_End = {
+		files = {"ui/round_end_01.ogg"},
+		bus = .Effects,
+		volume = 0.5,
+		cooldown = 0.5,
+		chrome = true,
+	},
 }
 
 // Per-weapon fire variants, indexed like game.WEAPONS. The knife stays empty:

@@ -502,6 +502,12 @@ CROSSHAIR_ROWS := []Settings_Row {
 		value = proc() -> string {return crosshair.t_style ? "ON" : "OFF"},
 		step = proc(direction: int) {crosshair.t_style = direction > 0},
 	},
+	{
+		label = "DYNAMIC",
+		kind = .Cycler,
+		value = proc() -> string {return crosshair.dynamic_gap ? "ON" : "OFF"},
+		step = proc(direction: int) {crosshair.dynamic_gap = direction > 0},
+	},
 }
 
 @(private = "file")
@@ -693,8 +699,17 @@ draw_settings_screen :: proc() {
 	_ = consume_click()
 }
 
+// The gap a rifle's bloom opens at walk speed at the default fov, in the
+// crosshair's 480-reference pixels. A fixed reference rather than the live
+// value: the preview must not breathe with whatever the player happens to be
+// doing while the menu is open.
+@(private = "file")
+PREVIEW_MOVE_BLOOM :: f32(10)
+
 // A split light/dark backdrop, so the crosshair proves itself against both
-// the bright sandstone and the shadowed corners it has to survive over.
+// the bright sandstone and the shadowed corners it has to survive over. With
+// a dynamic crosshair the dark half shows the walking gap, because what the
+// cross looks like mid-move surprises everyone who tuned it standing still.
 @(private = "file")
 draw_crosshair_tab_preview :: proc(px, py, panel_w, panel_h, pad, scale: f32) {
 	w := (panel_w - 2 * pad) * 0.38
@@ -707,5 +722,12 @@ draw_crosshair_tab_preview :: proc(px, py, panel_w, panel_h, pad, scale: f32) {
 	hud_frame(x, y, w, h, UI_STROKE_W * scale, UI_STROKE)
 
 	draw_crosshair_preview(x + w * 0.25, y + h * 0.5)
-	draw_crosshair_preview(x + w * 0.75, y + h * 0.5)
+	draw_crosshair_preview(x + w * 0.75, y + h * 0.5, crosshair.dynamic_gap ? PREVIEW_MOVE_BLOOM : 0)
+
+	if crosshair.dynamic_gap {
+		size := hud_font_size(UI_MICRO * scale)
+		ty := y + h - 22 * scale
+		hud_text(x + w * 0.25, ty, "STANDING", size, UI_TEXT_FAINT, .Center)
+		hud_text(x + w * 0.75, ty, "MOVING", size, UI_TEXT_FAINT, .Center)
+	}
 }

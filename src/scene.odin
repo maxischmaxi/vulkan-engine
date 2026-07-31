@@ -125,6 +125,7 @@ init_scene :: proc() {
 enter_scene :: proc(next: Scene) {
 	scene.current = next
 	scene.paused = false
+	audio_stop_effects()
 	audio_scene_music(next)
 
 	switch next {

@@ -89,23 +89,25 @@ hud_renderer: Hud_Renderer
 // Sizes are in reference pixels, so they mean the same thing at every
 // resolution. These are the counter-strike defaults.
 Crosshair_Style :: struct {
-	size:      f32, // length of one arm
-	thickness: f32,
-	gap:       f32, // centre to the inner end of an arm
-	outline:   f32, // 0 disables the dark border
-	dot:       bool,
-	t_style:   bool, // drop the top arm so it never covers what you aim at
-	color:     [4]f32,
+	size:        f32, // length of one arm
+	thickness:   f32,
+	gap:         f32, // centre to the inner end of an arm
+	outline:     f32, // 0 disables the dark border
+	dot:         bool,
+	t_style:     bool, // drop the top arm so it never covers what you aim at
+	dynamic_gap: bool, // the gap opens with the stance's inaccuracy cone
+	color:       [4]f32,
 }
 
 crosshair := Crosshair_Style {
-	size      = 5, // 11 px arms at 1080p, same as cl_crosshairsize 5
-	thickness = 0.5, // rounds to a single pixel at 1080p
-	gap       = 2,
-	outline   = 0.5,
-	dot       = false,
-	t_style   = false,
-	color     = {0.35, 1.0, 0.42, 1.0},
+	size        = 5, // 11 px arms at 1080p, same as cl_crosshairsize 5
+	thickness   = 0.5, // rounds to a single pixel at 1080p
+	gap         = 2,
+	outline     = 0.5,
+	dot         = false,
+	t_style     = false,
+	dynamic_gap = true,
+	color       = {0.35, 1.0, 0.42, 1.0},
 }
 
 create_hud_pipeline :: proc() {
@@ -391,26 +393,36 @@ hud_rect_gradient :: proc(x, y, w, h: f32, color: [4]f32) {
 }
 
 // The settings screen's live preview: the real crosshair geometry -- the same
-// rects, rounding and scale the game draws with -- routed through the quad
-// batch instead of the crosshair pipeline so it can sit over a panel. The
-// rects come out centred on the screen; shifting them to the preview centre
-// keeps them pixel-exact as long as the centre is rounded.
-draw_crosshair_preview :: proc(cx, cy: f32) {
+// rects, rounding, scale and outline alpha the game draws with -- routed
+// through the quad batch instead of the crosshair pipeline so it can sit over
+// a panel. The rects come out centred on the screen; shifting them to the
+// preview centre keeps them pixel-exact as long as the centre is rounded.
+// extra_gap lets the preview show the bloomed state without faking a player.
+draw_crosshair_preview :: proc(cx, cy: f32, extra_gap: f32 = 0) {
 	screen_cx := math.floor(f32(g.swapchain_extent.width) * 0.5)
 	screen_cy := math.floor(f32(g.swapchain_extent.height) * 0.5)
 	dx := math.round(cx) - screen_cx
 	dy := math.round(cy) - screen_cy
 
-	if crosshair.outline > 0 {
-		grow := max(1, math.round(crosshair.outline * crosshair_scale()))
-		for r in crosshair_rects(crosshair, grow) {
+	style := crosshair
+	style.gap += extra_gap
+
+	if style.outline > 0 {
+		grow := max(1, math.round(style.outline * crosshair_scale()))
+		for r in crosshair_rects(style, grow) {
 			if r[2] <= r[0] do continue
-			hud_rect(r[0] + dx, r[1] + dy, r[2] - r[0], r[3] - r[1], {0, 0, 0, 1})
+			hud_rect(
+				r[0] + dx,
+				r[1] + dy,
+				r[2] - r[0],
+				r[3] - r[1],
+				{0, 0, 0, style.color.a * 0.6},
+			)
 		}
 	}
-	for r in crosshair_rects(crosshair, 0) {
+	for r in crosshair_rects(style, 0) {
 		if r[2] <= r[0] do continue
-		hud_rect(r[0] + dx, r[1] + dy, r[2] - r[0], r[3] - r[1], crosshair.color)
+		hud_rect(r[0] + dx, r[1] + dy, r[2] - r[0], r[3] - r[1], style.color)
 	}
 }
 
@@ -519,9 +531,10 @@ record_crosshair :: proc(cmd: vk.CommandBuffer) {
 	}
 
 	// Moving or airborne, the gap opens to the random cone the shot would be
-	// thrown into; planted, it closes back to the authored style.
+	// thrown into; planted, it closes back to the authored style. Optional,
+	// because a small static crosshair is a legitimate way to play.
 	style := crosshair
-	style.gap += crosshair_bloom()
+	if style.dynamic_gap do style.gap += crosshair_bloom()
 
 	// A dark border underneath keeps the crosshair readable against a bright
 	// wall, which a single-colour cross is not. It grows on all four sides,
@@ -547,9 +560,10 @@ record_crosshair :: proc(cmd: vk.CommandBuffer) {
 	alpha := hit_marker_alpha()
 	if alpha > 0 {
 		marker := crosshair
-		// shrinks slightly as it fades, so the confirmation reads as an event
-		// rather than a sticker
-		marker.size = 6 + 1.5 * alpha
+		// Sized off the player's crosshair so it reads as its echo, floored so
+		// it stays legible next to a tiny one; shrinks slightly as it fades, so
+		// the confirmation reads as an event rather than a sticker.
+		marker.size = clamp(crosshair.size + 2, 4, 7.5) + 1.5 * alpha
 		marker.gap = 2.5
 		marker.thickness = 0.75
 		marker.dot = false

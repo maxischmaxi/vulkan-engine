@@ -60,6 +60,9 @@ Cli :: struct {
 	// Log every audio event. The headless E2E's ears: a machine with no sound
 	// device still shows which sounds would have played.
 	audio_log:     bool,
+	// Log the camera's z pipeline every frame: raw interpolated feet, smoothed
+	// feet, final eye. The eye smoothing's E2E trace, read the same way.
+	view_log:      bool,
 }
 
 cli: Cli
@@ -83,6 +86,7 @@ CLI_USAGE :: `Options:
   --no-light-cull  shade every light in every tile, to measure the culling
   --no-depth-prepass  shade the world without the depth-only first pass
   --audio-log   log every audio event, for headless testing without speakers
+  --view-log    log the camera height pipeline every frame
   --help        print this`
 
 parse_cli :: proc() {
@@ -146,6 +150,9 @@ parse_cli :: proc() {
 
 		case arg == "--audio-log":
 			cli.audio_log = true
+
+		case arg == "--view-log":
+			cli.view_log = true
 
 		case arg == "--no-steam":
 			when STEAM_REQUIRED {

@@ -53,9 +53,7 @@ predict_tick :: proc(dt: f32) {
 
 	if game.phase_is_action(net_client.phase) && player.alive {
 		ev := game.pawn_move(&gs, player, cmd, dt)
-		view_note_step(ev.stepped)
 		if ev.jumped {
-			view_note_airborne()
 			audio_emit({kind = .Jump, local = true})
 		}
 		if ev.landed {
@@ -250,6 +248,12 @@ reconcile :: proc(s: ^protocol.Snapshot) {
 		}
 		p.predicted_pos = player.body.position
 	}
+
+	// A correction that moved the feet by more than a stair is a teleport the
+	// prediction missed -- a round reset moving survivors across the map. Not
+	// a movement, so the eye must not slide through it.
+	if abs(diff.z) > game.STEP_HEIGHT do view_reset_feet()
+
 	// prev_position is left alone: the frame lerps from the old visual
 	// position into the corrected one over a single tick, which hides the snap
 }

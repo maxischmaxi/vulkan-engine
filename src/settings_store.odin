@@ -177,6 +177,11 @@ SETTING_KEYS := []Setting_Key {
 		parse = proc(s: ^All_Settings, v: string) -> bool {s.crosshair.t_style = parse_flag(v);return true},
 		format = proc(s: ^All_Settings) -> string {return fmt.tprint(s.crosshair.t_style)},
 	},
+	{
+		key = "crosshair_dynamic",
+		parse = proc(s: ^All_Settings, v: string) -> bool {s.crosshair.dynamic_gap = parse_flag(v);return true},
+		format = proc(s: ^All_Settings) -> string {return fmt.tprint(s.crosshair.dynamic_gap)},
+	},
 	// Stored as sRGB bytes -- what a colour picker shows -- and converted to
 	// the linear values the shader wants on the way in and out.
 	{

@@ -49,6 +49,7 @@ Audio_Template :: struct {
 Audio_Voice :: struct {
 	sound:  ma.sound,
 	in_use: bool,
+	chrome: bool, // interface narration; spared by audio_stop_effects
 }
 
 // A persistent streamed loop: the menu music and the in-game ambient bed.
@@ -200,6 +201,7 @@ audio_emit :: proc(ev: Audio_Event) {
 		return
 	}
 	voice.in_use = true
+	voice.chrome = spec.chrome
 
 	volume := spec.volume
 	if spec.scale_by_intensity && ev.intensity > 0 {
@@ -251,6 +253,24 @@ update_audio :: proc(dt: f32) {
 	}
 
 	update_footsteps(dt)
+}
+
+// A scene change is a hard cut: gunfire from the match must not keep ringing
+// through the menu or the range. Interface chrome is spared -- it narrates the
+// transition itself. The loops are the scene's own and handled below. Logged
+// so the headless E2E can see the cut land.
+audio_stop_effects :: proc() {
+	if !audio.ok do return
+	stopped := 0
+	for &v in audio.voices {
+		if !v.in_use || v.chrome do continue
+		ma.sound_uninit(&v.sound)
+		v.in_use = false
+		stopped += 1
+	}
+	if cli.audio_log && stopped > 0 {
+		log.infof("AUDIO: scene cut, {} voices stopped", stopped)
+	}
 }
 
 // Which looping tracks a scene wants. Called from enter_scene, the one place

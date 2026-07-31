@@ -65,6 +65,16 @@ fx() {
     ffmpeg -loglevel error -y -i "$1" -ac 1 -af "$TRIM" -c:a libvorbis -q:a 4 "$OUT/$2"
 }
 
+# One gunshot per file. The firearm library records several takes back to back
+# in one file; played whole, every emit fires phantom follow-up shots for up to
+# 17 seconds. Cut at the first stretch of silence after the report -- the tail
+# is already below the threshold there, so the cut lands on near-silence.
+shot() {
+    ffmpeg -loglevel error -y -i "$1" -ac 1 \
+        -af "$TRIM,silenceremove=stop_periods=1:stop_threshold=-45dB:stop_duration=0.3" \
+        -c:a libvorbis -q:a 4 "$OUT/$2"
+}
+
 # mono effect, pitched by a rate factor: cheap extra variants from one take
 fxp() {
     ffmpeg -loglevel error -y -i "$1" -ac 1 \
@@ -77,15 +87,15 @@ mus() {
 }
 
 echo "curate weapons"
-fx "$FIREARM/Walther PPQ/X_39P.wav" weapons/glock_01.ogg
-fx "$FIREARM/1911/A_42P.wav" weapons/usp_01.ogg
-fx "$FIREARM/Smith & Wesson 642/V_27P.wav" weapons/deagle_01.ogg
-fx "$FIREARM/PPSh/P_30P.wav" weapons/mac10_01.ogg
-fx "$FIREARM/Carl Gustav M45/G_31P.wav" weapons/mp9_01.ogg
-fx "$FIREARM/Nova/O_21P.wav" weapons/nova_01.ogg
-fx "$FIREARM/AK-47/C_28P.wav" weapons/ak_01.ogg
-fx "$FIREARM/AR-15/D_32P.wav" weapons/m4_01.ogg
-fx "$FIREARM/Tikka/W_29P.wav" weapons/awp_01.ogg
+shot "$FIREARM/Walther PPQ/X_39P.wav" weapons/glock_01.ogg
+shot "$FIREARM/1911/A_42P.wav" weapons/usp_01.ogg
+shot "$FIREARM/Smith & Wesson 642/V_27P.wav" weapons/deagle_01.ogg
+shot "$FIREARM/PPSh/P_30P.wav" weapons/mac10_01.ogg
+shot "$FIREARM/Carl Gustav M45/G_31P.wav" weapons/mp9_01.ogg
+shot "$FIREARM/Nova/O_21P.wav" weapons/nova_01.ogg
+shot "$FIREARM/AK-47/C_28P.wav" weapons/ak_01.ogg
+shot "$FIREARM/AR-15/D_32P.wav" weapons/m4_01.ogg
+shot "$FIREARM/Tikka/W_29P.wav" weapons/awp_01.ogg
 fx "$RPG/metalClick.ogg" weapons/dryfire_01.ogg
 fx "$RPG/metalLatch.ogg" weapons/reload_start_01.ogg
 fx "$RPG/beltHandle1.ogg" weapons/reload_end_01.ogg

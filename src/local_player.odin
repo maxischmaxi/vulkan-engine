@@ -166,9 +166,7 @@ tick_player :: proc(dt: f32) {
 	}
 
 	ev := game.pawn_move(&gs, player, build_local_input(), dt)
-	view_note_step(ev.stepped)
 	if ev.jumped {
-		view_note_airborne()
 		audio_emit({kind = .Jump, local = true})
 	}
 	if ev.landed {
@@ -193,7 +191,22 @@ sync_camera_to_player :: proc(alpha: f32) {
 	view_update(game.clock.frame_dt)
 
 	position := linalg.lerp(player.prev_position, player.body.position, alpha)
-	camera.position = position + {0, 0, view_eye_offset()}
+	camera.position = {
+		position.x,
+		position.y,
+		view_camera_z(position.z, player.body.on_ground, game.clock.frame_dt),
+	}
+
+	if cli.view_log {
+		log.infof(
+			"VIEW: raw={:.4f} smooth={:.4f} cam={:.4f} ground={} alpha={:.2f}",
+			position.z,
+			view.smooth_z,
+			camera.position.z,
+			player.body.on_ground,
+			alpha,
+		)
+	}
 }
 
 // The eye, which is where shots start from.
