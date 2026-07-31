@@ -21,13 +21,14 @@ Master_Query :: struct {
 	master_ep: net.Endpoint,
 	nonce:     u32,
 	team:      game.Team,
+	auto_join: bool, // handed to the connect the answer launches
 	started:   time.Tick,
 	last_send: time.Tick,
 }
 
 master_query: Master_Query
 
-master_query_start :: proc(team: game.Team) {
+master_query_start :: proc(team: game.Team, auto_join := true) {
 	master_query_stop()
 
 	ep, ok := net.parse_endpoint(cli.master)
@@ -59,6 +60,7 @@ master_query_start :: proc(team: game.Team) {
 	master_query.master_ep = ep
 	master_query.nonce = rand.uint32()
 	master_query.team = team
+	master_query.auto_join = auto_join
 	master_query.started = time.tick_now()
 
 	log.infof("MASTER: finding server at {}", net.to_string(ep))
@@ -96,19 +98,20 @@ master_query_pump :: proc() {
 		switch resp.status {
 		case .Ok:
 			team := master_query.team
+			auto_join := master_query.auto_join
 			addr := resp.addr
 			master_query_stop()
 			switch addr.kind {
 			case .Steam:
 				log.infof("MASTER: got server steamid {}", addr.steam_id)
-				net_connect_start_steam(addr.steam_id, team)
+				net_connect_start_steam(addr.steam_id, team, auto_join)
 			case .Udp:
 				server_ep := net.Endpoint {
 					address = net.IP4_Address(addr.ip4),
 					port    = int(addr.port),
 				}
 				log.infof("MASTER: got server {}", net.to_string(server_ep))
-				net_connect_start_ep(server_ep, team)
+				net_connect_start_ep(server_ep, team, auto_join)
 			}
 			return
 
@@ -136,6 +139,8 @@ master_query_stop :: proc() {
 
 // What the .Connecting screen shows. Glyph-safe: uppercase, no ? & ' @.
 connecting_label :: proc() -> string {
+	// a browse client that clicked its team: connected, waiting on the phase
+	if net_client.got_accept && net_client.join_pending do return "JOINING MATCH"
 	if queue_client.active do return queue_label()
 	if master_query.active {
 		return master_query.spawning ? "STARTING SERVER" : "FINDING SERVER"

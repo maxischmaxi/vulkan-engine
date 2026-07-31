@@ -438,6 +438,139 @@ test_practice_roundtrip :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_join_deny_roundtrip :: proc(t: ^testing.T) {
+	for reason in ([]Join_Deny_Reason{.None, .Teams_Full, .Between_Matches}) {
+		buf: [8]u8
+		w := writer(buf[:])
+		write_join_deny(&w, Join_Deny_Msg{reason = reason})
+		testing.expect_value(t, w.off, 1)
+		r := reader(buf[:w.off])
+		got, ok := read_join_deny(&r)
+		testing.expect(t, ok)
+		testing.expect_value(t, got.reason, reason)
+	}
+}
+
+@(test)
+test_roster_roundtrip :: proc(t: ^testing.T) {
+	m: Roster
+	m.count = 3
+	m.entries[0] = {
+		pawn_id = 0,
+		kills   = 7,
+		deaths  = 2,
+	}
+	m.entries[0].name_len = u8(copy(m.entries[0].name[:], "ALICE"))
+	m.entries[1] = {
+		pawn_id = 4,
+		kills   = 1,
+		deaths  = 9,
+	} // a bot: empty name
+	m.entries[2] = {
+		pawn_id = 15,
+		kills   = 0,
+		deaths  = 0,
+	}
+	m.entries[2].name_len = u8(copy(m.entries[2].name[:], "SIXTEEN CHAR NAME"))
+
+	buf: [MTU]u8
+	w := writer(buf[:])
+	write_roster(&w, m)
+	testing.expect(t, !w.overflow)
+
+	r := reader(buf[:w.off])
+	got, ok := read_roster(&r)
+	testing.expect(t, ok)
+	testing.expect_value(t, got.count, m.count)
+	for i in 0 ..< int(m.count) {
+		testing.expect_value(t, got.entries[i].pawn_id, m.entries[i].pawn_id)
+		testing.expect_value(t, got.entries[i].kills, m.entries[i].kills)
+		testing.expect_value(t, got.entries[i].deaths, m.entries[i].deaths)
+		testing.expect_value(t, got.entries[i].name_len, m.entries[i].name_len)
+		testing.expect(t, got.entries[i].name == m.entries[i].name)
+	}
+}
+
+// Every chunk must clear the reliable slot even when all names run full --
+// the case that used to overflow queue_reliable_msg and drop clients.
+@(test)
+test_roster_chunk_split_full_names :: proc(t: ^testing.T) {
+	full: Roster
+	full.count = u8(game.MAX_PAWNS)
+	for i in 0 ..< game.MAX_PAWNS {
+		e := &full.entries[i]
+		e.pawn_id = u8(i)
+		e.kills = u8(i * 2)
+		e.deaths = u8(i)
+		e.name_len = MAX_NAME
+		for j in 0 ..< MAX_NAME do e.name[j] = u8('A' + i)
+	}
+
+	chunks: [MAX_ROSTER_CHUNKS]Roster
+	n := roster_chunk_split(full, chunks[:])
+	testing.expect_value(t, n, 6) // 3 full-name entries a chunk
+
+	// merge back in order and compare every entry
+	merged: Roster
+	for c in 0 ..< n {
+		buf: [MAX_RELIABLE_PAYLOAD]u8
+		w := writer(buf[:])
+		write_roster(&w, chunks[c])
+		testing.expect(t, !w.overflow, "chunk must fit the reliable slot")
+
+		r := reader(buf[:w.off])
+		got, ok := read_roster(&r)
+		testing.expect(t, ok)
+		for i in 0 ..< int(got.count) {
+			merged.entries[merged.count] = got.entries[i]
+			merged.count += 1
+		}
+	}
+	testing.expect_value(t, merged.count, full.count)
+	for i in 0 ..< int(full.count) {
+		testing.expect_value(t, merged.entries[i].pawn_id, full.entries[i].pawn_id)
+		testing.expect_value(t, merged.entries[i].kills, full.entries[i].kills)
+		testing.expect(t, merged.entries[i].name == full.entries[i].name)
+	}
+}
+
+// Bot entries carry no name bytes, so they pack far tighter.
+@(test)
+test_roster_chunk_split_bots_pack_tight :: proc(t: ^testing.T) {
+	full: Roster
+	full.count = u8(game.MAX_PAWNS)
+	for i in 0 ..< game.MAX_PAWNS {
+		e := &full.entries[i]
+		e.pawn_id = u8(i)
+		if i < 2 {
+			e.name_len = MAX_NAME
+			for j in 0 ..< MAX_NAME do e.name[j] = u8('H')
+		}
+	}
+
+	chunks: [MAX_ROSTER_CHUNKS]Roster
+	n := roster_chunk_split(full, chunks[:])
+	testing.expect_value(t, n, 2) // 2 humans + 5 bots, then 9 bots
+
+	total := 0
+	for c in 0 ..< n {
+		buf: [MAX_RELIABLE_PAYLOAD]u8
+		w := writer(buf[:])
+		write_roster(&w, chunks[c])
+		testing.expect(t, !w.overflow)
+		total += int(chunks[c].count)
+	}
+	testing.expect_value(t, total, int(full.count))
+}
+
+@(test)
+test_roster_chunk_split_empty :: proc(t: ^testing.T) {
+	full: Roster
+	chunks: [MAX_ROSTER_CHUNKS]Roster
+	testing.expect_value(t, roster_chunk_split(full, chunks[:]), 0)
+}
+
+@(test)
 test_seq_greater_wraps :: proc(t: ^testing.T) {
 	testing.expect(t, seq_greater(1, 0))
 	testing.expect(t, !seq_greater(0, 1))

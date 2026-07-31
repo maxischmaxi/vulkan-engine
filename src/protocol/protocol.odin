@@ -15,7 +15,7 @@ package protocol
 //     connection.odin (join, match phases, kills, disconnects)
 
 PROTOCOL_MAGIC :: u16(0xB0F5)
-PROTOCOL_VERSION :: u8(12)
+PROTOCOL_VERSION :: u8(13)
 
 // Well under every real-world MTU, so a packet is never fragmented. The worst
 // snapshot today is ~400 bytes; this is headroom, not a target.
@@ -70,6 +70,7 @@ Msg_Id :: enum u8 {
 	Damage            = 0x16, // unreliable, victim only
 	AC_Challenge      = 0x17, // reliable; reserved, no server sends one today
 	Roster            = 0x18, // reliable; names and K/D for the scoreboard
+	Join_Deny         = 0x19, // reliable; the join was refused, the connection stands
 }
 
 Deny_Reason :: enum u8 {
@@ -81,6 +82,14 @@ Deny_Reason :: enum u8 {
 	No_License   = 5,
 	Banned       = 6,
 	Auth_Timeout = 7,
+}
+
+// Why a Join was refused. Unlike Deny_Reason this ends nothing: the client
+// keeps its connection and may try again from the team select.
+Join_Deny_Reason :: enum u8 {
+	None            = 0,
+	Teams_Full      = 1,
+	Between_Matches = 2,
 }
 
 Disconnect_Reason :: enum u8 {

@@ -16,6 +16,9 @@ MENU_BUTTON_H :: f32(64)
 
 // One entry point for every non-Playing screen, called from build_hud.
 draw_scene_screens :: proc(width, height: f32) {
+	// A menu preview is a photograph: the screen must not navigate under it.
+	if hud_preview_menu() do _ = consume_click()
+
 	switch scene.current {
 	case .Menu:
 		draw_main_menu(width, height)
@@ -110,131 +113,8 @@ draw_main_menu :: proc(width, height: f32) {
 	}
 }
 
-// One of the two team cards: a coloured top rule, the tag on top, the role
-// underneath. Hand-rolled rather than ui_button because of the extra lines,
-// but the hover state comes from the shared ui_hot.
-@(private = "file")
-team_card :: proc(x, y, w, h: f32, tag, role: string, color: [4]f32) -> bool {
-	scale := hud_scale()
-	hovered, t := ui_hot(ui_id(tag), x, y, w, h)
-	e := ease_out_cubic(t)
-
-	// the card grows 2% around its centre on hover and floods with a whisper
-	// of its team colour
-	grow := 1 + 0.02 * e
-	gx := x - (grow - 1) * w * 0.5
-	gy := y - (grow - 1) * h * 0.5
-	gw := w * grow
-	gh := h * grow
-
-	bg := ui_mix(ui_mix(UI_PANEL, UI_PANEL_RAISED, t), color, 0.08 * t)
-	bg.a = UI_PANEL.a
-	hud_rect(gx, gy, gw, gh, bg, radius = UI_RADIUS * scale)
-	hud_frame(gx, gy, gw, gh, UI_STROKE_W * scale, ui_mix(UI_STROKE, color, t))
-	hud_rect(gx, gy, gw, 3 * scale, color)
-
-	cx := gx + gw * 0.5
-	hud_text_shadow(cx, gy + gh * 0.20, tag, hud_font_size(64 * scale), color, .Center)
-	size := hud_font_size(UI_BODY * scale)
-	hud_text(
-		cx,
-		gy + gh * 0.64,
-		role,
-		size,
-		ui_mix(UI_TEXT_DIM, UI_TEXT, t),
-		.Center,
-		tracking = size * 0.14,
-	)
-
-	return ui_clicked(hovered)
-}
-
-// TDM leads to the team pick; competitive queues right away, the server
-// assigns the side. Until the matchmaking queue exists, both cards end at the
-// same dev server -- the accept tells the client what that server runs.
-@(private = "file")
-draw_mode_select :: proc(width, height: f32) {
-	scale := hud_scale()
-	cx := width * 0.5
-
-	hud_rect(0, 0, width, height, MENU_DIM)
-	head_size := hud_font_size(UI_H1 * scale)
-	hud_text(
-		width * 0.08,
-		height * 0.14,
-		"CHOOSE MODE",
-		head_size,
-		HUD_WHITE,
-		tracking = head_size * 0.10,
-	)
-
-	card_w := 380 * scale
-	card_h := 240 * scale
-	gap := 40 * scale
-	y := height * 0.36
-
-	if team_card(cx - card_w - gap * 0.5, y, card_w, card_h, "TDM", "TEAM DEATHMATCH", HUD_DIM) {
-		scene.chosen_mode = .TDM
-		scene_transition_to(.Team_Select)
-		return
-	}
-	if team_card(cx + gap * 0.5, y, card_w, card_h, "COMP", "5V5 - FIRST TO 13", HUD_WARN) {
-		scene.chosen_mode = .Comp
-		scene.chosen_team = .T // a wish; the server balances
-		scene.queue_pending = true
-		scene_transition_to(.Connecting)
-		return
-	}
-
-	if ui_button(width * 0.08 - 14 * scale, height * 0.86, 200 * scale, 52 * scale, "BACK", variant = .Ghost) {
-		scene_transition_to(.Menu)
-	}
-}
-
-@(private = "file")
-draw_team_select :: proc(width, height: f32) {
-	scale := hud_scale()
-	cx := width * 0.5
-
-	hud_rect(0, 0, width, height, MENU_DIM)
-	head_size := hud_font_size(UI_H1 * scale)
-	hud_text(
-		width * 0.08,
-		height * 0.14,
-		"CHOOSE TEAM",
-		head_size,
-		HUD_WHITE,
-		tracking = head_size * 0.10,
-	)
-
-	card_w := 380 * scale
-	card_h := 240 * scale
-	gap := 40 * scale
-	y := height * 0.36
-
-	if team_card(cx - card_w - gap * 0.5, y, card_w, card_h, "T", "ATTACKERS", MENU_T_COLOR) {
-		scene.chosen_team = .T
-		start_game()
-		return
-	}
-	if team_card(cx + gap * 0.5, y, card_w, card_h, "CT", "DEFENDERS", MENU_CT_COLOR) {
-		scene.chosen_team = .CT
-		start_game()
-		return
-	}
-
-	if ui_button(width * 0.08 - 14 * scale, height * 0.86, 200 * scale, 52 * scale, "BACK", variant = .Ghost) {
-		scene_transition_to(.Menu)
-	}
-}
-
-@(private = "file")
-start_game :: proc() {
-	// Menu play goes through the queue whenever a master is configured; the
-	// legacy quickplay query stays for --join and master-less dev loops.
-	scene.queue_pending = true
-	scene_transition_to(.Connecting)
-}
+// The two selection screens live in menu_select.odin: they share one
+// full-screen split layout that has nothing in common with the panels here.
 
 // Doubles as the queue screen: the elapsed clock spans queue, server spawn
 // and handshake, so a player always sees how long they have been waiting.

@@ -40,7 +40,7 @@ comp: Comp_State
 COMP_MODE := Game_Mode {
 	id              = .Comp,
 	name            = "competitive",
-	team_size       = 5,
+	team_size       = game.TEAM_SIZE,
 	countdown_s     = COMP_WARMUP_S, // the opening phase IS the warmup
 	match_len_s     = 0, // unused: rounds own the clock
 	post_s          = 5,

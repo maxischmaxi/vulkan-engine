@@ -37,7 +37,7 @@ Game_Mode :: struct {
 TDM_MODE := Game_Mode {
 	id             = .TDM,
 	name           = "team deathmatch",
-	team_size      = 5,
+	team_size      = game.TEAM_SIZE,
 	countdown_s    = 3,
 	match_len_s    = 60,
 	post_s         = 5,
@@ -117,13 +117,13 @@ handle_join :: proc(slot: ^Client_Slot, wished: game.Team) {
 		match.phase == match.mode.opening_phase ||
 		(match.mode.drop_in && match.phase == .Live)
 	if !accepting {
-		queue_phase_msg(slot)
+		queue_join_deny(slot, .Between_Matches)
 		return
 	}
 
 	team, ok := balance_team(wished)
 	if !ok {
-		queue_phase_msg(slot)
+		queue_join_deny(slot, .Teams_Full)
 		return
 	}
 
@@ -367,8 +367,28 @@ on_pawn_killed :: proc(killer, victim: int) {
 
 // Names and scores for every active pawn, sent whenever either changes: a
 // join, a kill, a drop, a bot claim. Edge-triggered and small, so there is no
-// per-tick cost and a late joiner still gets the full picture.
+// per-tick cost. Connected clients get it too: the team select shows who is
+// already in the match.
 broadcast_roster :: proc() {
+	full := build_roster()
+	chunks: [protocol.MAX_ROSTER_CHUNKS]protocol.Roster
+	n := protocol.roster_chunk_split(full, chunks[:])
+	for &slot in clients {
+		if slot.state != .In_Game && slot.state != .Connected do continue
+		queue_roster_chunks(&slot, chunks[:n])
+	}
+}
+
+// The full roster for one client -- a fresh browser right after its accept.
+queue_roster :: proc(slot: ^Client_Slot) {
+	full := build_roster()
+	chunks: [protocol.MAX_ROSTER_CHUNKS]protocol.Roster
+	n := protocol.roster_chunk_split(full, chunks[:])
+	queue_roster_chunks(slot, chunks[:n])
+}
+
+@(private = "file")
+build_roster :: proc() -> protocol.Roster {
 	roster: protocol.Roster
 	for id in 0 ..< game.MAX_PAWNS {
 		if !sv.gs.pawns[id].active do continue
@@ -387,11 +407,35 @@ broadcast_roster :: proc() {
 		roster.entries[roster.count] = entry
 		roster.count += 1
 	}
-	for &slot in clients {
-		if slot.state != .In_Game do continue
-		if !protocol.queue_reliable_msg(&slot.conn, .Roster, protocol.write_roster, roster) {
-			drop_client(&slot)
+	return roster
+}
+
+@(private = "file")
+queue_roster_chunks :: proc(slot: ^Client_Slot, chunks: []protocol.Roster) {
+	for chunk in chunks {
+		if !protocol.queue_reliable_msg(&slot.conn, .Roster, protocol.write_roster, chunk) {
+			log.warnf(
+				"Server: reliable window full for client {}, dropping",
+				client_index(slot),
+			)
+			drop_client(slot)
+			return
 		}
+	}
+}
+
+@(private = "file")
+queue_join_deny :: proc(slot: ^Client_Slot, reason: protocol.Join_Deny_Reason) {
+	log.infof("Server: client {} join refused ({})", client_index(slot), reason)
+	ok := protocol.queue_reliable_msg(
+		&slot.conn,
+		.Join_Deny,
+		protocol.write_join_deny,
+		protocol.Join_Deny_Msg{reason = reason},
+	)
+	if !ok {
+		log.warnf("Server: reliable window full for client {}, dropping", client_index(slot))
+		drop_client(slot)
 	}
 }
 

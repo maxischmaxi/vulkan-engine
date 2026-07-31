@@ -49,16 +49,22 @@ cursor_in :: proc(x, y, w, h: f32) -> bool {
 // rising edge, and resets to rest when the widget was absent last frame (a
 // screen change), so screens always animate in from zero.
 ui_hot :: proc(id: u64, x, y, w, h: f32, enabled := true) -> (hovered: bool, t: f32) {
+	hovered = enabled && cursor_in(x, y, w, h)
+	return hovered, ui_hot_manual(id, hovered)
+}
+
+// The same, with the hit test handed in: for widgets that are not axis-aligned
+// rectangles, like the halves of the diagonal split select.
+ui_hot_manual :: proc(id: u64, hovered: bool) -> (t: f32) {
 	anim := ui.anims[id]
 	if anim.last_frame + 1 < ui.frame do anim = {}
 	anim.last_frame = ui.frame
 
-	hovered = enabled && cursor_in(x, y, w, h)
 	if hovered && !anim.hovered do audio_emit({kind = .Ui_Hover, local = true})
 	anim.hovered = hovered
 	anim.hover = ui_approach(anim.hover, hovered ? 1 : 0, ui.dt, 18)
 	ui.anims[id] = anim
-	return hovered, anim.hover
+	return anim.hover
 }
 
 ui_clicked :: proc(hovered: bool) -> bool {

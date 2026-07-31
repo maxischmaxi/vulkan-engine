@@ -97,6 +97,19 @@ read_join :: proc(r: ^Reader) -> (m: Join, ok: bool) {
 	return m, !r.error
 }
 
+Join_Deny_Msg :: struct {
+	reason: Join_Deny_Reason,
+}
+
+write_join_deny :: proc(w: ^Writer, m: Join_Deny_Msg) {
+	write_u8(w, u8(m.reason))
+}
+
+read_join_deny :: proc(r: ^Reader) -> (m: Join_Deny_Msg, ok: bool) {
+	m.reason = Join_Deny_Reason(read_u8(r))
+	return m, !r.error
+}
+
 // The client's debug toggles, mirrored to the server so god mode and infinite
 // ammo mean something against an authoritative simulation. Development only:
 // the message exists to be refused by a server that takes cheating seriously.
@@ -208,7 +221,9 @@ read_match_phase :: proc(r: ^Reader) -> (m: Match_Phase_Msg, ok: bool) {
 
 // The roster: every active pawn's name and score, broadcast edge-triggered
 // (join, kill, drop, bot claim). Bots carry an empty name; the client labels
-// them itself. ~20 bytes an entry, well under the MTU at 16 pawns.
+// them itself. The binding limit is not the MTU but the 64-byte reliable slot:
+// a full roster must go out in chunks (roster_chunk_split); the client merges
+// per entry, so partial rosters compose.
 Roster_Entry :: struct {
 	pawn_id:  u8,
 	kills:    u8,
@@ -249,6 +264,34 @@ read_roster :: proc(r: ^Reader) -> (m: Roster, ok: bool) {
 		m.entries[i] = e
 	}
 	return m, !r.error
+}
+
+// Fixed bytes per entry on the wire: pawn_id, kills, deaths, name_len.
+ROSTER_ENTRY_BYTES :: 4
+
+// Worst case: MAX_PAWNS entries with full names, 3 to a chunk.
+MAX_ROSTER_CHUNKS :: 6
+
+// Splits a roster into chunks that each fit a reliable slot. Greedy packing;
+// returns the chunk count, 0 for an empty roster.
+roster_chunk_split :: proc(full: Roster, chunks: []Roster) -> int {
+	count := 0
+	used := MAX_RELIABLE_PAYLOAD // forces a fresh chunk on the first entry
+	for i in 0 ..< int(min(full.count, u8(game.MAX_PAWNS))) {
+		e := full.entries[i]
+		size := ROSTER_ENTRY_BYTES + int(min(e.name_len, MAX_NAME))
+		if used + size > MAX_RELIABLE_PAYLOAD {
+			if count >= len(chunks) do break
+			chunks[count] = {}
+			count += 1
+			used = 1 // the count byte
+		}
+		chunk := &chunks[count - 1]
+		chunk.entries[chunk.count] = e
+		chunk.count += 1
+		used += size
+	}
+	return count
 }
 
 Kill :: struct {

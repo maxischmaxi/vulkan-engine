@@ -328,6 +328,9 @@ handle_unconnected :: proc(peer: Peer, version: u8, data: []u8) {
 		slot.state = .Connected
 		log.infof("Server: client {} connected ({}) from {}", index, name, peer_desc(peer))
 		send_accept(slot)
+		// A browser needs the names before it joins; the chunks ride the
+		// per-tick snapshot packets until acked.
+		queue_roster(slot)
 	}
 }
 
@@ -358,6 +361,7 @@ steam_on_validate_ticket :: proc(cb: ^steam.ValidateAuthTicketResponse) {
 				owner,
 			)
 			send_accept(slot)
+			queue_roster(slot)
 		} else {
 			log.warnf(
 				"Server: client {} ticket rejected ({})",

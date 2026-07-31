@@ -24,6 +24,7 @@ Queue_Client :: struct {
 	nonce:     u32,
 	mode:      game.Mode,
 	team_wish: game.Team, // rides the game Join; the master never sees it
+	auto_join: bool, // handed to the connect the assignment launches
 	queued:    u8, // "IN QUEUE 2 OF 5" from the last reply
 	needed:    u8,
 	last_send: time.Tick,
@@ -35,13 +36,14 @@ queue_client: Queue_Client
 // requeue instead of the error screen. Disarmed by reaching the match or
 // leaving the scene.
 queue_launch: struct {
-	armed:   bool,
-	retried: bool,
-	mode:    game.Mode,
-	wish:    game.Team,
+	armed:     bool,
+	retried:   bool,
+	mode:      game.Mode,
+	wish:      game.Team,
+	auto_join: bool,
 }
 
-queue_start :: proc(mode: game.Mode, team_wish: game.Team) {
+queue_start :: proc(mode: game.Mode, team_wish: game.Team, auto_join := true) {
 	queue_stop()
 
 	ep, ok := net.parse_endpoint(cli.master)
@@ -74,6 +76,7 @@ queue_start :: proc(mode: game.Mode, team_wish: game.Team) {
 	queue_client.nonce = rand.uint32()
 	queue_client.mode = mode
 	queue_client.team_wish = team_wish
+	queue_client.auto_join = auto_join
 
 	log.infof("QUEUE: entered {} queue at {}", mode, net.to_string(ep))
 	queue_send_enter()
@@ -121,25 +124,27 @@ queue_pump :: proc() {
 			if !mok || m.nonce != queue_client.nonce do continue
 			mode := queue_client.mode
 			wish := queue_client.team_wish
+			auto_join := queue_client.auto_join
 			addr := m.addr
 			log.infof("QUEUE: assigned match {}", m.match_id)
 			queue_stop_silent()
 			queue_launch = {
-				armed = true,
-				mode  = mode,
-				wish  = wish,
+				armed     = true,
+				mode      = mode,
+				wish      = wish,
+				auto_join = auto_join,
 			}
 			switch addr.kind {
 			case .Steam:
 				log.infof("QUEUE: server steamid {}", addr.steam_id)
-				net_connect_start_steam(addr.steam_id, wish)
+				net_connect_start_steam(addr.steam_id, wish, auto_join)
 			case .Udp:
 				server_ep := net.Endpoint {
 					address = net.IP4_Address(addr.ip4),
 					port    = int(addr.port),
 				}
 				log.infof("QUEUE: server {}", net.to_string(server_ep))
-				net_connect_start_ep(server_ep, wish)
+				net_connect_start_ep(server_ep, wish, auto_join)
 			}
 			return
 		}
@@ -177,10 +182,10 @@ queue_stop_silent :: proc() {
 // error screen.
 queue_relaunch :: proc() -> bool {
 	if !queue_launch.armed || queue_launch.retried do return false
-	if scene.current != .Connecting do return false
+	if scene.current != .Connecting && scene.current != .Team_Select do return false
 	queue_launch.retried = true
 	log.warn("QUEUE: connect failed, re-entering the queue")
-	queue_start(queue_launch.mode, queue_launch.wish)
+	queue_start(queue_launch.mode, queue_launch.wish, queue_launch.auto_join)
 	return true
 }
 

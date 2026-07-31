@@ -1,6 +1,7 @@
 package main
 
 import "core:log"
+import "core:strings"
 import "vendor:glfw"
 
 // --hudpreview=<view>: the practice range with a competitive HUD state forced
@@ -12,16 +13,41 @@ hud_preview_active :: proc() -> bool {
 	return cli.hudpreview != "" && practice_active()
 }
 
+// The previews that park on a menu screen rather than the range. They hold one
+// screen still for the camera, so a stray click must not navigate away.
+hud_preview_menu :: proc() -> bool {
+	if cli.hudpreview == "" do return false
+	return(
+		cli.hudpreview == "menu" ||
+		cli.hudpreview == "connecting" ||
+		strings.has_prefix(cli.hudpreview, "modeselect") ||
+		strings.has_prefix(cli.hudpreview, "teamselect") \
+	)
+}
+
 // Synthetic alive counts for the top bar; the range has no snapshots to walk.
 HUD_PREVIEW_T_ALIVE :: 3
 HUD_PREVIEW_CT_ALIVE :: 4
 
 hud_preview_apply :: proc() {
 	// The menu previews never reach the range; they only pin the animation
-	// clock so entrance staggers photograph mid-pose deterministically.
-	switch cli.hudpreview {
-	case "menu", "modeselect", "teamselect", "connecting":
+	// clock so entrance staggers photograph mid-pose deterministically. The
+	// select screens add a faked hover, because a mouse cannot be scripted.
+	if cli.hudpreview == "menu" || cli.hudpreview == "connecting" {
 		ui_anim_pin(0.5)
+		return
+	}
+	if strings.has_prefix(cli.hudpreview, "modeselect") ||
+	   strings.has_prefix(cli.hudpreview, "teamselect") {
+		ui_anim_pin(0.5)
+		switch {
+		case strings.has_suffix(cli.hudpreview, "-hoverl"):
+			hud_preview.hover = .Left
+		case strings.has_suffix(cli.hudpreview, "-hoverr"):
+			hud_preview.hover = .Right
+		case:
+			hud_preview.hover = .None
+		}
 		return
 	}
 	if !hud_preview_active() do return
@@ -108,7 +134,8 @@ hud_preview_apply :: proc() {
 
 	case:
 		log.errorf(
-			"--hudpreview wants topbar, warmup, freeze, roundend, bomb or settings*, got {}",
+			"--hudpreview wants topbar, warmup, freeze, roundend, bomb, killfeed, scoreboard, " +
+			"buy, death, pause, settings*, outro, menu, connecting, modeselect*, teamselect*, got {}",
 			cli.hudpreview,
 		)
 		cli.hudpreview = ""
@@ -117,7 +144,24 @@ hud_preview_apply :: proc() {
 	hud_preview.seeded = true
 }
 
+// Forces a settled hover on one half of a split select, so both states of the
+// screen photograph without a scripted mouse.
+Hud_Preview_Hover :: enum u8 {
+	None,
+	Left,
+	Right,
+}
+
+// Authoritative while a menu preview runs: None means neither half is hovered,
+// whatever the real cursor happens to sit on.
+hud_preview_split_hover :: proc(left, right: ^bool) {
+	if !hud_preview_menu() do return
+	left^ = hud_preview.hover == .Left
+	right^ = hud_preview.hover == .Right
+}
+
 hud_preview: struct {
 	seeded:          bool,
 	bomb_planted_at: f64,
+	hover:           Hud_Preview_Hover,
 }

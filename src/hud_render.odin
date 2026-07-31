@@ -288,11 +288,17 @@ hud_rect :: proc(x, y, w, h: f32, color: [4]f32, radius: f32 = 0) {
 }
 
 // Centred on cx/cy and turned about that point. Not snapped: a rotated edge
-// lands between pixels whatever we do, and MSAA already covers it.
-hud_rect_rotated :: proc(cx, cy, w, h, rotation: f32, color: [4]f32) {
+// lands between pixels whatever we do, and MSAA already covers it. A radius
+// runs the shader's distance field, which works in the rectangle's own frame
+// and so softens a turned edge too -- what keeps a thin diagonal from crawling.
+hud_rect_rotated :: proc(cx, cy, w, h, rotation: f32, color: [4]f32, radius: f32 = 0) {
 	if w <= 0 || h <= 0 || color.a <= 0 do return
 	hud_quad(
-		{rect = {cx - w * 0.5, cy - h * 0.5, w, h}, color = color, params = {rotation, 0, 0, 0}},
+		{
+			rect = {cx - w * 0.5, cy - h * 0.5, w, h},
+			color = color,
+			params = {rotation, 0, radius, 0},
+		},
 	)
 }
 
@@ -380,12 +386,13 @@ crosshair_rects :: proc(style: Crosshair_Style, grow: f32) -> (rects: [CROSSHAIR
 
 // A horizontal fade: full colour at the left edge, transparent at the right.
 // Mode 2 in the quad shader; the uv spans 0..1 so the fragment knows where it
-// is inside the rectangle.
-hud_rect_gradient :: proc(x, y, w, h: f32, color: [4]f32) {
+// is inside the rectangle. `flip` runs the uv backwards, which mirrors the
+// fade -- the shader itself only ever fades toward +u.
+hud_rect_gradient :: proc(x, y, w, h: f32, color: [4]f32, flip := false) {
 	hud_quad(
 		{
 			rect = {math.round(x), math.round(y), math.round(w), math.round(h)},
-			uv = {0, 0, 1, 1},
+			uv = flip ? {1, 0, 0, 1} : {0, 0, 1, 1},
 			color = color,
 			params = {0, 2, 0, 0},
 		},

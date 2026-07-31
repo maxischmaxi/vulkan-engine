@@ -20,6 +20,8 @@ NET_CONNECT_TIMEOUT :: 5.0
 // Finding a relay route can take well over the loopback budget.
 NET_CONNECT_TIMEOUT_STEAM :: 15.0
 NET_SNAPSHOT_TIMEOUT :: 5.0
+// From Join sent to the server's phase answer; loopback answers in one tick.
+NET_JOIN_TIMEOUT :: 5.0
 
 Net_Transport :: enum u8 {
 	Udp,
@@ -36,6 +38,12 @@ Net_Client :: struct {
 	transport:          Net_Transport,
 	got_accept:         bool,
 	joined:             bool, // match joined; snapshots are flowing
+	// Whether the accept queues the Join immediately. False is the browse
+	// mode behind the team select: connected, watching snapshots, joining
+	// only when net_join_team fires.
+	auto_join:          bool,
+	join_pending:       bool, // Join queued, phase answer outstanding
+	join_sent:          time.Tick,
 	// Registered on the range instead of joining a match. Snapshots still
 	// arrive -- they carry the reliable acks and feed the liveness watchdog --
 	// but none of their content may touch the locally simulated range.
@@ -93,14 +101,15 @@ net_client: Net_Client
 
 recv_buf: [protocol.MTU]u8
 
-net_connect_start :: proc(port: int, team: game.Team) {
-	net_connect_start_ep({address = net.IP4_Loopback, port = port}, team)
+net_connect_start :: proc(port: int, team: game.Team, auto_join := true) {
+	net_connect_start_ep({address = net.IP4_Loopback, port = port}, team, auto_join)
 }
 
 // The general UDP entry: any endpoint, e.g. one the master handed out.
-net_connect_start_ep :: proc(server_ep: net.Endpoint, team: game.Team) {
+net_connect_start_ep :: proc(server_ep: net.Endpoint, team: game.Team, auto_join := true) {
 	if !net_open(server_ep) do return
 	net_client.team = team
+	net_client.auto_join = auto_join
 	log.infof("NET: connecting to {}", net.to_string(server_ep))
 	send_connect_request()
 }
@@ -117,7 +126,7 @@ net_practice_start :: proc(port: int) {
 // The Steam variant: no socket -- a P2P connection to the server's SteamID.
 // The Connect_Request waits until Steam reports the route open and the auth
 // ticket is in hand; net_try_connect_request fires it from either callback.
-net_connect_start_steam :: proc(steamid: u64, team: game.Team) {
+net_connect_start_steam :: proc(steamid: u64, team: game.Team, auto_join := true) {
 	if !steam_available() {
 		scene.error_text = "STEAM NOT RUNNING"
 		enter_scene(.Menu)
@@ -127,6 +136,7 @@ net_connect_start_steam :: proc(steamid: u64, team: game.Team) {
 	net_client.active = true
 	net_client.transport = .Steam
 	net_client.team = team
+	net_client.auto_join = auto_join
 	net_client.client_salt = rand.uint32()
 	net_client.connect_start = time.tick_now()
 	net_client.last_send = time.tick_now()
@@ -134,6 +144,27 @@ net_connect_start_steam :: proc(steamid: u64, team: game.Team) {
 	steam_request_ticket(steamid)
 	steam_net_connect(steamid)
 	log.infof("NET: connecting to steam server {}", steamid)
+}
+
+// The deferred half of the browse handshake: the team pick on an already
+// accepted connection. The server answers with a phase (joined) or Join_Deny.
+net_join_team :: proc(team: game.Team) {
+	if !net_client.active || !net_client.got_accept do return
+	if net_client.joined || net_client.join_pending do return
+	net_client.team = team
+	net_client.join_pending = true
+	net_client.join_sent = time.tick_now()
+	if !protocol.queue_reliable_msg(
+		&net_client.conn,
+		.Join,
+		protocol.write_join,
+		protocol.Join{team = team},
+	) {
+		net_fail("PROTOCOL FAILURE")
+		return
+	}
+	net_send_loadout(seed_loadout())
+	log.infof("NET: joining {}", team)
 }
 
 // Sends the connect request if everything it depends on is ready; safe to
@@ -218,18 +249,30 @@ net_client_pump :: proc() {
 
 	// handshake upkeep
 	if !net_client.joined {
-		timeout :=
-			net_client.transport == .Steam ? NET_CONNECT_TIMEOUT_STEAM : NET_CONNECT_TIMEOUT
-		if time.duration_seconds(time.tick_diff(net_client.connect_start, now)) > timeout {
-			net_fail("COULD NOT REACH SERVER")
-			return
-		}
-		if time.duration_seconds(time.tick_diff(net_client.last_send, now)) >
-		   protocol.CONNECT_RETRY_SECONDS {
-			if net_client.got_accept {
-				send_keepalive() // carries the queued reliable Join until acked
-			} else {
+		if !net_client.got_accept {
+			timeout :=
+				net_client.transport == .Steam ? NET_CONNECT_TIMEOUT_STEAM : NET_CONNECT_TIMEOUT
+			if time.duration_seconds(time.tick_diff(net_client.connect_start, now)) > timeout {
+				net_fail("COULD NOT REACH SERVER")
+				return
+			}
+			if time.duration_seconds(time.tick_diff(net_client.last_send, now)) >
+			   protocol.CONNECT_RETRY_SECONDS {
 				net_try_connect_request()
+			}
+		} else {
+			// Accepted but not joined: browsing the team select, or a Join in
+			// flight. The keepalive feeds the server's timeout and carries the
+			// reliable window; liveness rides the snapshot watchdog below.
+			if time.duration_seconds(time.tick_diff(net_client.last_send, now)) >
+			   protocol.CONNECT_RETRY_SECONDS {
+				send_keepalive()
+			}
+			if net_client.join_pending &&
+			   time.duration_seconds(time.tick_diff(net_client.join_sent, now)) >
+				   NET_JOIN_TIMEOUT {
+				net_fail("COULD NOT JOIN THE MATCH")
+				return
 			}
 		}
 	}
@@ -267,8 +310,10 @@ net_client_pump :: proc() {
 		}
 	}
 
-	// a joined client that stops hearing snapshots has lost the server
-	if net_client.joined {
+	// A client that stops hearing snapshots has lost the server. They flow
+	// from the accept on -- the server snapshots Connected slots every tick --
+	// and the accept stamps the clock, so this covers browsing too.
+	if net_client.joined || net_client.got_accept {
 		if time.duration_seconds(time.tick_since(net_client.last_snapshot_time)) >
 		   NET_SNAPSHOT_TIMEOUT {
 			net_fail("CONNECTION LOST")
@@ -286,7 +331,18 @@ net_fail :: proc(text: string) {
 	enter_scene(.Menu)
 }
 
-// All strings glyph-safe for the HUD font (uppercase, no ? & ' @).
+// All strings below glyph-safe for the HUD font (uppercase, no ? & ' @).
+
+join_deny_text :: proc(reason: protocol.Join_Deny_Reason) -> string {
+	#partial switch reason {
+	case .Teams_Full:
+		return "TEAMS ARE FULL"
+	case .Between_Matches:
+		return "MATCH RESTARTING - TRY AGAIN"
+	}
+	return "JOIN REFUSED"
+}
+
 deny_text :: proc(reason: protocol.Deny_Reason) -> string {
 	switch reason {
 	case .Full:
@@ -340,14 +396,17 @@ handle_server_packet :: proc(data: []u8) {
 			net_client.pawn_id = int(accept.pawn_id)
 			net_client.phase = accept.phase
 			net_client.mode = accept.mode
+			// the snapshot watchdog owns liveness from here; give it a start
+			net_client.last_snapshot_time = time.tick_now()
 			protocol.connection_init(&net_client.conn, net_client.client_salt ~ accept.server_salt)
 			// Commands are stamped ahead of the server's clock so they arrive
 			// before the tick that consumes them.
 			predictor.input_tick = accept.server_tick + NET_RUN_AHEAD
 			log.infof(
-				"NET: accepted as pawn {} at server tick {}",
+				"NET: accepted as pawn {} at server tick {}{}",
 				accept.pawn_id,
 				accept.server_tick,
+				!net_client.practice && !net_client.auto_join ? " (browsing)" : "",
 			)
 			if net_client.practice {
 				// the range flag rides reliably instead of a Join, so the
@@ -361,7 +420,8 @@ handle_server_packet :: proc(data: []u8) {
 					net_fail("PROTOCOL FAILURE")
 					return
 				}
-			} else {
+				net_send_loadout(seed_loadout())
+			} else if net_client.auto_join {
 				// the team choice rides reliably; the server answers with a phase
 				if !protocol.queue_reliable_msg(
 					&net_client.conn,
@@ -372,10 +432,17 @@ handle_server_packet :: proc(data: []u8) {
 					net_fail("PROTOCOL FAILURE")
 					return
 				}
+				net_client.join_pending = true
+				net_client.join_sent = time.tick_now()
+				// the seed loadout ships right behind the join, so --weapon runs
+				// spawn armed and the slot never holds a stale default
+				net_send_loadout(seed_loadout())
+			} else if scene.join_wish_pending {
+				// the player clicked a team before the accept landed
+				scene.join_wish_pending = false
+				net_join_team(scene.chosen_team)
+				if !net_client.active do return // a full window tore us down
 			}
-			// the seed loadout ships right behind the join, so --weapon runs
-			// spawn armed and the slot never holds a stale default
-			net_send_loadout(seed_loadout())
 			// debug toggles flipped before connecting still have to arrive
 			if debug.god_mode || debug.infinite_ammo {
 				net_send_debug_flags()
@@ -439,6 +506,11 @@ handle_server_packet :: proc(data: []u8) {
 			}
 		case .Roster:
 			if m, mok := protocol.read_roster(&payload); mok {
+				// the browse E2E's ear: proof the roster reaches a client that
+				// has not joined yet
+				if !net_client.joined {
+					log.infof("NET: roster {} entries", m.count)
+				}
 				for entry_index in 0 ..< int(m.count) {
 					e := m.entries[entry_index]
 					if int(e.pawn_id) >= game.MAX_PAWNS do continue
@@ -448,6 +520,17 @@ handle_server_packet :: proc(data: []u8) {
 					entry.deaths = int(e.deaths)
 					entry.name = e.name
 					entry.name_len = e.name_len
+				}
+			}
+		case .Join_Deny:
+			if m, mok := protocol.read_join_deny(&payload); mok {
+				log.warnf("NET: join refused ({})", m.reason)
+				net_client.join_pending = false
+				if scene.current == .Connecting {
+					// back to the pick; the entry hook clears error_text, so
+					// the reason goes in afterwards
+					enter_scene(.Team_Select)
+					scene.error_text = join_deny_text(m.reason)
 				}
 			}
 		}
@@ -522,8 +605,11 @@ handle_match_phase :: proc(m: protocol.Match_Phase_Msg) {
 
 	#partial switch m.phase {
 	case .Countdown, .Live, .Warmup, .Freeze, .Bomb, .Round_End, .Halftime:
-		if scene.current == .Connecting {
+		// Only an outstanding Join may pull us in: a phase reaching a browsing
+		// client must never start the game under the team select.
+		if !net_client.joined && net_client.join_pending {
 			net_client.joined = true
+			net_client.join_pending = false
 			net_client.last_snapshot_time = time.tick_now()
 			enter_scene(.Playing)
 		}

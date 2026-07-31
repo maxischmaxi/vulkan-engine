@@ -1,5 +1,6 @@
 package main
 
+import "core:strings"
 import "game"
 import "protocol"
 import "vendor:glfw"
@@ -34,6 +35,9 @@ Scene_State :: struct {
 	// The next .Connecting enters the matchmaking queue (menu play or
 	// --queue) instead of the legacy quickplay query. Needs --master.
 	queue_pending:     bool,
+	// The team was picked before the accept landed: the accept handler fires
+	// the Join instead of the click.
+	join_wish_pending: bool,
 	// A static literal, shown on the main menu after a failed connect. Not
 	// owned memory: assigning a new one never frees the old.
 	error_text:        string,
@@ -79,17 +83,20 @@ init_scene :: proc() {
 	}
 	// The menu screens, same idea: park on the screen and hold still.
 	// Connecting sets the scene directly -- enter_scene would start a connect.
-	switch cli.hudpreview {
-	case "menu":
+	switch {
+	case cli.hudpreview == "menu":
 		enter_scene(.Menu)
 		return
-	case "modeselect":
+	case strings.has_prefix(cli.hudpreview, "modeselect"):
 		enter_scene(.Mode_Select)
 		return
-	case "teamselect":
-		enter_scene(.Team_Select)
+	case strings.has_prefix(cli.hudpreview, "teamselect"):
+		// Set directly: entering the scene would open a socket, and a
+		// screenshot must not need a server.
+		grab_cursor(false)
+		scene.current = .Team_Select
 		return
-	case "connecting":
+	case cli.hudpreview == "connecting":
 		grab_cursor(false)
 		scene.current = .Connecting
 		scene.queue_started = glfw.GetTime() - 83
@@ -114,7 +121,9 @@ init_scene :: proc() {
 	}
 	if cli.join != "" {
 		scene.chosen_team = cli.join == "t" ? .T : .CT
-		enter_scene(.Connecting)
+		// --join-delay browses the team select first; update_scene picks the
+		// team once the timer runs out.
+		enter_scene(cli.join_delay > 0 ? .Team_Select : .Connecting)
 		return
 	}
 	enter_scene(.Menu)
@@ -143,6 +152,13 @@ enter_scene :: proc(next: Scene) {
 
 	case .Mode_Select:
 		grab_cursor(false)
+		// The way back out of the team select: whatever it connected to goes
+		// with it. All four are safe when nothing is running.
+		net_disconnect()
+		master_query_stop()
+		queue_stop()
+		queue_launch_disarm()
+		scene.join_wish_pending = false
 		scene.error_text = ""
 		scene.practice_pending = false
 
@@ -150,10 +166,19 @@ enter_scene :: proc(next: Scene) {
 		grab_cursor(false)
 		scene.error_text = ""
 		scene.practice_pending = false
+		scene.join_wish_pending = false
+		// The pick needs a roster to pick from, so the connect starts here and
+		// the Join waits for the click.
+		team_select_connect_start()
 
 	case .Connecting:
 		grab_cursor(false)
 		scene.queue_started = glfw.GetTime()
+		// Coming from the team select the connection already stands (or is
+		// still being resolved); this scene only waits for the phase.
+		if net_client.active || master_query.active || queue_client.active {
+			break
+		}
 		if scene.practice_pending {
 			net_practice_start(protocol.DEFAULT_PORT)
 		} else if cli.connect_id != 0 {
@@ -189,6 +214,46 @@ enter_scene :: proc(next: Scene) {
 	}
 }
 
+// The team select connects but does not join: the client sits in the server's
+// Connected state, receiving snapshots and the roster, until a team is picked.
+// Same routing as the old start_game, minus the team.
+@(private = "file")
+team_select_connect_start :: proc() {
+	if net_client.active || master_query.active || queue_client.active do return
+	scene.queue_started = glfw.GetTime()
+
+	if cli.connect_id != 0 {
+		net_connect_start_steam(cli.connect_id, scene.chosen_team, auto_join = false)
+	} else if cli.master != "" {
+		// --join keeps the legacy quickplay query; menu play goes through the
+		// queue, which is what start_game did.
+		if cli.join != "" {
+			master_query_start(scene.chosen_team, auto_join = false)
+		} else {
+			queue_start(scene.chosen_mode, scene.chosen_team, auto_join = false)
+		}
+	} else {
+		when STEAM_REQUIRED {
+			scene.error_text = "NO SERVER CONFIGURED"
+			enter_scene(.Menu)
+		} else {
+			net_connect_start(protocol.DEFAULT_PORT, scene.chosen_team, auto_join = false)
+		}
+	}
+}
+
+// The pick itself: the Join rides the connection the team select opened, or
+// waits for the accept if the handshake is still in flight.
+team_select_pick :: proc(team: game.Team) {
+	scene.chosen_team = team
+	if net_client.got_accept {
+		net_join_team(team)
+	} else {
+		scene.join_wish_pending = true
+	}
+	scene_transition_to(.Connecting)
+}
+
 // Client-side leftovers of the previous life: the server owns the match, this
 // only makes sure nothing stale is on screen when it starts.
 @(private = "file")
@@ -221,6 +286,16 @@ scene_playing :: proc() -> bool {
 update_scene :: proc() {
 	if scene.current == .Match_End && glfw.GetTime() >= scene.end_at {
 		scene_transition_to(.Menu)
+	}
+	// --join-delay: the headless stand-in for clicking a team card. The scene
+	// only changes at the transition's midpoint, so the pending join is what
+	// keeps this from firing every frame until then.
+	if scene.current == .Team_Select &&
+	   cli.join_delay > 0 &&
+	   !scene.join_wish_pending &&
+	   !net_client.join_pending &&
+	   glfw.GetTime() - scene.queue_started > f64(cli.join_delay) {
+		team_select_pick(scene.chosen_team)
 	}
 }
 

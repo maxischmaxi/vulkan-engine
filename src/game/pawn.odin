@@ -43,6 +43,10 @@ ARMOR_ABSORB :: 0.5
 // server will hold.
 MAX_PAWNS :: 16
 
+// Humans one side holds. The server balances joins against it; the team
+// select shows N OF TEAM_SIZE.
+TEAM_SIZE :: 5
+
 Team :: enum u8 {
 	T, // attackers
 	CT, // defenders

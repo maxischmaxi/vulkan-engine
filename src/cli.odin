@@ -22,6 +22,10 @@ Cli :: struct {
 	// Skip the menu and join a match immediately: "t" or "ct". Development
 	// convenience and the only way to drive a match without clicking.
 	join:          string,
+	// Sit in the team select for this many seconds before the --join team is
+	// picked. The browse path's E2E hook: the connection is up, the roster
+	// streams in, and nothing joins until the timer runs out.
+	join_delay:    int,
 	// Skip the menu and enter the practice range. Same development role as
 	// --join; when both are given, practice wins.
 	practice:      bool,
@@ -72,6 +76,7 @@ CLI_USAGE :: `Options:
   --gpu-timing  measure each pass on the GPU and show it in the overlay
   --bench=N     run the fixed camera path for N frames, print one line, exit
   --join=TEAM   skip the menu and join the local server as t or ct
+  --join-delay=S  browse the team select for S seconds before joining (E2E)
   --queue=MODE  skip the menu and queue for tdm or comp (needs --master)
   --connect=ID  join the server with this steamid64 over Steam
   --master=H:P  ask the master at H:P for a server to join
@@ -79,7 +84,8 @@ CLI_USAGE :: `Options:
   --practice    skip the menu and enter the practice range
   --weapon=NAME start holding a weapon by name, e.g. ak, glock, awp, knife
   --zoom        start scoped, if the weapon has a scope
-  --hudpreview=V  forced comp HUD state: topbar, warmup, freeze, roundend, bomb, outro
+  --hudpreview=V  forced HUD/menu state: topbar, warmup, freeze, roundend, bomb,
+                  outro, menu, modeselect[-hoverl|-hoverr], teamselect[-hoverl|-hoverr]
   --auto-buy=NAME send a buy for this weapon at every comp freeze (economy E2E)
   --no-steam    run without Steam, dev builds only
   --cheat-probe=K  dev builds only: send illegal message K after connect (debugmsg)
@@ -136,6 +142,14 @@ parse_cli :: proc() {
 				continue
 			}
 			cli.join = value
+
+		case strings.has_prefix(arg, "--join-delay="):
+			value, ok := strconv.parse_int(arg[len("--join-delay="):])
+			if !ok || value <= 0 {
+				log.errorf("--join-delay wants a positive number, got {}", arg)
+				continue
+			}
+			cli.join_delay = value
 
 		case strings.has_prefix(arg, "--queue="):
 			value := arg[len("--queue="):]
@@ -209,6 +223,10 @@ parse_cli :: proc() {
 	}
 	if cli.queue != "" && cli.master == "" {
 		log.error("--queue needs --master")
+		os.exit(1)
+	}
+	if cli.join_delay > 0 && cli.join == "" {
+		log.error("--join-delay needs --join")
 		os.exit(1)
 	}
 }
