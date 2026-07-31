@@ -143,6 +143,40 @@ SETTING_ROWS := []Setting_Row {
 			next.gpu_timing = direction > 0
 			apply_settings(next)
 		}},
+	// Volumes step past apply_settings on purpose: that is the render-rebuild
+	// path, and a volume change is applied live and merely saved.
+	{
+		label = "MASTER VOLUME",
+		value = proc() -> string {return volume_label(audio_settings.master)},
+		step = proc(direction: int) {step_volume(&audio_settings.master, direction)},
+	},
+	{
+		label = "MUSIC VOLUME",
+		value = proc() -> string {return volume_label(audio_settings.music)},
+		step = proc(direction: int) {step_volume(&audio_settings.music, direction)},
+	},
+	{
+		label = "EFFECTS VOLUME",
+		value = proc() -> string {return volume_label(audio_settings.effects)},
+		step = proc(direction: int) {step_volume(&audio_settings.effects, direction)},
+	},
+	{
+		label = "AMBIENT VOLUME",
+		value = proc() -> string {return volume_label(audio_settings.ambient)},
+		step = proc(direction: int) {step_volume(&audio_settings.ambient, direction)},
+	},
+}
+
+@(private = "file")
+volume_label :: proc(v: f32) -> string {
+	return fmt.tprintf("%d%%", int(v * 100 + 0.5))
+}
+
+@(private = "file")
+step_volume :: proc(v: ^f32, direction: int) {
+	v^ = cycle([]f32{0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0}, v^, direction)
+	audio_apply_volumes()
+	save_settings()
 }
 
 // TAB opens it; every function key is already spoken for by the debug tools.

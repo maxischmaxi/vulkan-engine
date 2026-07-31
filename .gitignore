@@ -19,3 +19,6 @@ shaders/*.spv
 # them
 /assets/
 /models/
+
+# CC0 sound packs fetched and curated by `just sounds`
+/sounds/

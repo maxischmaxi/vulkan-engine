@@ -240,6 +240,11 @@ main :: proc() {
 	init_bench()
 	defer destroy_bench()
 
+	// After bench, so the benchmark guard answers truthfully; before the
+	// scene, whose first enter_scene already starts the menu music.
+	init_audio()
+	defer destroy_audio()
+
 	// After input and bench: it releases the cursor for the menu, unless the
 	// bench wants the game running with nobody at the controls.
 	init_scene()
@@ -327,6 +332,8 @@ update :: proc() {
 	}
 	update_transient_lights(game.clock.frame_dt)
 	update_tracers(game.clock.frame_dt)
+	// After the camera has settled: the listener sits where the eye is.
+	update_audio(game.clock.frame_dt)
 
 	cpu_zone(.Build_Frame)
 	update_cascades()

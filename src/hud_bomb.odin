@@ -19,6 +19,7 @@ hud_bomb: struct {
 bomb_hud_note_state :: proc(state: game.Bomb_State) {
 	if state == .Planted {
 		hud_bomb.planted_banner_until = glfw.GetTime() + BOMB_BANNER_SECONDS
+		audio_emit({kind = .Bomb_Planted, local = true})
 	}
 }
 

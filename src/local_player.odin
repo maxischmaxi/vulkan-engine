@@ -167,8 +167,16 @@ tick_player :: proc(dt: f32) {
 
 	ev := game.pawn_move(&gs, player, build_local_input(), dt)
 	view_note_step(ev.stepped)
-	if ev.jumped do view_note_airborne()
-	if ev.landed do view_note_landing(ev.impact)
+	if ev.jumped {
+		view_note_airborne()
+		audio_emit({kind = .Jump, local = true})
+	}
+	if ev.landed {
+		view_note_landing(ev.impact)
+		if ev.impact >= LAND_MIN_IMPACT {
+			audio_emit({kind = .Land, local = true, intensity = min(ev.impact / LAND_SPEED_FULL, 1)})
+		}
+	}
 
 	// A fall through the world is unrecoverable, so treat it as a respawn.
 	if player.body.position.z < -50 {

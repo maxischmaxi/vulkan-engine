@@ -424,6 +424,9 @@ handle_server_packet :: proc(data: []u8) {
 		case .Kill:
 			if m, mok := protocol.read_kill(&payload); mok {
 				log.infof("NET: kill {} -> {}", m.killer, m.victim)
+				if int(m.killer) == net_client.pawn_id && int(m.victim) != net_client.pawn_id {
+					audio_emit({kind = .Kill, local = true})
+				}
 			}
 		}
 		// a phase message may have torn the connection down (match end);
@@ -471,10 +474,22 @@ handle_match_phase :: proc(m: protocol.Match_Phase_Msg) {
 		m.winner,
 		m.reason,
 	)
+	phase_was := net_client.phase
 	net_client.phase = m.phase
 	net_client.t_score = int(m.t_score)
 	net_client.ct_score = int(m.ct_score)
 	net_client.round = int(m.round)
+
+	// Stingers only on a real transition mid-match: joining one late must not
+	// greet the player with a round jingle.
+	if net_client.joined && m.phase != phase_was {
+		#partial switch m.phase {
+		case .Live:
+			audio_emit({kind = .Round_Start, local = true})
+		case .Round_End, .Halftime:
+			audio_emit({kind = .Round_End, local = true})
+		}
+	}
 
 	if net_client.mode == .Comp {
 		round_hud_note_phase(m)
@@ -614,6 +629,8 @@ handle_damage :: proc(m: protocol.Damage_Msg) {
 	}
 	rad := math.to_radians(m.direction)
 	register_hit({math.cos(rad), math.sin(rad)}, int(m.amount))
+	// Floored so a graze is still audible; a full hit reaches the cap.
+	audio_emit({kind = .Damage_Taken, local = true, intensity = min(0.4 + f32(m.amount) / 80, 1)})
 	log.debugf("NET: damage {} from {:.0f} deg at tick {}", m.amount, m.direction, m.tick)
 }
 

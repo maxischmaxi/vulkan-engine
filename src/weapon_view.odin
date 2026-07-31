@@ -146,6 +146,7 @@ select_weapon :: proc(index: int) {
 	weapon_state.index = index
 	weapon_state.cooldown = game.SWITCH_COOLDOWN // brief settle so switching is not a free shot
 	weapon_state.draw_left = game.SWITCH_COOLDOWN
+	audio_emit({kind = .Weapon_Draw, local = true})
 	weapon_state.recoil = 0
 	// Rounds already chambered stay chambered, but the reload itself is lost --
 	// swapping out mid-magazine to skip the wait is not a trade worth allowing.
@@ -176,6 +177,7 @@ start_reload :: proc() -> bool {
 	weapon_state.reload_left = weapon.reload_time
 	// Reloading lowers the weapon; the burst is over, as on the server.
 	game.spray_track_reset(&weapon_state.spray)
+	audio_emit({kind = .Reload_Start, local = true})
 	return true
 }
 
@@ -190,6 +192,7 @@ finish_reload :: proc() {
 	if !practice_active() {
 		ammo.reserve -= take
 	}
+	audio_emit({kind = .Reload_End, local = true})
 }
 
 // -------------------------------------------------------------------- firing
@@ -280,6 +283,7 @@ update_weapon :: proc(dt: f32, alpha: f32) {
 		// weapon's reload time, so taking it away from them would also decide
 		// when they are defenceless.
 		weapon_state.cooldown = game.DRY_FIRE_COOLDOWN
+		audio_emit({kind = .Dry_Fire, local = true})
 		return
 	}
 
@@ -374,6 +378,7 @@ fire :: proc(alpha: f32) {
 	streak_start: [3]f32
 	if !weapon.melee {
 		weapon_state.flash = MUZZLE_FLASH_TIME
+		audio_emit({kind = .Fire, weapon = weapon_state.index, local = true})
 
 		// The flash lights the surroundings for a moment. It is a real light, so
 		// walls near the muzzle brighten the way they should.
@@ -384,6 +389,9 @@ fire :: proc(alpha: f32) {
 		// holds it at the same place on screen through any lens, which the light
 		// above has no reason to care about.
 		streak_start = tracer_origin()
+	} else {
+		// The swing was the knife's only feedback gap: no flash, no tracer.
+		audio_emit({kind = .Melee_Swing, local = true})
 	}
 
 	// The same spray step and pellet pattern the server traces, from the raw
@@ -461,6 +469,7 @@ fire :: proc(alpha: f32) {
 		// One marker per pull: the stat stays "pulls that connected".
 		weapon_state.hits += 1
 		weapon_state.hit_marker = HIT_MARKER_TIME
+		audio_emit({kind = .Hit_Confirm, local = true})
 		// Online the server decides whether it killed; reconcile turns the
 		// marker red when the confirmation arrives.
 		weapon_state.hit_killed = local_sim_active() ? killed : false

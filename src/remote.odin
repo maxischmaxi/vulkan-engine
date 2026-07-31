@@ -177,6 +177,7 @@ scan_remote_fire :: proc() {
 			if weapon.melee {
 				if .Is_Bot not_in e.flags do continue
 				weapon = game.WEAPONS[game.WEAPON_AK]
+				weapon_index = game.WEAPON_AK
 			}
 
 			dir := game.view_forward(e.yaw, e.pitch)
@@ -192,6 +193,7 @@ scan_remote_fire :: proc() {
 
 			add_tracer(muzzle, end, weapon.tracer_speed)
 			add_transient_light(muzzle, {1.0, 0.82, 0.5}, 26, 7, MUZZLE_FLASH_TIME)
+			audio_emit({kind = .Fire, weapon = weapon_index, pos = muzzle})
 		}
 	}
 

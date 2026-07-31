@@ -336,7 +336,9 @@ load_settings :: proc() {
 
 		key := strings.trim_space(entry[:eq])
 		value := strings.trim_space(entry[eq + 1:])
-		if !apply_setting_key(&loaded, key, value) {
+		// Audio keys first: apply_setting_key stamps preset = .Custom on
+		// every key it knows, and a volume is not a render choice.
+		if !apply_audio_setting_key(key, value) && !apply_setting_key(&loaded, key, value) {
 			log.warnf("Ignoring unknown setting {}", key)
 		}
 	}
@@ -438,6 +440,10 @@ shadow_pcf=%d
 anisotropy=%d
 mip_lod_bias=%.2f
 gpu_timing=%v
+volume_master=%d
+volume_music=%d
+volume_effects=%d
+volume_ambient=%d
 pending=%d
 `,
 		settings.preset,
@@ -451,6 +457,10 @@ pending=%d
 		settings.anisotropy,
 		settings.mip_lod_bias,
 		settings.gpu_timing,
+		int(audio_settings.master * 100 + 0.5),
+		int(audio_settings.music * 100 + 0.5),
+		int(audio_settings.effects * 100 + 0.5),
+		int(audio_settings.ambient * 100 + 0.5),
 		pending ? 1 : 0,
 	)
 

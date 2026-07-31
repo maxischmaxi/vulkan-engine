@@ -180,6 +180,7 @@ buy_item_affordable :: proc(item: Buy_Item) -> bool {
 buy_item :: proc(item: Buy_Item) {
 	if !buy_item_affordable(item) do return
 
+	audio_emit({kind = .Buy, local = true})
 	before := buy_menu.pending
 
 	if item.weapon < 0 {

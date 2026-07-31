@@ -54,8 +54,16 @@ predict_tick :: proc(dt: f32) {
 	if game.phase_is_action(net_client.phase) && player.alive {
 		ev := game.pawn_move(&gs, player, cmd, dt)
 		view_note_step(ev.stepped)
-		if ev.jumped do view_note_airborne()
-		if ev.landed do view_note_landing(ev.impact)
+		if ev.jumped {
+			view_note_airborne()
+			audio_emit({kind = .Jump, local = true})
+		}
+		if ev.landed {
+			view_note_landing(ev.impact)
+			if ev.impact >= LAND_MIN_IMPACT {
+				audio_emit({kind = .Land, local = true, intensity = min(ev.impact / LAND_SPEED_FULL, 1)})
+			}
+		}
 	} else {
 		// The server mirrors the head even while the feet are frozen.
 		player.yaw = cmd.yaw

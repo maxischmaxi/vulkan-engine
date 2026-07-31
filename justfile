@@ -22,6 +22,11 @@ shaders:
 textures:
     ./tools/extract_textures.sh
 
+# downloads the CC0 sound packs into assets/sound_sources/ and curates them
+# into sounds/, the runtime directory the audio bank reads
+sounds:
+    ./tools/fetch_sounds.sh
+
 # unpacks the model archives and bakes them into models/*.mesh plus three more
 # texture sets. Minutes, not seconds -- which is why `run` does not depend on it
 # and a missing models/ directory panics with this recipe's name instead.

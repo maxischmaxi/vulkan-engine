@@ -40,7 +40,9 @@ menu_button :: proc(x, y, w, h: f32, label: string, accent := HUD_WHITE) -> bool
 	size := hud_font_size(HUD_TEXT_MEDIUM * scale)
 	hud_text(x + w * 0.5, y + (h - size) * 0.5, label, size, hovered ? accent : HUD_DIM, .Center)
 
-	return hovered && consume_click()
+	clicked := hovered && consume_click()
+	if clicked do audio_emit({kind = .Ui_Click, local = true})
+	return clicked
 }
 
 // One entry point for every non-Playing screen, called from build_hud.
@@ -137,7 +139,9 @@ team_card :: proc(x, y, w, h: f32, tag, role: string, color: [4]f32) -> bool {
 		.Center,
 	)
 
-	return hovered && consume_click()
+	clicked := hovered && consume_click()
+	if clicked do audio_emit({kind = .Ui_Click, local = true})
+	return clicked
 }
 
 // TDM leads to the team pick; competitive queues right away, the server
