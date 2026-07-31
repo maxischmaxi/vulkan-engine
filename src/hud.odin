@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:math"
+import "core:strings"
 import "game"
 import "vendor:glfw"
 
@@ -22,13 +23,7 @@ HUD_TEXT_BIG :: f32(40)
 HUD_TEXT_MEDIUM :: f32(24)
 HUD_TEXT_SMALL :: f32(16)
 
-HUD_WHITE :: [4]f32{0.93, 0.95, 0.97, 1}
-HUD_DIM :: [4]f32{0.66, 0.70, 0.74, 1}
-HUD_FAINT :: [4]f32{0.42, 0.45, 0.50, 1}
-HUD_GOOD :: [4]f32{0.45, 0.86, 0.50, 1}
-HUD_WARN :: [4]f32{0.96, 0.74, 0.26, 1}
-HUD_BAD :: [4]f32{0.93, 0.30, 0.28, 1}
-HUD_PANEL :: [4]f32{0.03, 0.04, 0.05, 0.72}
+// Colors live in theme.odin; the HUD names roles, not values.
 
 // Below this the health readout starts pulsing, the way every shooter since
 // Doom has warned that the next hit is the last one.
@@ -39,7 +34,23 @@ HUD_LOW_HEALTH :: 25
 HUD_SLOT_HEIGHT :: HUD_TEXT_SMALL + 2 * 8
 
 Hud :: struct {
-	visible: bool,
+	visible:          bool,
+	// The weapon-slot underline eases toward the active slot instead of
+	// jumping.
+	slot_ux, slot_uw: f32,
+	// Value-change motion: short timers armed on the frame a number moves.
+	prev_health:      int,
+	health_flash:     f32,
+	prev_money:       int,
+	money_seen:       bool,
+	money_pop:        f32,
+	money_delta:      int,
+	money_delta_t:    f32,
+	prev_mag:         int,
+	mag_pop:          f32,
+	prev_respawn:     int,
+	respawn_pop:      f32,
+	death_t:          f32, // the overlay's fade-in
 }
 
 hud := Hud {
@@ -47,7 +58,7 @@ hud := Hud {
 }
 
 hud_scale :: proc() -> f32 {
-	return max(0.5, f32(g.swapchain_extent.height) / HUD_REFERENCE_HEIGHT)
+	return max(0.5, f32(g.swapchain_extent.height) / HUD_REFERENCE_HEIGHT) * game_settings.hud_scale
 }
 
 // Called from build_frame, once the simulation for this frame is settled.
@@ -62,6 +73,10 @@ build_hud :: proc() {
 	hud_begin_frame()
 	defer hud_end_frame()
 
+	// Ticks screen age and the scene transition; may fire enter_scene at the
+	// fade midpoint, so it runs before any screen reads scene.current.
+	ui_frame_begin()
+
 	// A minimised window has a zero extent, and every layout number below would
 	// come out as zero or a division by it.
 	if g.swapchain_extent.width == 0 || g.swapchain_extent.height == 0 do return
@@ -71,10 +86,19 @@ build_hud :: proc() {
 	height := f32(g.swapchain_extent.height)
 	margin := HUD_MARGIN * scale
 
+	// LIFO with the hud_end_frame defer above: the scrim draws last, over
+	// every path out of this proc, including the menu early return.
+	defer ui_draw_transition_scrim(width, height)
+
 	// Every screen that is not gameplay draws itself and nothing of the HUD.
+	// Settings replaces the screen under it entirely: immediate-mode buttons
+	// underneath would still eat clicks at their coordinates.
 	if !scene_playing() {
+		if settings_screen.open {
+			draw_settings_screen()
+			return
+		}
 		draw_scene_screens(width, height)
-		draw_settings_ui()
 		return
 	}
 
@@ -82,18 +106,26 @@ build_hud :: proc() {
 	if weapon_state.zoom_active do draw_scope(width, height)
 
 	if hud.visible {
-		draw_minimap(margin, margin, HUD_MINIMAP_SIZE * scale)
+		// The first quarter second after entering play, the top group slides
+		// down and the bottom group slides up into place.
+		top_dy, _ := ui_entrance(0)
+		bot_dy, _ := ui_entrance(2)
+
+		draw_minimap(margin, margin - top_dy * 0.5, HUD_MINIMAP_SIZE * scale)
 		if competitive_active() {
 			// The top bar replaces draw_status wholesale: clock, score and
-			// alive state live up there, the K/D line rides under it.
-			draw_topbar(width, margin)
+			// alive state live up there.
+			draw_topbar(width, margin - top_dy * 0.5)
 		} else {
-			draw_status(width, margin)
+			draw_status(width, margin - top_dy * 0.5)
 		}
-		draw_health(margin, height - margin)
-		draw_ammo(width - margin, height - margin)
-		draw_slots(width * 0.5, height - margin)
-		draw_speed(width * 0.5, height - margin - HUD_SLOT_HEIGHT * scale)
+		// Under the debug panel when the tools are up -- both want top right.
+		killfeed_top := margin + (debug_active() ? 300 * scale : 0)
+		draw_killfeed(width - margin, killfeed_top)
+		draw_health(margin, height - margin + bot_dy)
+		draw_ammo(width - margin, height - margin + bot_dy)
+		draw_slots(width * 0.5, height - margin + bot_dy)
+		draw_speed(width * 0.5, height - margin - HUD_SLOT_HEIGHT * scale + bot_dy)
 		draw_weapon_prompt(width * 0.5, height * 0.5)
 
 		if competitive_active() {
@@ -103,6 +135,7 @@ build_hud :: proc() {
 		}
 
 		if debug_active() do draw_debug_panel(width - margin, margin)
+		if player.alive do hud.death_t = 0
 		if !player.alive do draw_death_overlay(width, height)
 	}
 
@@ -110,13 +143,20 @@ build_hud :: proc() {
 		draw_countdown(width, height)
 	}
 
+	// After every submitter: one winner per band, shared motion.
+	draw_banners(width, height)
+
+	// Display-only, over the HUD and under the pause/settings modals.
+	draw_scoreboard(width, height)
+
 	// The pause overlay outlives F12: its buttons must stay reachable, and so
-	// must the buy menu's rows.
-	if scene.paused do draw_pause_overlay(width, height)
+	// must the buy menu's rows. It hides while settings sits on top, again so
+	// its buttons cannot eat the settings screen's clicks.
+	if scene.paused && !settings_screen.open do draw_pause_overlay(width, height)
 	draw_buy_menu(width, height)
 
 	// Last, so it sits over everything -- it is modal while it is open.
-	draw_settings_ui()
+	draw_settings_screen()
 }
 
 // The scope: black bars boxing a centred circle-less square, a hairline cross
@@ -224,84 +264,107 @@ draw_status :: proc(width, margin: f32) {
 // Centre screen while the server counts the match in.
 @(private = "file")
 draw_countdown :: proc(width, height: f32) {
-	scale := hud_scale()
+	_ = width
+	_ = height
 	seconds := max(int(math.ceil(net_client.time_left)), 0)
-	hud_text_shadow(
-		width * 0.5,
-		height * 0.40,
-		fmt.tprintf("MATCH STARTS IN {}", seconds),
-		hud_font_size(HUD_TEXT_BIG * scale),
-		HUD_WARN,
-		.Center,
+	banner_submit(
+		.Headline,
+		{head = fmt.tprintf("MATCH STARTS IN {}", seconds), color = HUD_WARN, priority = 50},
 	)
 }
 
-// The balance, stacked above the health/armour block in the same corner CS
-// keeps it. Warmup shows INF because the font has no infinity glyph.
+// The bottom-left block's total height in reference pixels: bar, number and
+// label. Money stacks above it through this one number, so the two cannot
+// drift into each other again.
+HUD_HEALTH_BLOCK :: f32(64)
+
+// The balance, stacked above the health block in the same corner CS keeps
+// it. Warmup shows INF because the glyph set has no infinity.
 @(private = "file")
 draw_money :: proc(x, bottom: f32) {
 	scale := hud_scale()
-	health_y := bottom - HUD_TEXT_BIG * scale
-	armor_y := health_y - HUD_TEXT_MEDIUM * scale - 8 * scale
-	money_y := armor_y - HUD_TEXT_MEDIUM * scale - 8 * scale
+	money_y := bottom - (HUD_HEALTH_BLOCK + 18) * scale - UI_BODY * scale
 
-	text := net_client.phase == .Warmup ? "$INF" : fmt.tprintf("$%d", net_client.money)
-	hud_text_shadow(x, money_y, text, HUD_TEXT_MEDIUM * scale, HUD_GOOD)
+	money := int(net_client.money)
+	if hud.money_seen && money != hud.prev_money {
+		hud.money_delta = money - hud.prev_money
+		hud.money_delta_t = 0.5
+		hud.money_pop = 0.15
+	}
+	hud.prev_money = money
+	hud.money_seen = true
+	hud.money_pop = max(hud.money_pop - ui.dt, 0)
+	hud.money_delta_t = max(hud.money_delta_t - ui.dt, 0)
+
+	size := UI_BODY * scale * (1 + 0.08 * hud.money_pop / 0.15)
+	text := net_client.phase == .Warmup ? "$INF" : fmt.tprintf("$%d", money)
+	pen := hud_text_shadow(x, money_y, text, size, HUD_GOOD)
+
+	// the delta ticker: rises and fades beside the balance
+	if hud.money_delta_t > 0 && hud.money_delta != 0 {
+		t := hud.money_delta_t / 0.5
+		delta_color := hud.money_delta > 0 ? HUD_GOOD : HUD_BAD
+		hud_text(
+			pen + 10 * scale,
+			money_y - (1 - t) * 14 * scale,
+			fmt.tprintf("%+d", hud.money_delta),
+			UI_LABEL * scale,
+			ui_fade(delta_color, t),
+		)
+	}
 }
 
-// Bottom left, counter-strike's corner for it: health over armour, each behind
-// a shape rather than a word, because the number is what gets read.
+// Bottom left, counter-strike's corner for it: a letter-spaced label over the
+// big number over a thin bar. The bar carries the urgency -- it pulses when
+// low -- so the number itself stays readable.
 @(private = "file")
 draw_health :: proc(x, bottom: f32) {
 	scale := hud_scale()
-	icon := 18 * scale
-	gap := 10 * scale
+	bar_w := 140 * scale
+	bar_h := 3 * scale
+	bar_y := bottom - bar_h
+	num_size := hud_font_size(UI_H2 * scale)
+	num_y := bar_y - 6 * scale - num_size
+	label_size := hud_font_size(UI_LABEL * scale)
+	label_y := num_y - label_size - 4 * scale
 
-	health_y := bottom - HUD_TEXT_BIG * scale
-	armor_y := health_y - HUD_TEXT_MEDIUM * scale - 8 * scale
+	health := max(player.health, 0)
+	if health < hud.prev_health do hud.health_flash = 0.2
+	hud.prev_health = health
+	hud.health_flash = max(hud.health_flash - ui.dt, 0)
+	flash := hud.health_flash / 0.2
 
-	color := HUD_WHITE
-	if player.health <= HUD_LOW_HEALTH {
+	color := UI_TEXT
+	if health <= HUD_LOW_HEALTH {
+		color = UI_BAD
+	} else if health <= 50 {
+		color = UI_WARN
+	}
+	color = ui_mix(color, UI_ACCENT, flash * 0.8)
+	num_size *= 1 + 0.06 * flash
+
+	bar_alpha := f32(1)
+	if health <= HUD_LOW_HEALTH {
 		// Sine rather than a square blink: a hard flash at the moment you most
 		// need to read the number is the wrong kind of urgent.
-		pulse := 0.65 + 0.35 * math.sin(f32(game.clock.tick_count) * game.TICK_DT * 9)
-		color = {HUD_BAD.r, HUD_BAD.g * pulse, HUD_BAD.b * pulse, 1}
-	} else if player.health <= 50 {
-		color = HUD_WARN
+		bar_alpha = 0.65 + 0.35 * math.sin(f32(game.clock.tick_count) * game.TICK_DT * 9)
 	}
 
-	// A cross, drawn as two bars.
-	cross_y := health_y + (HUD_TEXT_BIG * scale - icon) * 0.5
-	bar := max(2, math.round(icon * 0.3))
-	hud_rect(x + (icon - bar) * 0.5, cross_y, bar, icon, color)
-	hud_rect(x, cross_y + (icon - bar) * 0.5, icon, bar, color)
-
-	hud_text_shadow(
-		x + icon + gap,
-		health_y,
-		fmt.tprintf("{}", max(player.health, 0)),
-		HUD_TEXT_BIG * scale,
-		color,
-	)
+	ui_heading(x, label_y, "HP", label_size, UI_TEXT_FAINT)
+	hud_text_shadow(x, num_y, fmt.tprintf("{}", health), num_size, color)
+	hud_rect(x, bar_y, bar_w, bar_h, ui_fade(UI_STROKE, 0.8))
+	hud_rect(x, bar_y, bar_w * clamp(f32(health) / 100, 0, 1), bar_h, ui_fade(color, bar_alpha))
 
 	if player.armor <= 0 do return
 
-	armor_icon := 14 * scale
-	armor_center := armor_y + (HUD_TEXT_MEDIUM * scale - armor_icon) * 0.5
-	hud_rect(
-		x + (icon - armor_icon) * 0.5,
-		armor_center,
-		armor_icon,
-		armor_icon,
-		HUD_DIM,
-		radius = armor_icon * 0.35,
-	)
+	ax := x + 96 * scale
+	ui_heading(ax, label_y, "ARMOR", label_size, UI_TEXT_FAINT)
 	hud_text_shadow(
-		x + icon + gap,
-		armor_y,
+		ax,
+		num_y + num_size - UI_BODY * scale,
 		fmt.tprintf("{}", player.armor),
-		HUD_TEXT_MEDIUM * scale,
-		HUD_DIM,
+		UI_BODY * scale,
+		UI_TEXT_DIM,
 	)
 }
 
@@ -312,8 +375,17 @@ draw_ammo :: proc(right, bottom: f32) {
 	scale := hud_scale()
 	weapon := current_weapon()
 
-	name_y := bottom - HUD_TEXT_BIG * scale - HUD_TEXT_SMALL * scale - 8 * scale
-	hud_text_shadow(right, name_y, weapon.name, HUD_TEXT_SMALL * scale, HUD_DIM, .Right)
+	name_size := hud_font_size(UI_LABEL * scale)
+	name_y := bottom - HUD_TEXT_BIG * scale - name_size - 8 * scale
+	hud_text_shadow(
+		right,
+		name_y,
+		strings.to_upper(weapon.name, context.temp_allocator),
+		name_size,
+		HUD_DIM,
+		.Right,
+		tracking = name_size * 0.12,
+	)
 
 	value_y := bottom - HUD_TEXT_BIG * scale
 
@@ -327,18 +399,23 @@ draw_ammo :: proc(right, bottom: f32) {
 	// The reserve is dimmer and smaller than the magazine: what matters in a
 	// firefight is how many rounds are left before the reload, not after it.
 	reserve := fmt.tprintf("/ {}", ammo.reserve)
-	reserve_width := hud_text_width(reserve, HUD_TEXT_MEDIUM * scale)
+	reserve_width := hud_text_width(reserve, UI_BODY * scale)
 	reserve_color := ammo.reserve <= 0 ? HUD_BAD : HUD_FAINT
 
 	// Sits on the baseline of the magazine number rather than its top.
 	hud_text_shadow(
 		right,
-		value_y + (HUD_TEXT_BIG - HUD_TEXT_MEDIUM) * scale,
+		value_y + (HUD_TEXT_BIG - UI_BODY) * scale,
 		reserve,
-		HUD_TEXT_MEDIUM * scale,
+		UI_BODY * scale,
 		reserve_color,
 		.Right,
 	)
+
+	// a filled magazine pops once, the moment the reload lands
+	if ammo.mag > hud.prev_mag do hud.mag_pop = 0.15
+	hud.prev_mag = ammo.mag
+	hud.mag_pop = max(hud.mag_pop - ui.dt, 0)
 
 	mag_color := HUD_WHITE
 	if ammo.mag <= 0 {
@@ -351,7 +428,7 @@ draw_ammo :: proc(right, bottom: f32) {
 		right - reserve_width - 12 * scale,
 		value_y,
 		fmt.tprintf("{}", ammo.mag),
-		HUD_TEXT_BIG * scale,
+		HUD_TEXT_BIG * scale * (1 + 0.08 * hud.mag_pop / 0.15),
 		mag_color,
 		.Right,
 	)
@@ -374,7 +451,13 @@ draw_slots :: proc(center, bottom: f32) {
 	for slot in 0 ..< game.WEAPON_SLOTS {
 		index := game.loadout_weapon_in_slot(player.loadout, slot)
 		labels[slot] =
-			index >= 0 ? fmt.tprintf("{} {}", slot + 1, game.WEAPONS[index].name) : fmt.tprintf("{}", slot + 1)
+			index >= 0 \
+			? fmt.tprintf(
+					"{} {}",
+					slot + 1,
+					strings.to_upper(game.WEAPONS[index].name, context.temp_allocator),
+				) \
+			: fmt.tprintf("{}", slot + 1)
 		widths[slot] = hud_text_width(labels[slot], size) + 2 * pad
 		total += widths[slot]
 	}
@@ -383,23 +466,36 @@ draw_slots :: proc(center, bottom: f32) {
 	x := center - total * 0.5
 	y := bottom - height
 
+	target_x, target_w: f32
 	for slot in 0 ..< game.WEAPON_SLOTS {
 		index := game.loadout_weapon_in_slot(player.loadout, slot)
 		active := index == weapon_state.index
 
-		background := active ? [4]f32{0.85, 0.88, 0.92, 0.90} : HUD_PANEL
+		// flat row, no pill: the sliding underline below carries the state
 		text_color := HUD_FAINT
 		if active {
-			text_color = {0.06, 0.07, 0.08, 1}
+			text_color = HUD_WHITE
 		} else if index >= 0 {
 			text_color = HUD_DIM
 		}
+		if index < 0 do text_color = ui_fade(HUD_FAINT, 0.5)
 
-		hud_rect(x, y, widths[slot], height, background, radius = 3 * scale)
-		hud_text(x + widths[slot] * 0.5, y + pad, labels[slot], size, text_color, .Center)
+		hud_text_shadow(x + widths[slot] * 0.5, y + pad, labels[slot], size, text_color, .Center)
 
+		if active {
+			target_x = x
+			target_w = widths[slot]
+		}
 		x += widths[slot] + gap
 	}
+
+	// the underline slides between slots rather than jumping
+	if hud.slot_uw <= 0 {
+		hud.slot_ux, hud.slot_uw = target_x, target_w
+	}
+	hud.slot_ux = ui_approach(hud.slot_ux, target_x, ui.dt, 22)
+	hud.slot_uw = ui_approach(hud.slot_uw, target_w, ui.dt, 22)
+	hud_rect(hud.slot_ux + 4 * scale, bottom - 2 * scale, hud.slot_uw - 8 * scale, 2 * scale, HUD_WHITE)
 }
 
 // Bottom centre, above the slots: how fast the player is actually travelling.
@@ -448,26 +544,21 @@ draw_speed :: proc(center_x, bottom: f32) {
 // when it is not shooting.
 @(private = "file")
 draw_weapon_prompt :: proc(center_x, center_y: f32) {
-	scale := hud_scale()
+	_ = center_x
+	_ = center_y
 	weapon := current_weapon()
-	y := center_y + 46 * scale
 
 	progress := reload_progress()
 	if progress > 0 {
-		width := 120 * scale
-		height := 6 * scale
-
-		hud_text_shadow(center_x, y, "RELOADING", HUD_TEXT_SMALL * scale, HUD_WHITE, .Center)
-
-		bar_y := y + HUD_TEXT_SMALL * scale + 6 * scale
-		hud_rect(center_x - width * 0.5, bar_y, width, height, HUD_PANEL, radius = height * 0.5)
-		hud_rect(
-			center_x - width * 0.5,
-			bar_y,
-			width * progress,
-			height,
-			HUD_WHITE,
-			radius = height * 0.5,
+		banner_submit(
+			.Action,
+			{
+				head = "RELOADING",
+				color = HUD_WHITE,
+				priority = 50,
+				progress = progress,
+				progress_color = HUD_WHITE,
+			},
 		)
 		return
 	}
@@ -478,28 +569,38 @@ draw_weapon_prompt :: proc(center_x, center_y: f32) {
 	if ammo.mag > 0 do return
 
 	prompt := ammo.reserve > 0 ? "PRESS R TO RELOAD" : "OUT OF AMMO"
-	hud_text_shadow(center_x, y, prompt, HUD_TEXT_SMALL * scale, HUD_BAD, .Center)
+	banner_submit(.Action, {head = prompt, color = HUD_BAD, priority = 40})
 }
 
 @(private = "file")
 draw_death_overlay :: proc(width, height: f32) {
 	scale := hud_scale()
 
-	hud_rect(0, 0, width, height, {0.02, 0.02, 0.03, 0.55})
+	// fades in over a quarter second instead of slamming shut
+	hud.death_t = min(hud.death_t + ui.dt, 0.25)
+	t := ease_out_cubic(hud.death_t / 0.25)
+
+	hud_rect(0, 0, width, height, ui_fade(UI_SCRIM_MED, t))
 
 	center_x := width * 0.5
-	y := height * 0.5 - HUD_TEXT_BIG * scale
+	y := height * 0.5 - UI_H1 * scale + (1 - t) * -10 * scale
 
-	hud_text_shadow(center_x, y, "ELIMINATED", HUD_TEXT_BIG * scale, HUD_BAD, .Center)
+	size := hud_font_size(UI_H1 * scale)
+	hud_text_shadow(center_x, y, "ELIMINATED", size, ui_fade(HUD_BAD, t), .Center, tracking = size * 0.14)
 
-	// Ceiling, so the last visible number is 1 rather than 0.
+	// Ceiling, so the last visible number is 1 rather than 0; each new second
+	// lands with a small pop.
 	remaining := int(math.ceil(max(player.respawn_in, 0)))
+	if remaining != hud.prev_respawn do hud.respawn_pop = 0.15
+	hud.prev_respawn = remaining
+	hud.respawn_pop = max(hud.respawn_pop - ui.dt, 0)
+
 	hud_text_shadow(
 		center_x,
-		y + HUD_TEXT_BIG * scale + 12 * scale,
+		y + UI_H1 * scale + 16 * scale,
 		fmt.tprintf("RESPAWNING IN {}", remaining),
-		HUD_TEXT_MEDIUM * scale,
-		HUD_DIM,
+		HUD_TEXT_MEDIUM * scale * (1 + 0.08 * hud.respawn_pop / 0.15),
+		ui_fade(HUD_DIM, t),
 		.Center,
 	)
 }

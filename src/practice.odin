@@ -29,7 +29,7 @@ local_sim_active :: proc() -> bool {
 start_practice :: proc() {
 	scene.practice_pending = true
 	scene.chosen_team = .CT // neutral default; the range ignores teams
-	enter_scene(.Connecting)
+	scene_transition_to(.Connecting)
 }
 
 // The .Practice side of enter_scene, once the server has accepted. Mirrors
@@ -39,6 +39,7 @@ practice_enter :: proc() {
 	init_weapons()
 	buy_reset(player.loadout)
 	clear_decals()
+	killfeed_reset()
 
 	for i in 1 ..< game.MAX_PAWNS {
 		gs.pawns[i].active = false

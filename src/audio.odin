@@ -4,7 +4,6 @@ import "core:fmt"
 import "core:log"
 import "core:math/linalg"
 import "core:math/rand"
-import "core:strconv"
 import "core:strings"
 import "game"
 import "physics"
@@ -282,23 +281,6 @@ audio_apply_volumes :: proc() {
 // The audio half of the INI parser. Separate from apply_setting_key on
 // purpose: that one stamps preset = .Custom on every key it knows, and a
 // volume change must not turn the render preset custom.
-apply_audio_setting_key :: proc(key, value: string) -> bool {
-	percent, _ := strconv.parse_int(value)
-	volume := clamp(f32(percent) / 100, 0, 1)
-	switch key {
-	case "volume_master":
-		audio_settings.master = volume
-	case "volume_music":
-		audio_settings.music = volume
-	case "volume_effects":
-		audio_settings.effects = volume
-	case "volume_ambient":
-		audio_settings.ambient = volume
-	case:
-		return false
-	}
-	return true
-}
 
 // ------------------------------------------------------------------ loops
 

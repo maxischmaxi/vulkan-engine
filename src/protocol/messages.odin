@@ -206,6 +206,51 @@ read_match_phase :: proc(r: ^Reader) -> (m: Match_Phase_Msg, ok: bool) {
 	return m, !r.error
 }
 
+// The roster: every active pawn's name and score, broadcast edge-triggered
+// (join, kill, drop, bot claim). Bots carry an empty name; the client labels
+// them itself. ~20 bytes an entry, well under the MTU at 16 pawns.
+Roster_Entry :: struct {
+	pawn_id:  u8,
+	kills:    u8,
+	deaths:   u8,
+	name_len: u8,
+	name:     [MAX_NAME]u8,
+}
+
+Roster :: struct {
+	count:   u8,
+	entries: [game.MAX_PAWNS]Roster_Entry,
+}
+
+write_roster :: proc(w: ^Writer, m: Roster) {
+	count := min(m.count, u8(game.MAX_PAWNS))
+	write_u8(w, count)
+	for i in 0 ..< int(count) {
+		e := m.entries[i]
+		write_u8(w, e.pawn_id)
+		write_u8(w, e.kills)
+		write_u8(w, e.deaths)
+		nlen := min(e.name_len, MAX_NAME)
+		write_u8(w, nlen)
+		name := e.name
+		write_bytes(w, name[:nlen])
+	}
+}
+
+read_roster :: proc(r: ^Reader) -> (m: Roster, ok: bool) {
+	m.count = min(read_u8(r), u8(game.MAX_PAWNS))
+	for i in 0 ..< int(m.count) {
+		e: Roster_Entry
+		e.pawn_id = read_u8(r)
+		e.kills = read_u8(r)
+		e.deaths = read_u8(r)
+		e.name_len = min(read_u8(r), MAX_NAME)
+		read_bytes(r, e.name[:e.name_len])
+		m.entries[i] = e
+	}
+	return m, !r.error
+}
+
 Kill :: struct {
 	killer: u8, // pawn id, 0xFF = the world
 	victim: u8,

@@ -35,6 +35,7 @@ Audio_Event_Kind :: enum {
 	Damage_Taken,
 	Kill,
 	Ui_Click,
+	Ui_Hover,
 	Buy,
 	Bomb_Planted,
 	Round_Start,
@@ -139,6 +140,15 @@ AUDIO_BANK := [Audio_Event_Kind]Audio_Spec {
 	},
 	.Kill = {files = {"ui/kill_01.ogg"}, bus = .Effects, volume = 0.5, cooldown = 0.1},
 	.Ui_Click = {files = {"ui/click_01.ogg"}, bus = .Effects, volume = 0.4, cooldown = 0.05},
+	// The click file quiet and jittered stands in for a real hover tick until
+	// the sound pass curates sounds/ui/hover_01.ogg.
+	.Ui_Hover = {
+		files = {"ui/click_01.ogg"},
+		bus = .Effects,
+		volume = 0.12,
+		pitch_jitter = 0.06,
+		cooldown = 0.06,
+	},
 	.Buy = {files = {"ui/buy_01.ogg"}, bus = .Effects, volume = 0.5, cooldown = 0.1},
 	.Bomb_Planted = {files = {"ui/bomb_planted_01.ogg"}, bus = .Effects, volume = 0.6},
 	.Round_Start = {

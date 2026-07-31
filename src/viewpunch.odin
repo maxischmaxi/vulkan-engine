@@ -60,7 +60,7 @@ viewpunch_note_shot :: proc() {
 // The state stays lens-independent; only this read scales. Nothing here reaches
 // the wire or the prediction: camera.yaw and camera.pitch are untouched.
 punched_view_angles :: proc() -> (yaw, pitch: f32) {
-	lens := camera.fov_horizontal / DEFAULT_FOV
+	lens := camera.fov_horizontal / game_settings.fov
 	return camera.yaw + viewpunch.current.x * lens,
 		clamp(camera.pitch + viewpunch.current.y * lens, -MAX_PITCH + 0.5, MAX_PITCH - 0.5)
 }

@@ -202,7 +202,7 @@ draw_minimap :: proc(x, y, size: f32) {
 	draw_minimap_player(view)
 	hud_clip_end()
 
-	hud_frame(x, y, size, size, scale, {0.55, 0.60, 0.66, 0.5})
+	hud_frame(x, y, size, size, scale, ui_fade(UI_STROKE, 0.9))
 
 	// North marker, so a fixed orientation is stated rather than assumed.
 	hud_text_shadow(view.center.x, y + 3 * scale, "N", 8 * scale, HUD_DIM, .Center)

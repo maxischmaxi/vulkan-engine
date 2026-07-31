@@ -11,13 +11,14 @@ layout(push_constant) uniform PushConstants {
 layout(location = 0) in vec4 i_rect;   // x, y, width, height in pixels
 layout(location = 1) in vec4 i_uv;     // u0, v0, u1, v1 in the glyph atlas
 layout(location = 2) in vec4 i_color;
-layout(location = 3) in vec4 i_params; // rotation (radians), mode, corner radius (px), unused
+layout(location = 3) in vec4 i_params; // rotation (radians), mode, corner radius (px), edge bias
 
 layout(location = 0) out vec4 v_color;
 layout(location = 1) out vec2 v_uv;
 layout(location = 2) out vec2 v_local; // pixels from the rectangle's centre
 layout(location = 3) out vec3 v_shape; // half width, half height, corner radius
 layout(location = 4) out float v_mode;
+layout(location = 5) out float v_edge_bias; // SDF threshold shift; text shadows fatten with it
 
 const vec2 QUAD[6] = vec2[6](
     vec2(0, 0), vec2(1, 0), vec2(1, 1),
@@ -48,4 +49,5 @@ void main() {
     v_local = local;
     v_shape = vec3(half_size, i_params.z);
     v_mode = i_params.y;
+    v_edge_bias = i_params.w;
 }

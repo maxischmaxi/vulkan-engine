@@ -42,8 +42,6 @@ ambient_sky := [3]f32{0.40, 0.50, 0.66}
 ambient_ground := [3]f32{0.34, 0.28, 0.20}
 ambient_intensity: f32 = 1.3
 
-exposure: f32 = 1.0
-
 point_lights: [dynamic]Point_Light
 
 // Warm fill inside the places the sun cannot reach. Radius is what actually

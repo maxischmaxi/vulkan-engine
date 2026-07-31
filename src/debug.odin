@@ -69,6 +69,10 @@ DEBUG_ACTIONS := []Debug_Action {
 			net_send_debug_flags()
 			log.infof("Infinite ammo {}", debug.infinite_ammo ? "on" : "off")
 		}, proc() -> bool {return debug.infinite_ammo}},
+	{glfw.KEY_N, "N", "CLEAR DECALS", proc() {
+			clear_decals()
+			log.info("Decals cleared")
+		}, nil},
 }
 
 // The render debug views. Always compiled, because they are as useful for
@@ -84,7 +88,9 @@ DEBUG_VIEWS := []Debug_View {
 	{glfw.KEY_F3, .Albedo},
 	{glfw.KEY_F4, .Normals},
 	{glfw.KEY_F5, .Lighting},
-	{glfw.KEY_F12, .Overdraw},
+	// F6, not F12: F12 is the HUD toggle, and a debug view stealing it made
+	// hiding the HUD flip the world into overdraw at the same time.
+	{glfw.KEY_F6, .Overdraw},
 }
 
 init_debug :: proc() {
@@ -107,11 +113,6 @@ update_debug :: proc() {
 
 	for view in DEBUG_VIEWS {
 		if key_pressed(view.key) do set_debug_mode(view.mode)
-	}
-
-	if key_pressed(glfw.KEY_F6) {
-		clear_decals()
-		log.info("Decals cleared")
 	}
 
 	// Folded out entirely when the tools are not compiled in, so the key stays

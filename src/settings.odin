@@ -1,10 +1,5 @@
 package main
 
-import "core:fmt"
-import "core:log"
-import "core:os"
-import "core:strconv"
-import "core:strings"
 import vk "vendor:vulkan"
 
 // Everything the renderer reads to decide how much work to do.
@@ -66,6 +61,7 @@ Settings_Scope :: enum u8 {
 	Live, // next frame picks it up
 	Sampler, // idle, rebuild the sampler, rewrite one descriptor
 	Pipelines, // idle, rebuild render targets, shadow map and every pipeline
+	Swapchain, // all of the above plus the swapchain -- the present mode lives there
 }
 
 PRESETS := [Preset]Render_Settings {
@@ -175,8 +171,11 @@ clamp_to_device :: proc(s: Render_Settings) -> Render_Settings {
 // Which parts of the renderer a change reaches. Ordered, so a diff can take the
 // most expensive answer.
 settings_scope :: proc(old, new: Render_Settings) -> Settings_Scope {
+	// The present mode is baked into the swapchain at creation, so a vsync
+	// change that only rebuilt pipelines would not take effect until some
+	// unrelated resize recreated it.
+	if old.vsync != new.vsync do return .Swapchain
 	if old.msaa != new.msaa ||
-	   old.vsync != new.vsync ||
 	   old.render_scale != new.render_scale ||
 	   old.shadow_cascades != new.shadow_cascades ||
 	   old.shadow_resolution != new.shadow_resolution ||
@@ -199,7 +198,13 @@ apply_settings :: proc(next: Render_Settings) {
 
 	settings = wanted
 	gpu_timer.enabled = settings.gpu_timing && gpu_timer.supported
-	save_settings()
+
+	// A rebuild that hangs the driver must not be reapplied on every launch:
+	// the pending marker goes to disk first and the next successful present
+	// clears it (settings_guard_clear in the present path).
+	risky := scope == .Pipelines || scope == .Swapchain
+	save_settings(pending = risky)
+	if risky do settings_guard_armed = true
 
 	switch scope {
 	case .None, .Live:
@@ -208,6 +213,8 @@ apply_settings :: proc(next: Render_Settings) {
 		rebuild_samplers()
 	case .Pipelines:
 		rebuild_renderer(false)
+	case .Swapchain:
+		rebuild_renderer(true)
 	}
 }
 
@@ -274,204 +281,4 @@ destroy_all_pipelines :: proc() {
 	destroy_pipeline(hud_renderer.quad_pipeline)
 	destroy_pipeline(hud_renderer.pipeline)
 	destroy_pipeline(damage_renderer.pipeline)
-}
-
-// ------------------------------------------------------------------ storage
-
-@(private = "file")
-CONFIG_DIR :: "dust2"
-
-@(private = "file")
-CONFIG_NAME :: "settings.ini"
-
-@(private = "file")
-config_path :: proc(suffix := "") -> string {
-	dir := os.get_env("XDG_CONFIG_HOME", context.temp_allocator)
-	if dir == "" {
-		home := os.get_env("HOME", context.temp_allocator)
-		if home == "" do return ""
-		dir = fmt.tprintf("%s/.config", home)
-	}
-	return fmt.tprintf("%s/%s/%s%s", dir, CONFIG_DIR, CONFIG_NAME, suffix)
-}
-
-// INI rather than JSON or TOML: Odin core ships no TOML parser, and more to the
-// point a player whose config has made the game unlaunchable can fix key=value
-// in any text editor. Unknown keys are warned about and kept out of the way, so
-// downgrading a build does not wipe the file.
-load_settings :: proc() {
-	settings = clamp_to_device(PRESETS[detect_preset()])
-	settings.gpu_timing = cli.gpu_timing
-
-	path := config_path()
-	if path == "" do return
-
-	data, err := os.read_entire_file(path, context.temp_allocator)
-	if err != nil {
-		log.infof("No settings file; detected {} for this GPU", settings.preset)
-		save_settings()
-		force_bench_present()
-		return
-	}
-
-	text := string(data)
-
-	// A pipeline-scope change that hangs the driver would otherwise be
-	// reapplied on every launch from here on. The marker is written before such
-	// a change is applied and cleared once a frame has actually been presented.
-	if strings.contains(text, "pending=1") {
-		log.warn("Last run did not survive a settings change; falling back to Low")
-		settings = clamp_to_device(PRESETS[.Low])
-		save_settings()
-		return
-	}
-
-	loaded := settings
-	for line in strings.split_lines_iterator(&text) {
-		entry := strings.trim_space(line)
-		if len(entry) == 0 || entry[0] == '#' do continue
-
-		eq := strings.index_byte(entry, '=')
-		if eq < 0 do continue
-
-		key := strings.trim_space(entry[:eq])
-		value := strings.trim_space(entry[eq + 1:])
-		// Audio keys first: apply_setting_key stamps preset = .Custom on
-		// every key it knows, and a volume is not a render choice.
-		if !apply_audio_setting_key(key, value) && !apply_setting_key(&loaded, key, value) {
-			log.warnf("Ignoring unknown setting {}", key)
-		}
-	}
-
-	// Anything hand-edited is no longer any preset in particular.
-	settings = clamp_to_device(loaded)
-	force_bench_present()
-	log.infof(
-		"Settings: {} -- scale {:.2f}, msaa {}x, shadows {}x{} pcf {}, aniso {}x, vsync {}",
-		settings.preset,
-		settings.render_scale,
-		settings.msaa,
-		settings.shadow_cascades,
-		settings.shadow_resolution,
-		settings.shadow_pcf,
-		settings.anisotropy,
-		settings.vsync,
-	)
-}
-
-// Measuring against a vsync is measuring the monitor. Not written back to the
-// config -- a benchmark run must not change what the next normal run does.
-@(private = "file")
-force_bench_present :: proc() {
-	if cli.bench == 0 do return
-
-	settings.vsync = false
-	settings.fps_cap = 0
-}
-
-@(private = "file")
-apply_setting_key :: proc(s: ^Render_Settings, key, value: string) -> bool {
-	number, _ := strconv.parse_int(value)
-	flag := value == "1" || value == "true"
-
-	switch key {
-	case "preset":
-		for p in Preset {
-			if !strings.equal_fold(value, fmt.tprint(p)) do continue
-			if p == .Custom do break
-			s^ = PRESETS[p]
-			return true
-		}
-		return true
-	case "vsync":
-		s.vsync = flag
-	case "fps_cap":
-		s.fps_cap = u32(max(number, 0))
-	case "msaa":
-		s.msaa = u8(number)
-	case "render_scale":
-		scale, _ := strconv.parse_f32(value)
-		s.render_scale = scale
-	case "shadow_cascades":
-		s.shadow_cascades = u8(number)
-	case "shadow_resolution":
-		s.shadow_resolution = u16(number)
-	case "shadow_pcf":
-		s.shadow_pcf = u8(number)
-	case "anisotropy":
-		s.anisotropy = u8(number)
-	case "mip_lod_bias":
-		bias, _ := strconv.parse_f32(value)
-		s.mip_lod_bias = bias
-	case "gpu_timing":
-		s.gpu_timing = flag
-	case "pending":
-	// handled before parsing
-	case:
-		return false
-	}
-
-	s.preset = .Custom
-	return true
-}
-
-save_settings :: proc(pending := false) {
-	path := config_path()
-	if path == "" do return
-
-	dir := path[:strings.last_index_byte(path, '/')]
-	if !os.exists(dir) {
-		if err := os.make_directory(dir); err != nil {
-			log.warnf("Cannot create {}: {}", dir, err)
-			return
-		}
-	}
-
-	text := fmt.tprintf(
-		`# dust2 render settings. Delete this file to go back to the detected defaults.
-preset=%v
-vsync=%v
-fps_cap=%d
-msaa=%d
-render_scale=%.2f
-shadow_cascades=%d
-shadow_resolution=%d
-shadow_pcf=%d
-anisotropy=%d
-mip_lod_bias=%.2f
-gpu_timing=%v
-volume_master=%d
-volume_music=%d
-volume_effects=%d
-volume_ambient=%d
-pending=%d
-`,
-		settings.preset,
-		settings.vsync,
-		settings.fps_cap,
-		settings.msaa,
-		settings.render_scale,
-		settings.shadow_cascades,
-		settings.shadow_resolution,
-		settings.shadow_pcf,
-		settings.anisotropy,
-		settings.mip_lod_bias,
-		settings.gpu_timing,
-		int(audio_settings.master * 100 + 0.5),
-		int(audio_settings.music * 100 + 0.5),
-		int(audio_settings.effects * 100 + 0.5),
-		int(audio_settings.ambient * 100 + 0.5),
-		pending ? 1 : 0,
-	)
-
-	// Written aside and renamed: a crash halfway through a write would
-	// otherwise leave a truncated file, and the next launch would parse it.
-	temp := config_path(".tmp")
-	if err := os.write_entire_file(temp, transmute([]byte)text); err != nil {
-		log.warnf("Cannot write {}: {}", temp, err)
-		return
-	}
-	if err := os.rename(temp, path); err != nil {
-		log.warnf("Cannot replace {}: {}", path, err)
-	}
 }

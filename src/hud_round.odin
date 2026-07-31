@@ -67,104 +67,60 @@ round_reason_text :: proc(reason: game.Round_End_Reason) -> string {
 	return ""
 }
 
+// A submitter now: everything lands in the banner bands, which own layout,
+// priority and motion. The old y constants live in hud_banner.odin.
 draw_round_hud :: proc(width, height: f32) {
-	scale := hud_scale()
-	cx := width * 0.5
+	_ = width
+	_ = height
 
 	#partial switch net_client.phase {
 	case .Warmup:
 		seconds := max(int(math.ceil(net_client.time_left)), 0)
-		hud_text_shadow(cx, height * 0.28, "WARMUP", hud_font_size(HUD_TEXT_BIG * scale), HUD_WARN, .Center)
-		hud_text_shadow(
-			cx,
-			height * 0.28 + 52 * scale,
-			fmt.tprintf("MATCH STARTS IN {}", seconds),
-			HUD_TEXT_MEDIUM * scale,
-			HUD_WHITE,
-			.Center,
-		)
-		hud_text(
-			cx,
-			height * 0.28 + 84 * scale,
-			"INFINITE MONEY - PRESS B TO BUY",
-			HUD_TEXT_SMALL * scale,
-			HUD_DIM,
-			.Center,
+		banner_submit(
+			.Headline,
+			{
+				head = "WARMUP",
+				sub = fmt.tprintf("MATCH STARTS IN {}", seconds),
+				note = "INFINITE MONEY - PRESS B TO BUY",
+				color = HUD_WARN,
+				priority = 60,
+			},
 		)
 
 	case .Freeze:
 		seconds := max(int(math.ceil(net_client.time_left)), 0)
-		hud_text_shadow(
-			cx,
-			height * 0.28,
-			fmt.tprintf("ROUND {}", net_client.round),
-			hud_font_size(HUD_TEXT_BIG * scale),
-			HUD_WHITE,
-			.Center,
-		)
-		hud_text_shadow(
-			cx,
-			height * 0.28 + 52 * scale,
-			fmt.tprintf("BUY TIME {}", seconds),
-			HUD_TEXT_MEDIUM * scale,
-			HUD_WARN,
-			.Center,
-		)
-		hud_text(
-			cx,
-			height * 0.28 + 84 * scale,
-			"PRESS B TO BUY",
-			HUD_TEXT_SMALL * scale,
-			HUD_DIM,
-			.Center,
+		banner_submit(
+			.Headline,
+			{
+				head = fmt.tprintf("ROUND {}", net_client.round),
+				sub = fmt.tprintf("BUY TIME {}", seconds),
+				note = "PRESS B TO BUY",
+				color = HUD_WHITE,
+				priority = 70,
+			},
 		)
 
 	case .Halftime:
-		hud_text_shadow(
-			cx,
-			height * 0.28,
-			"SWITCHING SIDES",
-			hud_font_size(HUD_TEXT_BIG * scale),
-			HUD_WHITE,
-			.Center,
-		)
+		banner_submit(.Headline, {head = "SWITCHING SIDES", color = HUD_WHITE, priority = 80})
 	}
 
-	// the transient round result, over whatever phase text is up
+	// the transient round result outranks whatever phase text is up
 	if glfw.GetTime() < hud_round.banner_until {
-		hud_text_shadow(
-			cx,
-			height * 0.36,
-			hud_round.banner,
-			hud_font_size(HUD_TEXT_BIG * scale),
-			hud_round.banner_color,
-			.Center,
+		banner_submit(
+			.Headline,
+			{
+				head = hud_round.banner,
+				sub = hud_round.banner_sub,
+				note = hud_round.halftime_next ? "SWITCHING SIDES NEXT" : "",
+				color = hud_round.banner_color,
+				priority = 100,
+			},
 		)
-		if hud_round.banner_sub != "" {
-			hud_text_shadow(
-				cx,
-				height * 0.36 + 52 * scale,
-				hud_round.banner_sub,
-				HUD_TEXT_MEDIUM * scale,
-				HUD_WHITE,
-				.Center,
-			)
-		}
-		if hud_round.halftime_next {
-			hud_text(
-				cx,
-				height * 0.36 + 84 * scale,
-				"SWITCHING SIDES NEXT",
-				HUD_TEXT_SMALL * scale,
-				HUD_DIM,
-				.Center,
-			)
-		}
 	}
 
 	// one quiet nudge once either side stands a round from winning
 	if max(net_client.t_score, net_client.ct_score) == game.COMP_WIN_ROUNDS - 1 &&
 	   (net_client.phase == .Freeze || net_client.phase == .Live) {
-		hud_text_shadow(cx, height * 0.20, "MATCH POINT", HUD_TEXT_SMALL * scale, HUD_WARN, .Center)
+		banner_submit(.Top_Strip, {head = "MATCH POINT", color = HUD_WARN, priority = 50})
 	}
 }

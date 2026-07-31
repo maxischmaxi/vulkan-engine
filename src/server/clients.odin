@@ -572,6 +572,7 @@ drop_client :: proc(slot: ^Client_Slot) {
 	slot^ = {}
 	if was_in_game {
 		match_human_left()
+		broadcast_roster()
 	}
 }
 

@@ -96,7 +96,20 @@ main :: proc() {
 	defer glfw.Terminate()
 
 	glfw.WindowHint(glfw.CLIENT_API, glfw.NO_API)
-	g.window = glfw.CreateWindow(1600, 900, "dust2", nil, nil)
+
+	// Only the early keys are read here -- the device the full load clamps
+	// against does not exist yet.
+	load_window_settings()
+	monitor: glfw.MonitorHandle
+	win_w, win_h := window_settings.width, window_settings.height
+	if window_settings.mode == .Fullscreen {
+		monitor = glfw.GetPrimaryMonitor()
+		if monitor != nil {
+			vm := glfw.GetVideoMode(monitor)
+			win_w, win_h = vm.width, vm.height
+		}
+	}
+	g.window = glfw.CreateWindow(win_w, win_h, "dust2", monitor, nil)
 	if g.window == nil do return
 	defer glfw.DestroyWindow(g.window)
 
@@ -277,7 +290,7 @@ update :: proc() {
 	poll_cursor()
 	handle_hotkeys()
 	update_debug()
-	update_settings_ui()
+	update_settings_screen()
 	update_buy_menu()
 
 	// Before the tick loop, so a snapshot that just arrived is reconciled
@@ -291,8 +304,11 @@ update :: proc() {
 	if scene_playing() {
 		// Aiming is never tick-quantised -- a frame of latency between the mouse
 		// moving and the view following is the one thing a shooter cannot have.
-		if input.cursor_grabbed && !bench_active() && !settings_ui.open {
+		if input.cursor_grabbed && !bench_active() && !settings_screen.open {
 			dx, dy := consume_mouse_delta()
+			// Inverted at the source so the camera and the viewmodel sway
+			// agree on which way the view went.
+			if game_settings.invert_y do dy = -dy
 			camera_apply_mouse(dx, dy)
 			viewmodel_note_look(dx, dy)
 			gather_player_intent()
@@ -356,7 +372,7 @@ handle_hotkeys :: proc() {
 	// its clicks, and the pause overlay has buttons of its own.
 	if scene_playing() &&
 	   !scene.paused &&
-	   !settings_ui.open &&
+	   !settings_screen.open &&
 	   !buy_menu.open &&
 	   !input.cursor_grabbed &&
 	   consume_click() {

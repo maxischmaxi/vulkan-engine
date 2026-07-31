@@ -388,5 +388,11 @@ draw_frame :: proc() {
 		log.panicf("Failed to present: {}", present_result)
 	}
 
+	// SUBOPTIMAL still presented; only OUT_OF_DATE dropped the frame. This is
+	// the "the risky settings change survived" signal for the crash guard.
+	if present_result == .SUCCESS || present_result == .SUBOPTIMAL_KHR {
+		settings_guard_clear()
+	}
+
 	g.current_frame = (g.current_frame + 1) % MAX_FRAMES_IN_FLIGHT
 }

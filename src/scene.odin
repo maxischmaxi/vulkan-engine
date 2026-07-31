@@ -77,6 +77,24 @@ init_scene :: proc() {
 		scene.end_at = glfw.GetTime() + 3600 // hold still for the camera
 		return
 	}
+	// The menu screens, same idea: park on the screen and hold still.
+	// Connecting sets the scene directly -- enter_scene would start a connect.
+	switch cli.hudpreview {
+	case "menu":
+		enter_scene(.Menu)
+		return
+	case "modeselect":
+		enter_scene(.Mode_Select)
+		return
+	case "teamselect":
+		enter_scene(.Team_Select)
+		return
+	case "connecting":
+		grab_cursor(false)
+		scene.current = .Connecting
+		scene.queue_started = glfw.GetTime() - 83
+		return
+	}
 	if cli.hudpreview != "" {
 		enter_scene(.Practice)
 		return
@@ -178,6 +196,7 @@ reset_match :: proc() {
 	init_weapons()
 	buy_reset(player.loadout)
 	clear_decals()
+	killfeed_reset()
 
 	// The startup init spawned local pawns for the benchmark; a networked
 	// match renders remotes instead, so the local ones go dark.
@@ -200,7 +219,7 @@ scene_playing :: proc() -> bool {
 // timeout.
 update_scene :: proc() {
 	if scene.current == .Match_End && glfw.GetTime() >= scene.end_at {
-		enter_scene(.Menu)
+		scene_transition_to(.Menu)
 	}
 }
 
@@ -208,7 +227,7 @@ update_scene :: proc() {
 // and is modal, so it wins while it is open.
 scene_handle_esc :: proc() {
 	if !key_pressed(glfw.KEY_ESCAPE) do return
-	if settings_ui.open do return
+	if settings_screen.open do return
 	if buy_menu.open do return // the buy menu consumes its own ESC
 
 	switch scene.current {
@@ -216,14 +235,14 @@ scene_handle_esc :: proc() {
 	// nothing: QUIT is a button, ESC quitting a game by accident is worse
 
 	case .Mode_Select, .Match_End:
-		enter_scene(.Menu)
+		scene_transition_to(.Menu)
 
 	case .Team_Select:
-		enter_scene(.Mode_Select) // back one step, not all the way out
+		scene_transition_to(.Mode_Select) // back one step, not all the way out
 
 	case .Connecting:
 		net_disconnect()
-		enter_scene(.Menu)
+		scene_transition_to(.Menu)
 
 	case .Playing, .Practice:
 		scene.paused = !scene.paused

@@ -12,18 +12,13 @@ Camera :: struct {
 	yaw, pitch:     f32, // degrees
 	fov_horizontal: f32,
 	near, far:      f32,
-	sensitivity:    f32, // multiplier on top of the counter-strike constant
 }
 
 camera: Camera
 
 // Counter-strike turns 0.022 degrees per mouse count; keeping that constant
-// means a sensitivity value here means the same thing it does in-game.
+// means game_settings.sensitivity means the same thing it does in-game.
 CS_DEGREES_PER_COUNT :: 0.022
-
-// The unscoped lens; scoped weapons narrow fov_horizontal from here and turn
-// slower with it, so a flick covers the same screen distance either way.
-DEFAULT_FOV :: f32(90)
 
 // Looking straight up or down would make the view matrix degenerate, since
 // forward would be parallel to the world up axis.
@@ -34,16 +29,21 @@ init_camera :: proc() {
 		position       = game.SPAWN_POSITION + {0, 0, game.EYE_HEIGHT},
 		yaw            = game.SPAWN_YAW,
 		pitch          = 0,
-		fov_horizontal = DEFAULT_FOV,
+		fov_horizontal = game_settings.fov, // loaded before init_camera runs
 		near           = 0.05,
 		far            = 250,
-		sensitivity    = 2.0,
 	}
 	log_camera_fov()
 }
 
 camera_apply_mouse :: proc(dx, dy: f32) {
-	scale := camera.sensitivity * CS_DEGREES_PER_COUNT * (camera.fov_horizontal / DEFAULT_FOV)
+	// The fov ratio only slows scoped turning; unscoped it is exactly 1 for
+	// any base fov the player chose.
+	scale :=
+		game_settings.sensitivity *
+		CS_DEGREES_PER_COUNT *
+		(camera.fov_horizontal / game_settings.fov)
+	if weapon_state.zoom_active do scale *= game_settings.zoom_sensitivity
 	camera.yaw -= dx * scale
 	camera.pitch -= dy * scale
 	camera.pitch = clamp(camera.pitch, -MAX_PITCH, MAX_PITCH)

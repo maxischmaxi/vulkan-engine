@@ -8,6 +8,8 @@
 layout(push_constant) uniform PushConstants {
     vec4 screen;  // width, height, base ring intensity, unused
     vec4 hits[4]; // screen-space dir x, y (y grows down), intensity, unused
+    vec4 edge;    // vignette ring colour -- the theme reaches in through here
+    vec4 core;    // lobe centre colour
 } pc;
 
 layout(location = 0) out vec4 out_color;
@@ -18,8 +20,6 @@ const float LOBE_BAND  = 0.16;  // extra thickness at a hit's heading
 const float CORNER_R   = 0.25;  // corner rounding of the band
 const float LOBE_SIGMA = 0.55;  // angular width of a lobe (radians)
 const float MAX_ALPHA  = 0.85;
-const vec3  EDGE_COLOR = vec3(0.55, 0.02, 0.02); // deep red, the quiet ring
-const vec3  CORE_COLOR = vec3(0.92, 0.13, 0.08); // hotter red inside a lobe
 
 void main() {
     vec2  res      = pc.screen.xy;
@@ -57,7 +57,7 @@ void main() {
 
     // Display-space sRGB like the rest of the HUD -- the swapchain encodes,
     // no tonemap. See hud_quad.frag.
-    vec3  color = mix(EDGE_COLOR, CORE_COLOR, clamp(lobe, 0.0, 1.0));
+    vec3  color = mix(pc.edge.rgb, pc.core.rgb, clamp(lobe, 0.0, 1.0));
     float alpha = fall * intensity * MAX_ALPHA;
     out_color = vec4(color, alpha);
 }

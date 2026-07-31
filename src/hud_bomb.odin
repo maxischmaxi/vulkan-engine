@@ -36,17 +36,13 @@ draw_bomb_hud :: proc(width, height: f32) {
 	}
 
 	if glfw.GetTime() < hud_bomb.planted_banner_until {
-		hud_text_shadow(
-			cx,
-			height * 0.32,
-			"THE BOMB HAS BEEN PLANTED",
-			HUD_TEXT_MEDIUM * scale,
-			HUD_BAD,
-			.Center,
+		banner_submit(
+			.Headline,
+			{head = "THE BOMB HAS BEEN PLANTED", color = HUD_BAD, priority = 90},
 		)
 	}
 
-	// the progress bar, reload-bar style under the crosshair
+	// the progress bar, through the shared Action band under the crosshair
 	label := ""
 	if net_client.bomb_state == .Carried &&
 	   net_client.bomb_carrier == net_client.pawn_id &&
@@ -59,10 +55,14 @@ draw_bomb_hud :: proc(width, height: f32) {
 	if label == "" do return
 
 	color := label == "PLANTING" ? HUD_WARN : HUD_GOOD
-	bar_w := 120 * scale
-	bar_h := 6 * scale
-	bar_y := height * 0.5 + 46 * scale
-	hud_text_shadow(cx, bar_y - HUD_TEXT_SMALL * scale - 6 * scale, label, HUD_TEXT_SMALL * scale, color, .Center)
-	hud_rect(cx - bar_w * 0.5, bar_y, bar_w, bar_h, HUD_PANEL, radius = 2 * scale)
-	hud_rect(cx - bar_w * 0.5, bar_y, bar_w * clamp(net_client.bomb_progress, 0, 1), bar_h, color, radius = 2 * scale)
+	banner_submit(
+		.Action,
+		{
+			head = label,
+			color = color,
+			priority = label == "DEFUSING" ? 100 : 90,
+			progress = clamp(net_client.bomb_progress, 0, 1),
+			progress_color = color,
+		},
+	)
 }

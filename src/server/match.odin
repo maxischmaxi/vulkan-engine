@@ -140,6 +140,8 @@ handle_join :: proc(slot: ^Client_Slot, wished: game.Team) {
 	spawn_human(slot)
 	if match.mode.fill_on_join do fill_bots()
 	if match.mode.on_join != nil do match.mode.on_join(slot)
+	// fill_bots may not have run; the newcomer still needs the full roster
+	broadcast_roster()
 
 	log.infof(
 		"Server: client {} joined {} ({} human(s) in game)",
@@ -218,6 +220,7 @@ fill_bots :: proc() {
 		team_pawn_count(.T),
 		team_pawn_count(.CT),
 	)
+	broadcast_roster()
 }
 
 // Prefers a dead bot so a displacement is invisible; any bot failing that.
@@ -355,6 +358,38 @@ on_pawn_killed :: proc(killer, victim: int) {
 	for &slot in clients {
 		if slot.state != .In_Game do continue
 		if !protocol.queue_reliable_msg(&slot.conn, .Kill, protocol.write_kill, kill) {
+			drop_client(&slot)
+		}
+	}
+	// the K/D just moved; keep every scoreboard authoritative
+	broadcast_roster()
+}
+
+// Names and scores for every active pawn, sent whenever either changes: a
+// join, a kill, a drop, a bot claim. Edge-triggered and small, so there is no
+// per-tick cost and a late joiner still gets the full picture.
+broadcast_roster :: proc() {
+	roster: protocol.Roster
+	for id in 0 ..< game.MAX_PAWNS {
+		if !sv.gs.pawns[id].active do continue
+		entry := protocol.Roster_Entry {
+			pawn_id = u8(id),
+			kills   = u8(clamp(sv.gs.pawns[id].kills, 0, 255)),
+			deaths  = u8(clamp(sv.gs.pawns[id].deaths, 0, 255)),
+		}
+		for &slot in clients {
+			if slot.state == .In_Game && slot.pawn_id == id {
+				entry.name = slot.name
+				entry.name_len = slot.name_len
+				break
+			}
+		}
+		roster.entries[roster.count] = entry
+		roster.count += 1
+	}
+	for &slot in clients {
+		if slot.state != .In_Game do continue
+		if !protocol.queue_reliable_msg(&slot.conn, .Roster, protocol.write_roster, roster) {
 			drop_client(&slot)
 		}
 	}

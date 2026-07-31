@@ -13,9 +13,11 @@ import vk "vendor:vulkan"
 Damage_Push :: struct {
 	screen: [4]f32, // width, height, base ring intensity, unused
 	hits:   [DAMAGE_SLOTS][4]f32, // screen dir x, y (y down), intensity, unused
+	edge:   [4]f32, // vignette ring colour, from the theme
+	core:   [4]f32, // lobe centre colour
 }
 
-#assert(size_of(Damage_Push) == 80) // comfortably under the 128-byte guarantee
+#assert(size_of(Damage_Push) == 112) // comfortably under the 128-byte guarantee
 
 // How bright the all-around ring is relative to the strongest lobe. Tunable.
 DAMAGE_BASE_RING :: f32(0.35)
@@ -76,6 +78,8 @@ build_damage_push :: proc() -> (push: Damage_Push, active: bool) {
 		base = max(base, s * s * (3 - 2 * s))
 	}
 	push.screen = {f32(g.swapchain_extent.width), f32(g.swapchain_extent.height), base, 0}
+	push.edge = UI_DAMAGE_EDGE
+	push.core = UI_DAMAGE_CORE
 	return push, base >= DAMAGE_MIN_INTENSITY || peak >= DAMAGE_MIN_INTENSITY
 }
 

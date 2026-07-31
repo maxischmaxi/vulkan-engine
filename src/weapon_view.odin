@@ -128,14 +128,15 @@ init_weapons :: proc() {
 weapon_toggle_zoom :: proc() {
 	if current_weapon().zoom_fov <= 0 do return
 	weapon_state.zoom_active = !weapon_state.zoom_active
-	camera.fov_horizontal = weapon_state.zoom_active ? current_weapon().zoom_fov : DEFAULT_FOV
+	camera.fov_horizontal =
+		weapon_state.zoom_active ? current_weapon().zoom_fov : game_settings.fov
 }
 
 // Anything that takes the weapon out of the hands drops the scope with it.
 reset_zoom :: proc() {
 	if !weapon_state.zoom_active do return
 	weapon_state.zoom_active = false
-	camera.fov_horizontal = DEFAULT_FOV
+	camera.fov_horizontal = game_settings.fov
 }
 
 select_weapon :: proc(index: int) {
@@ -473,6 +474,9 @@ fire :: proc(alpha: f32) {
 		// Online the server decides whether it killed; reconcile turns the
 		// marker red when the confirmation arrives.
 		weapon_state.hit_killed = local_sim_active() ? killed : false
+		if local_sim_active() && killed {
+			killfeed_note_local(u8(weapon_state.index))
+		}
 	}
 }
 
@@ -535,7 +539,7 @@ viewmodel: Viewmodel_Motion
 viewmodel_note_look :: proc(dx, dy: f32) {
 	// Scaled by the same constant the camera turns by, so the sway matches the
 	// turn at any sensitivity.
-	scale := camera.sensitivity * CS_DEGREES_PER_COUNT * SWAY_PER_DEGREE
+	scale := game_settings.sensitivity * CS_DEGREES_PER_COUNT * SWAY_PER_DEGREE
 	viewmodel.sway.x = clamp(viewmodel.sway.x - dx * scale, -SWAY_LIMIT, SWAY_LIMIT)
 	viewmodel.sway.y = clamp(viewmodel.sway.y - dy * scale, -SWAY_LIMIT, SWAY_LIMIT)
 }
@@ -628,7 +632,7 @@ tracer_origin :: proc() -> [3]f32 {
 	// included: it crops the width to a square, so the two axes do not shrink by
 	// the same amount.
 	w, h := visible_half_tangents(camera.fov_horizontal, weapon_state.zoom_active)
-	w0, h0 := visible_half_tangents(DEFAULT_FOV, false)
+	w0, h0 := visible_half_tangents(game_settings.fov, false)
 
 	// The basis is orthonormal, so taking the offset apart and putting it back
 	// together is exact.

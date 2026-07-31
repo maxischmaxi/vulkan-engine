@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:math"
 import "game"
 import "vendor:glfw"
 
@@ -8,42 +9,10 @@ import "vendor:glfw"
 // button draws itself and reports the click in one call, state lives nowhere.
 // The font is uppercase-only and has no glyph for ? & ' -- labels avoid them.
 
-MENU_DIM :: [4]f32{0.02, 0.02, 0.03, 0.60}
-MENU_HOVER_BG :: [4]f32{0.16, 0.19, 0.23, 0.92}
-MENU_T_COLOR :: [4]f32{0.85, 0.55, 0.20, 1} // attackers, warm
-MENU_CT_COLOR :: [4]f32{0.30, 0.55, 0.90, 1} // defenders, cool
-
 MENU_BUTTON_W :: f32(320)
 MENU_BUTTON_H :: f32(64)
 
-@(private = "file")
-cursor_in :: proc(x, y, w, h: f32) -> bool {
-	return(
-		input.cursor_x >= x &&
-		input.cursor_x < x + w &&
-		input.cursor_y >= y &&
-		input.cursor_y < y + h \
-	)
-}
-
-// Draws the button and reports whether it was clicked this frame. The click
-// latch is only consumed when the cursor is actually on the button, so one
-// click can never press two things.
-@(private = "file")
-menu_button :: proc(x, y, w, h: f32, label: string, accent := HUD_WHITE) -> bool {
-	scale := hud_scale()
-	hovered := cursor_in(x, y, w, h)
-
-	hud_rect(x, y, w, h, hovered ? MENU_HOVER_BG : HUD_PANEL, radius = 4 * scale)
-	hud_frame(x, y, w, h, 2 * scale, hovered ? accent : HUD_FAINT)
-
-	size := hud_font_size(HUD_TEXT_MEDIUM * scale)
-	hud_text(x + w * 0.5, y + (h - size) * 0.5, label, size, hovered ? accent : HUD_DIM, .Center)
-
-	clicked := hovered && consume_click()
-	if clicked do audio_emit({kind = .Ui_Click, local = true})
-	return clicked
-}
+// Buttons and hover state live in ui.odin now; this file only lays screens out.
 
 // One entry point for every non-Playing screen, called from build_hud.
 draw_scene_screens :: proc(width, height: f32) {
@@ -67,42 +36,66 @@ draw_scene_screens :: proc(width, height: f32) {
 	_ = consume_click()
 }
 
+// Valorant's own pattern: a left nav rail over a gradient scrim, the live map
+// as the backdrop. The centre of the screen stays open on purpose.
 @(private = "file")
 draw_main_menu :: proc(width, height: f32) {
 	scale := hud_scale()
-	cx := width * 0.5
+	rail_x := width * 0.08
 
-	hud_rect(0, 0, width, height, MENU_DIM)
-	hud_text_shadow(cx, height * 0.24, "DUST2", hud_font_size(88 * scale), HUD_WHITE, .Center)
+	// darkest at the left, gone by mid-screen
+	hud_rect_gradient(0, 0, width * 0.62, height, ui_fade(UI_BG, 0.97))
+
+	title_dy, title_a := ui_entrance(0)
+	title_size := hud_font_size(UI_DISPLAY * scale)
+	title_y := height * 0.14 + title_dy
+	hud_text(rail_x, title_y, "DUST2", title_size, ui_fade(UI_TEXT, title_a))
+	sub_size := hud_font_size(UI_LABEL * scale)
+	hud_text(
+		rail_x + 3 * scale,
+		title_y + title_size + 10 * scale,
+		"TACTICAL SHOOTER PROTOTYPE",
+		sub_size,
+		ui_fade(UI_TEXT_FAINT, title_a),
+		tracking = sub_size * 0.24,
+	)
 
 	if scene.error_text != "" {
-		hud_text(cx, height * 0.38, scene.error_text, HUD_TEXT_SMALL * scale, HUD_BAD, .Center)
+		hud_text(rail_x, height * 0.34, scene.error_text, UI_LABEL * scale, UI_ACCENT)
 	}
 
-	w := MENU_BUTTON_W * scale
-	h := MENU_BUTTON_H * scale
-	y := height * 0.46
+	w := 300 * scale
+	h := 52 * scale
+	y := height * 0.42
+	gap := 10 * scale
 
-	if menu_button(cx - w * 0.5, y, w, h, "PLAY") {
-		enter_scene(.Mode_Select)
+	dy1, a1 := ui_entrance(1)
+	dy2, a2 := ui_entrance(2)
+	dy3, a3 := ui_entrance(3)
+	dy4, a4 := ui_entrance(4)
+	if ui_button(rail_x - 14 * scale, y + dy1, w, h, "PLAY", variant = .Ghost, fade = a1) {
+		scene_transition_to(.Mode_Select)
 		return
 	}
-	if menu_button(cx - w * 0.5, y + h + 20 * scale, w, h, "PRACTICE") {
+	if ui_button(rail_x - 14 * scale, y + h + gap + dy2, w, h, "PRACTICE", variant = .Ghost, fade = a2) {
 		start_practice()
 		return
 	}
-	if menu_button(cx - w * 0.5, y + 2 * (h + 20 * scale), w, h, "QUIT") {
+	if ui_button(rail_x - 14 * scale, y + 2 * (h + gap) + dy3, w, h, "SETTINGS", variant = .Ghost, fade = a3) {
+		open_settings_screen()
+		return
+	}
+	if ui_button(rail_x - 14 * scale, y + 3 * (h + gap) + dy4, w, h, "QUIT", variant = .Ghost_Danger, fade = a4) {
 		glfw.SetWindowShouldClose(g.window, true)
 		return
 	}
 
 	hud_text(
-		cx,
+		rail_x,
 		height - 40 * scale,
 		"ESC RELEASES THE MOUSE IN GAME",
-		HUD_TEXT_SMALL * 0.85 * scale,
+		hud_font_size(UI_MICRO * scale),
 		HUD_FAINT,
-		.Center,
 	)
 
 	if steam_persona() != "" {
@@ -110,38 +103,50 @@ draw_main_menu :: proc(width, height: f32) {
 			width - HUD_MARGIN * scale,
 			height - 40 * scale,
 			fmt.tprintf("STEAM: {}", steam_persona()),
-			HUD_TEXT_SMALL * 0.85 * scale,
+			hud_font_size(UI_LABEL * scale),
 			HUD_FAINT,
 			.Right,
 		)
 	}
 }
 
-// One of the two team cards: a coloured accent bar, the tag on top, the role
-// underneath. Hand-rolled rather than menu_button because of the extra lines.
+// One of the two team cards: a coloured top rule, the tag on top, the role
+// underneath. Hand-rolled rather than ui_button because of the extra lines,
+// but the hover state comes from the shared ui_hot.
 @(private = "file")
 team_card :: proc(x, y, w, h: f32, tag, role: string, color: [4]f32) -> bool {
 	scale := hud_scale()
-	hovered := cursor_in(x, y, w, h)
+	hovered, t := ui_hot(ui_id(tag), x, y, w, h)
+	e := ease_out_cubic(t)
 
-	hud_rect(x, y, w, h, hovered ? MENU_HOVER_BG : HUD_PANEL, radius = 4 * scale)
-	hud_frame(x, y, w, h, 2 * scale, hovered ? color : HUD_FAINT)
-	hud_rect(x, y, 8 * scale, h, color, radius = 2 * scale)
+	// the card grows 2% around its centre on hover and floods with a whisper
+	// of its team colour
+	grow := 1 + 0.02 * e
+	gx := x - (grow - 1) * w * 0.5
+	gy := y - (grow - 1) * h * 0.5
+	gw := w * grow
+	gh := h * grow
 
-	cx := x + w * 0.5
-	hud_text_shadow(cx, y + h * 0.22, tag, hud_font_size(64 * scale), color, .Center)
+	bg := ui_mix(ui_mix(UI_PANEL, UI_PANEL_RAISED, t), color, 0.08 * t)
+	bg.a = UI_PANEL.a
+	hud_rect(gx, gy, gw, gh, bg, radius = UI_RADIUS * scale)
+	hud_frame(gx, gy, gw, gh, UI_STROKE_W * scale, ui_mix(UI_STROKE, color, t))
+	hud_rect(gx, gy, gw, 3 * scale, color)
+
+	cx := gx + gw * 0.5
+	hud_text_shadow(cx, gy + gh * 0.20, tag, hud_font_size(64 * scale), color, .Center)
+	size := hud_font_size(UI_BODY * scale)
 	hud_text(
 		cx,
-		y + h * 0.64,
+		gy + gh * 0.64,
 		role,
-		HUD_TEXT_MEDIUM * scale,
-		hovered ? HUD_WHITE : HUD_DIM,
+		size,
+		ui_mix(UI_TEXT_DIM, UI_TEXT, t),
 		.Center,
+		tracking = size * 0.14,
 	)
 
-	clicked := hovered && consume_click()
-	if clicked do audio_emit({kind = .Ui_Click, local = true})
-	return clicked
+	return ui_clicked(hovered)
 }
 
 // TDM leads to the team pick; competitive queues right away, the server
@@ -153,13 +158,14 @@ draw_mode_select :: proc(width, height: f32) {
 	cx := width * 0.5
 
 	hud_rect(0, 0, width, height, MENU_DIM)
-	hud_text_shadow(
-		cx,
-		height * 0.22,
+	head_size := hud_font_size(UI_H1 * scale)
+	hud_text(
+		width * 0.08,
+		height * 0.14,
 		"CHOOSE MODE",
-		hud_font_size(48 * scale),
+		head_size,
 		HUD_WHITE,
-		.Center,
+		tracking = head_size * 0.10,
 	)
 
 	card_w := 380 * scale
@@ -169,20 +175,19 @@ draw_mode_select :: proc(width, height: f32) {
 
 	if team_card(cx - card_w - gap * 0.5, y, card_w, card_h, "TDM", "TEAM DEATHMATCH", HUD_DIM) {
 		scene.chosen_mode = .TDM
-		enter_scene(.Team_Select)
+		scene_transition_to(.Team_Select)
 		return
 	}
 	if team_card(cx + gap * 0.5, y, card_w, card_h, "COMP", "5V5 - FIRST TO 13", HUD_WARN) {
 		scene.chosen_mode = .Comp
 		scene.chosen_team = .T // a wish; the server balances
 		scene.queue_pending = true
-		enter_scene(.Connecting)
+		scene_transition_to(.Connecting)
 		return
 	}
 
-	w := MENU_BUTTON_W * scale
-	if menu_button(cx - w * 0.5, height * 0.74, w, 56 * scale, "BACK") {
-		enter_scene(.Menu)
+	if ui_button(width * 0.08 - 14 * scale, height * 0.86, 200 * scale, 52 * scale, "BACK", variant = .Ghost) {
+		scene_transition_to(.Menu)
 	}
 }
 
@@ -192,13 +197,14 @@ draw_team_select :: proc(width, height: f32) {
 	cx := width * 0.5
 
 	hud_rect(0, 0, width, height, MENU_DIM)
-	hud_text_shadow(
-		cx,
-		height * 0.22,
+	head_size := hud_font_size(UI_H1 * scale)
+	hud_text(
+		width * 0.08,
+		height * 0.14,
 		"CHOOSE TEAM",
-		hud_font_size(48 * scale),
+		head_size,
 		HUD_WHITE,
-		.Center,
+		tracking = head_size * 0.10,
 	)
 
 	card_w := 380 * scale
@@ -217,9 +223,8 @@ draw_team_select :: proc(width, height: f32) {
 		return
 	}
 
-	w := MENU_BUTTON_W * scale
-	if menu_button(cx - w * 0.5, height * 0.74, w, 56 * scale, "BACK") {
-		enter_scene(.Menu)
+	if ui_button(width * 0.08 - 14 * scale, height * 0.86, 200 * scale, 52 * scale, "BACK", variant = .Ghost) {
+		scene_transition_to(.Menu)
 	}
 }
 
@@ -228,7 +233,7 @@ start_game :: proc() {
 	// Menu play goes through the queue whenever a master is configured; the
 	// legacy quickplay query stays for --join and master-less dev loops.
 	scene.queue_pending = true
-	enter_scene(.Connecting)
+	scene_transition_to(.Connecting)
 }
 
 // Doubles as the queue screen: the elapsed clock spans queue, server spawn
@@ -250,16 +255,31 @@ draw_connecting :: proc(width, height: f32) {
 		.Center,
 	)
 
-	// The dots animate after the fixed label so the label itself never shifts.
-	label := connecting_label()
-	size := hud_font_size(HUD_TEXT_MEDIUM * scale)
-	pen := hud_text_shadow(cx, height * 0.42, label, size, HUD_WHITE, .Center)
-	dots := int(glfw.GetTime() * 2) % 3 + 1
-	hud_text(pen, height * 0.42, fmt.tprintf("%.*s", dots, "..."), size, HUD_WHITE)
+	// A letter-spaced status line over an indeterminate accent sweep: the one
+	// screen where restraint reads as polish.
+	size := hud_font_size(UI_LABEL * scale)
+	hud_text_shadow(
+		cx,
+		height * 0.42,
+		connecting_label(),
+		size,
+		HUD_WHITE,
+		.Center,
+		tracking = size * 0.18,
+	)
+
+	bar_w := 260 * scale
+	seg := 70 * scale
+	bar_y := height * 0.42 + size + 16 * scale
+	phase := f32(math.mod(glfw.GetTime(), 2.4)) / 2.4
+	tri := 1 - abs(2 * phase - 1)
+	sweep := ease_in_out_cubic(f32(tri))
+	hud_rect(cx - bar_w * 0.5, bar_y, bar_w, 2 * scale, ui_fade(UI_STROKE, 0.8))
+	hud_rect(cx - bar_w * 0.5 + (bar_w - seg) * sweep, bar_y, seg, 2 * scale, UI_ACCENT)
 
 	w := MENU_BUTTON_W * scale
-	if menu_button(cx - w * 0.5, height * 0.58, w, 56 * scale, "CANCEL") {
-		enter_scene(.Menu)
+	if ui_button(cx - w * 0.5, height * 0.58, w, 56 * scale, "CANCEL") {
+		scene_transition_to(.Menu)
 	}
 }
 
@@ -321,8 +341,8 @@ draw_match_end :: proc(width, height: f32) {
 	)
 
 	w := MENU_BUTTON_W * scale
-	if menu_button(cx - w * 0.5, height * 0.62, w, 56 * scale, "CONTINUE") {
-		enter_scene(.Menu)
+	if ui_button(cx - w * 0.5, height * 0.62, w, 56 * scale, "CONTINUE", variant = .Primary) {
+		scene_transition_to(.Menu)
 	}
 }
 
@@ -356,7 +376,8 @@ draw_match_outro :: proc(width, height: f32) {
 	hud_text(cx - score_w * 0.5 - 24 * scale, score_y, "T", size, MENU_T_COLOR, .Right)
 	hud_text(cx + score_w * 0.5 + 24 * scale, score_y, "CT", size, MENU_CT_COLOR)
 
-	// the podium: five winner-coloured figures, skipped on a draw
+	// the podium: five winner-coloured figures rising from the base, staggered
+	// -- the one place a longer animation is earned. Skipped on a draw.
 	if !draw {
 		body_w := 56 * scale
 		gap := 20 * scale
@@ -369,22 +390,25 @@ draw_match_outro :: proc(width, height: f32) {
 			base_y,
 			total + 60 * scale,
 			14 * scale,
-			{0.10, 0.11, 0.13, 0.95},
+			UI_PANEL_RAISED,
 			radius = 4 * scale,
 		)
 		x := cx - total * 0.5
 		for i in 0 ..< 5 {
-			h := heights[i] * scale
+			rise := ease_out_cubic(clamp((ui_screen_age() - 0.3 - f32(i) * 0.08) / 0.3, 0, 1))
+			h := heights[i] * scale * rise
 			head := 26 * scale
-			hud_rect(x, base_y - h, body_w, h, win_color, radius = 6 * scale)
-			hud_rect(
-				x + (body_w - head) * 0.5,
-				base_y - h - head - 6 * scale,
-				head,
-				head,
-				win_color,
-				radius = head * 0.5,
-			)
+			if h > 1 {
+				hud_rect(x, base_y - h, body_w, h, ui_fade(win_color, 0.9), radius = 6 * scale)
+				hud_rect(
+					x + (body_w - head) * 0.5,
+					base_y - h - head - 6 * scale,
+					head,
+					head,
+					ui_fade(win_color, 0.9 * rise),
+					radius = head * 0.5,
+				)
+			}
 			x += body_w + gap
 		}
 	}
@@ -400,42 +424,47 @@ draw_match_outro :: proc(width, height: f32) {
 	)
 
 	w := MENU_BUTTON_W * scale
-	if menu_button(cx - w * 0.5, height * 0.86, w, 56 * scale, "CONTINUE") {
-		enter_scene(.Menu)
+	if ui_button(cx - w * 0.5, height * 0.86, w, 56 * scale, "CONTINUE", variant = .Primary) {
+		scene_transition_to(.Menu)
 		return
 	}
 	// a click anywhere else skips the outro too
 	if consume_click() {
-		enter_scene(.Menu)
+		scene_transition_to(.Menu)
 	}
 }
 
-// The ESC overlay during play. The world keeps simulating behind it.
+// The ESC overlay during play: the main menu's rail in miniature, over a
+// light scrim. The world keeps simulating behind it.
 draw_pause_overlay :: proc(width, height: f32) {
 	scale := hud_scale()
-	cx := width * 0.5
+	rail_x := width * 0.08
 
-	hud_rect(0, 0, width, height, {0.02, 0.02, 0.03, 0.45})
-	hud_text_shadow(cx, height * 0.32, "PAUSED", hud_font_size(48 * scale), HUD_WHITE, .Center)
+	hud_rect_gradient(0, 0, width * 0.58, height, ui_fade(UI_BG, 0.80))
 
-	w := MENU_BUTTON_W * scale
-	h := 56 * scale
-	y := height * 0.46
+	title_size := hud_font_size(UI_H1 * scale)
+	hud_text(rail_x, height * 0.30, "PAUSED", title_size, UI_TEXT, tracking = title_size * 0.10)
+
+	w := 300 * scale
+	h := 52 * scale
+	y := height * 0.42
+	gap := 10 * scale
 
 	leave := practice_active() ? "LEAVE PRACTICE" : "LEAVE MATCH"
-	if menu_button(cx - w * 0.5, y, w, h, "RESUME") {
+	if ui_button(rail_x - 14 * scale, y, w, h, "RESUME", variant = .Ghost) {
 		scene.paused = false
 		grab_cursor(true)
-	} else if menu_button(cx - w * 0.5, y + h + 20 * scale, w, h, leave) {
-		enter_scene(.Menu)
+	} else if ui_button(rail_x - 14 * scale, y + h + gap, w, h, "SETTINGS", variant = .Ghost) {
+		open_settings_screen()
+	} else if ui_button(rail_x - 14 * scale, y + 2 * (h + gap), w, h, leave, variant = .Ghost_Danger) {
+		scene_transition_to(.Menu)
 	} else if !practice_active() {
 		hud_text(
-			cx,
-			y + 2 * (h + 20 * scale),
+			rail_x,
+			y + 3 * (h + gap) + 8 * scale,
 			"THE MATCH KEEPS RUNNING",
-			HUD_TEXT_SMALL * 0.85 * scale,
+			hud_font_size(UI_MICRO * scale),
 			HUD_FAINT,
-			.Center,
 		)
 	}
 

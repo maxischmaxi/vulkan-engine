@@ -17,6 +17,13 @@ HUD_PREVIEW_T_ALIVE :: 3
 HUD_PREVIEW_CT_ALIVE :: 4
 
 hud_preview_apply :: proc() {
+	// The menu previews never reach the range; they only pin the animation
+	// clock so entrance staggers photograph mid-pose deterministically.
+	switch cli.hudpreview {
+	case "menu", "modeselect", "teamselect", "connecting":
+		ui_anim_pin(0.5)
+		return
+	}
 	if !hud_preview_active() do return
 
 	net_client.mode = .Comp
@@ -60,8 +67,50 @@ hud_preview_apply :: proc() {
 		net_client.bomb_defuser = net_client.pawn_id
 		net_client.bomb_progress = clamp(elapsed / 10, 0, 1)
 
+	case "killfeed":
+		net_client.phase = .Live
+		net_client.time_left = 75
+		killfeed_preview_seed()
+
+	case "scoreboard":
+		net_client.phase = .Live
+		net_client.time_left = 75
+		scoreboard.forced = true
+
+	case "buy":
+		net_client.phase = .Freeze
+		net_client.time_left = 9
+		buy_menu.open = true
+
+	case "death":
+		net_client.phase = .Live
+		net_client.time_left = 75
+		player.alive = false
+		player.respawn_in = 2.4
+
+	case "pause":
+		net_client.phase = .Live
+		net_client.time_left = 75
+		scene.paused = true
+
+	case "settings", "settings-audio", "settings-game", "settings-crosshair":
+		settings_screen.open = true
+		switch cli.hudpreview {
+		case "settings":
+			settings_screen.tab = .Video
+		case "settings-audio":
+			settings_screen.tab = .Audio
+		case "settings-game":
+			settings_screen.tab = .Game
+		case "settings-crosshair":
+			settings_screen.tab = .Crosshair
+		}
+
 	case:
-		log.errorf("--hudpreview wants topbar, warmup, freeze, roundend or bomb, got {}", cli.hudpreview)
+		log.errorf(
+			"--hudpreview wants topbar, warmup, freeze, roundend, bomb or settings*, got {}",
+			cli.hudpreview,
+		)
 		cli.hudpreview = ""
 		return
 	}

@@ -79,6 +79,14 @@ Net_Client :: struct {
 	// fires when no Damage message covered the drop -- see predict.odin.
 	last_damage_tick:   u32,
 	last_health_tick:   u32,
+	// The server's roster: names and authoritative K/D per pawn, for the
+	// scoreboard and the kill feed. Wiped with the connection like the rest.
+	roster:             [game.MAX_PAWNS]struct {
+		known:         bool,
+		kills, deaths: int,
+		name:          [protocol.MAX_NAME]u8,
+		name_len:      u8,
+	},
 }
 
 net_client: Net_Client
@@ -424,8 +432,22 @@ handle_server_packet :: proc(data: []u8) {
 		case .Kill:
 			if m, mok := protocol.read_kill(&payload); mok {
 				log.infof("NET: kill {} -> {}", m.killer, m.victim)
+				killfeed_note_kill(m)
 				if int(m.killer) == net_client.pawn_id && int(m.victim) != net_client.pawn_id {
 					audio_emit({kind = .Kill, local = true})
+				}
+			}
+		case .Roster:
+			if m, mok := protocol.read_roster(&payload); mok {
+				for entry_index in 0 ..< int(m.count) {
+					e := m.entries[entry_index]
+					if int(e.pawn_id) >= game.MAX_PAWNS do continue
+					entry := &net_client.roster[e.pawn_id]
+					entry.known = true
+					entry.kills = int(e.kills)
+					entry.deaths = int(e.deaths)
+					entry.name = e.name
+					entry.name_len = e.name_len
 				}
 			}
 		}

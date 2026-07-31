@@ -189,7 +189,7 @@ update_frame_uniforms :: proc(frame: u32) {
 			0,
 		},
 		params         = {
-			exposure,
+			game_settings.brightness, // the tonemap exposure
 			f32(len(point_lights)),
 			f32(debug_mode),
 			1.0 / f32(shadow_resolution()),

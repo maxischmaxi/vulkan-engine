@@ -23,6 +23,9 @@ Input :: struct {
 	// Latched like fire_clicked, but regardless of grab state, so a menu click
 	// between two frames is not lost either.
 	click:              bool,
+	// Level, not edge: sliders track the cursor while this is held. Only
+	// meaningful while the cursor is loose, like cursor_x/y.
+	mouse_down:         bool,
 	// Edge detection. Both maps are snapshots taken once per frame rather than
 	// sampled on demand: an earlier version updated prev_keys inside
 	// key_pressed, so the second caller asking about the same key in one frame
@@ -45,12 +48,15 @@ WATCHED_KEYS := []i32 {
 	glfw.KEY_SPACE,
 	glfw.KEY_LEFT_SHIFT,
 	glfw.KEY_LEFT_CONTROL,
-	// the settings menu: open, navigate, change, close
+	// TAB belongs to the scoreboard; arrows navigate the settings screen,
+	// Q/E flip its tabs
 	glfw.KEY_TAB,
 	glfw.KEY_UP,
 	glfw.KEY_DOWN,
 	glfw.KEY_LEFT,
 	glfw.KEY_RIGHT,
+	glfw.KEY_Q,
+	glfw.KEY_N,
 	glfw.KEY_C,
 	glfw.KEY_V,
 	glfw.KEY_R,
@@ -154,6 +160,8 @@ poll_keys :: proc() {
 poll_cursor :: proc() {
 	if input.cursor_grabbed do return
 
+	input.mouse_down = glfw.GetMouseButton(g.window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS
+
 	x, y := glfw.GetCursorPos(g.window)
 	ww, wh := glfw.GetWindowSize(g.window)
 	fw, fh := glfw.GetFramebufferSize(g.window)
@@ -184,6 +192,7 @@ grab_cursor :: proc(grab: bool) {
 	input.fire_clicked = false
 	input.zoom_clicked = false
 	input.click = false
+	input.mouse_down = false
 }
 
 key_down :: proc(key: i32) -> bool {

@@ -41,8 +41,9 @@ Crosshair_Push :: struct {
 
 // Every rectangle the HUD draws in one buffer. The crosshair keeps its own
 // pipeline because it is generated from nothing at all; everything else -- the
-// minimap, the panels, every glyph -- is an instance here.
-MAX_HUD_QUADS :: 2048
+// minimap, the panels, every glyph -- is an instance here. Sized for the
+// densest screens: a scoreboard is ~600 glyphs and each glyph is one quad.
+MAX_HUD_QUADS :: 8192
 
 // std430-compatible, and the layout the vertex attributes below describe.
 Hud_Quad :: struct {
@@ -375,6 +376,44 @@ crosshair_rects :: proc(style: Crosshair_Style, grow: f32) -> (rects: [CROSSHAIR
 	return
 }
 
+// A horizontal fade: full colour at the left edge, transparent at the right.
+// Mode 2 in the quad shader; the uv spans 0..1 so the fragment knows where it
+// is inside the rectangle.
+hud_rect_gradient :: proc(x, y, w, h: f32, color: [4]f32) {
+	hud_quad(
+		{
+			rect = {math.round(x), math.round(y), math.round(w), math.round(h)},
+			uv = {0, 0, 1, 1},
+			color = color,
+			params = {0, 2, 0, 0},
+		},
+	)
+}
+
+// The settings screen's live preview: the real crosshair geometry -- the same
+// rects, rounding and scale the game draws with -- routed through the quad
+// batch instead of the crosshair pipeline so it can sit over a panel. The
+// rects come out centred on the screen; shifting them to the preview centre
+// keeps them pixel-exact as long as the centre is rounded.
+draw_crosshair_preview :: proc(cx, cy: f32) {
+	screen_cx := math.floor(f32(g.swapchain_extent.width) * 0.5)
+	screen_cy := math.floor(f32(g.swapchain_extent.height) * 0.5)
+	dx := math.round(cx) - screen_cx
+	dy := math.round(cy) - screen_cy
+
+	if crosshair.outline > 0 {
+		grow := max(1, math.round(crosshair.outline * crosshair_scale()))
+		for r in crosshair_rects(crosshair, grow) {
+			if r[2] <= r[0] do continue
+			hud_rect(r[0] + dx, r[1] + dy, r[2] - r[0], r[3] - r[1], {0, 0, 0, 1})
+		}
+	}
+	for r in crosshair_rects(crosshair, 0) {
+		if r[2] <= r[0] do continue
+		hud_rect(r[0] + dx, r[1] + dy, r[2] - r[0], r[3] - r[1], crosshair.color)
+	}
+}
+
 @(private = "file")
 draw_crosshair :: proc(cmd: vk.CommandBuffer, push: Crosshair_Push) {
 	push := push
@@ -406,6 +445,7 @@ record_hud_pass :: proc(cmd: vk.CommandBuffer, frame: u32) {
 	// included.
 	if scene_playing() &&
 	   !scene.paused &&
+	   !settings_screen.open &&
 	   player.alive &&
 	   !buy_menu.open &&
 	   !weapon_state.zoom_active {
@@ -507,7 +547,9 @@ record_crosshair :: proc(cmd: vk.CommandBuffer) {
 	alpha := hit_marker_alpha()
 	if alpha > 0 {
 		marker := crosshair
-		marker.size = 7
+		// shrinks slightly as it fades, so the confirmation reads as an event
+		// rather than a sticker
+		marker.size = 6 + 1.5 * alpha
 		marker.gap = 2.5
 		marker.thickness = 0.75
 		marker.dot = false
@@ -532,7 +574,9 @@ record_crosshair :: proc(cmd: vk.CommandBuffer) {
 		// sound, and the count in the corner is too far from the centre to read
 		// mid-fight.
 		tint :=
-			weapon_state.hit_killed ? [4]f32{1.0, 0.32, 0.28, alpha} : [4]f32{1.0, 0.95, 0.9, alpha}
+			weapon_state.hit_killed \
+			? [4]f32{UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b, alpha} \
+			: [4]f32{1.0, 0.95, 0.9, alpha}
 		draw_crosshair(cmd, {rects = crosshair_rects(marker, 0), color = tint, screen = rotated})
 	}
 }

@@ -1,108 +1,64 @@
 package main
 
+import "core:c"
 import "core:log"
 import "core:math"
 import "core:mem"
+import stbtt "vendor:stb/truetype"
 import vk "vendor:vulkan"
 
-// The HUD's typeface, built into the binary rather than loaded. A shooter's HUD
-// needs maybe forty characters -- digits, capitals and a handful of punctuation
-// -- and a 5x7 bitmap covers all of them in 512 bytes. A real font would mean a
-// TTF rasteriser, an asset to ship and a file that can go missing, for text that
-// is never larger than forty pixels.
+// The HUD's typefaces, embedded in the binary and baked into one SDF atlas at
+// startup. #load keeps the old "no asset can go missing" property: the build
+// fails if the TTF is absent, the shipped binary carries its own type.
 //
-// The same reasoning the decals use: generate what you need instead of sampling
-// something authored elsewhere.
+// Two faces of the same family: Display carries headings, buttons and every
+// number; Body carries descriptions and small print. `size` means cap height
+// and `y` is the top of that cap line -- the semantics every call site was
+// authored against when glyphs were 8x8 cells.
 
-FONT_GLYPH :: 8 // cell, in texels
-FONT_INK :: 5 // columns a glyph actually draws into
-FONT_ADVANCE :: 6 // cell columns from one glyph's origin to the next
+@(private = "file")
+FONT_DISPLAY_TTF := #load("../fonts/Rajdhani-SemiBold.ttf")
+@(private = "file")
+FONT_BODY_TTF := #load("../fonts/Rajdhani-Regular.ttf")
 
-FONT_FIRST :: 32 // space
-FONT_COUNT :: 64 // through '_'
-FONT_COLS :: 16
-FONT_ROWS :: FONT_COUNT / FONT_COLS
+FONT_ATLAS_SIZE :: 1024
+FONT_BAKE_PX :: 64 // bake height; SDFs downscale well, upscales soften slowly
+FONT_SDF_PAD :: 6 // texels of distance field around each glyph
+FONT_SDF_EDGE :: 128 // atlas value at the glyph outline
+// One bake pixel of distance per (128/6) atlas values: the field saturates
+// exactly at the padding edge, wasting none of the 8-bit range.
+FONT_SDF_SCALE :: f32(FONT_SDF_EDGE) / f32(FONT_SDF_PAD)
 
-FONT_ATLAS_W :: FONT_COLS * FONT_GLYPH
-FONT_ATLAS_H :: FONT_ROWS * FONT_GLYPH
+// Text shadows draw the same string fattened by ~one bake pixel and dark; the
+// bias rides in params.w of every glyph quad.
+FONT_SHADOW_BIAS :: f32(0.08)
 
-FONT_ADVANCE_RATIO :: f32(FONT_ADVANCE) / f32(FONT_GLYPH)
-FONT_INK_RATIO :: f32(FONT_INK) / f32(FONT_GLYPH)
+// ASCII plus the German set, so persona names and future copy survive. The
+// bake walks this string; adding a codepoint is adding it here.
+@(private = "file")
+FONT_GLYPH_SET :: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~äöüÄÖÜß"
 
-// One glyph per u64: eight rows of eight bits, the top row in the most
-// significant byte and the leftmost column in the most significant bit of each.
-// That ordering is the point -- a hex literal reads left to right and top to
-// bottom exactly as the glyph is drawn, so these are editable by hand.
-//
-// Zeroes are characters this HUD has never needed. Filling one in is eight hex
-// digits and no other change.
-FONT_GLYPHS := [FONT_COUNT]u64 {
-	0x0000000000000000, // space
-	0x2020202020002000, // !
-	0x0000000000000000, // "
-	0x0000000000000000, // #
-	0x2078A07028F02000, // $
-	0x8890102040488800, // %
-	0x0000000000000000, // &
-	0x0000000000000000, // '
-	0x1020404040201000, // (
-	0x4020101010204000, // )
-	0x0000000000000000, // *
-	0x002020F820200000, // +
-	0x0000000000202040, // ,
-	0x0000007000000000, // -
-	0x0000000000002000, // .
-	0x0808102040808000, // /
-	// A dot rather than the usual slash. At five columns a diagonal fills most
-	// of the counter and the glyph reads as a 9.
-	0x708888A888887000, // 0
-	0x2060202020207000, // 1
-	0x708808102040F800, // 2
-	0xF00808700808F000, // 3
-	0x10305090F8101000, // 4
-	0xF880F00808887000, // 5
-	0x304080F088887000, // 6
-	0xF808102020202000, // 7
-	0x7088887088887000, // 8
-	0x7088887808106000, // 9
-	0x0000200000200000, // :
-	0x0000000000000000, // ;
-	0x0000000000000000, // <
-	0x0000F800F8000000, // =
-	0x0000000000000000, // >
-	0x0000000000000000, // ?
-	0x0000000000000000, // @
-	0x708888F888888800, // A
-	0xF08888F08888F000, // B
-	0x7088808080887000, // C
-	0xE09088888890E000, // D
-	0xF88080F08080F800, // E
-	0xF88080F080808000, // F
-	0x708880B888887000, // G
-	0x888888F888888800, // H
-	0x7020202020207000, // I
-	0x3810101010906000, // J
-	0x8890A0C0A0908800, // K
-	0x808080808080F800, // L
-	0x88D8A8A888888800, // M
-	0x88C8A89888888800, // N
-	0x7088888888887000, // O
-	0xF08888F080808000, // P
-	0x70888888A8906800, // Q
-	0xF08888F0A0908800, // R
-	0x7088807008887000, // S
-	0xF820202020202000, // T
-	0x8888888888887000, // U
-	0x8888888888502000, // V
-	0x888888A8A8D88800, // W
-	0x8888502050888800, // X
-	0x8888502020202000, // Y
-	0xF80810204080F800, // Z
-	0x7040404040407000, // [
-	0x8080402010080800, // backslash
-	0x7010101010107000, // ]
-	0x2050880000000000, // ^
-	0x00000000000000F8, // _
+Ui_Font :: enum u8 {
+	Display,
+	Body,
+}
+
+@(private = "file")
+Glyph :: struct {
+	uv:      [4]f32, // u0, v0, u1, v1 in the atlas
+	offset:  [2]f32, // pen (at baseline) to bitmap top-left, bake px
+	size:    [2]f32, // bitmap extent, bake px
+	advance: f32, // bake px
+}
+
+@(private = "file")
+Font_Face :: struct {
+	info:          stbtt.fontinfo,
+	glyphs:        map[rune]Glyph,
+	kern:          map[u64]f32, // (prev << 32 | cur) -> bake px; empty for GPOS-only fonts
+	cap_height:    f32, // bake px; the scale everything draws against
+	digit_advance: f32, // one advance for all digits, so timers never jitter
+	space_advance: f32, // fallback advance for runes outside the set
 }
 
 Hud_Font :: struct {
@@ -114,28 +70,120 @@ Hud_Font :: struct {
 
 hud_font: Hud_Font
 
-// Unpacks the bit patterns into a coverage texture. Has to run before
-// create_descriptor_sets, which is what points the HUD set at it.
+@(private = "file")
+faces: [Ui_Font]Font_Face
+
+// Bakes both faces into one atlas. Has to run before create_descriptor_sets,
+// which is what points the HUD set at it.
 create_hud_font :: proc() {
-	pixels: [FONT_ATLAS_W * FONT_ATLAS_H]u8
+	pixels := make([]u8, FONT_ATLAS_SIZE * FONT_ATLAS_SIZE)
+	defer delete(pixels)
 
-	for glyph, index in FONT_GLYPHS {
-		if glyph == 0 do continue
+	// a shelf packer is plenty for ~200 same-height glyphs
+	shelf_x, shelf_y, shelf_h: int
 
-		origin_x := (index % FONT_COLS) * FONT_GLYPH
-		origin_y := (index / FONT_COLS) * FONT_GLYPH
+	ttfs := [Ui_Font][]u8 {
+		.Display = FONT_DISPLAY_TTF,
+		.Body    = FONT_BODY_TTF,
+	}
 
-		for row in 0 ..< FONT_GLYPH {
-			bits := u8((glyph >> uint(56 - row * 8)) & 0xFF)
-			if bits == 0 do continue
+	glyph_count := 0
+	for &face, which in faces {
+		if !stbtt.InitFont(&face.info, raw_data(ttfs[which]), 0) {
+			log.panicf("HUD font: InitFont failed for {}", which)
+		}
+		scale := stbtt.ScaleForPixelHeight(&face.info, FONT_BAKE_PX)
 
-			for col in 0 ..< FONT_GLYPH {
-				if bits & (1 << uint(7 - col)) == 0 do continue
-				pixels[(origin_y + row) * FONT_ATLAS_W + origin_x + col] = 255
+		// cap height from 'H': the box top above the baseline
+		x0, y0, x1, y1: c.int
+		stbtt.GetCodepointBox(&face.info, 'H', &x0, &y0, &x1, &y1)
+		face.cap_height = f32(y1) * scale
+
+		for r in FONT_GLYPH_SET {
+			adv, lsb: c.int
+			stbtt.GetCodepointHMetrics(&face.info, r, &adv, &lsb)
+
+			glyph := Glyph {
+				advance = f32(adv) * scale,
+			}
+
+			w, h, xoff, yoff: c.int
+			sdf := stbtt.GetCodepointSDF(
+				&face.info,
+				scale,
+				c.int(r),
+				FONT_SDF_PAD,
+				FONT_SDF_EDGE,
+				FONT_SDF_SCALE,
+				&w,
+				&h,
+				&xoff,
+				&yoff,
+			)
+			if sdf != nil {
+				defer stbtt.FreeSDF(sdf, nil)
+
+				if shelf_x + int(w) + 1 > FONT_ATLAS_SIZE {
+					shelf_x = 0
+					shelf_y += shelf_h + 1
+					shelf_h = 0
+				}
+				if shelf_y + int(h) + 1 > FONT_ATLAS_SIZE {
+					log.errorf("HUD font: atlas overflow at {} '{}'", which, r)
+					break
+				}
+
+				for row in 0 ..< int(h) {
+					dst := (shelf_y + row) * FONT_ATLAS_SIZE + shelf_x
+					mem.copy(&pixels[dst], sdf[row * int(w):], int(w))
+				}
+
+				glyph.uv = {
+					f32(shelf_x) / FONT_ATLAS_SIZE,
+					f32(shelf_y) / FONT_ATLAS_SIZE,
+					f32(shelf_x + int(w)) / FONT_ATLAS_SIZE,
+					f32(shelf_y + int(h)) / FONT_ATLAS_SIZE,
+				}
+				glyph.offset = {f32(xoff), f32(yoff)}
+				glyph.size = {f32(w), f32(h)}
+
+				shelf_x += int(w) + 1
+				shelf_h = max(shelf_h, int(h))
+			}
+
+			face.glyphs[r] = glyph
+			glyph_count += 1
+		}
+
+		for d in '0' ..= '9' {
+			face.digit_advance = max(face.digit_advance, face.glyphs[d].advance)
+		}
+		face.space_advance = face.glyphs[' '].advance
+
+		// stbtt reads only the legacy kern table -- often empty for Google
+		// fonts. Prebaking keeps the draw loop free of C calls either way.
+		for a in FONT_GLYPH_SET {
+			for b in FONT_GLYPH_SET {
+				k := stbtt.GetCodepointKernAdvance(&face.info, a, b)
+				if k != 0 {
+					face.kern[u64(a) << 32 | u64(b)] = f32(k) * scale
+				}
 			}
 		}
 	}
 
+	upload_font_atlas(pixels)
+	log.infof(
+		"HUD font: {}x{} SDF atlas, {} glyphs, {} kern pairs",
+		FONT_ATLAS_SIZE,
+		FONT_ATLAS_SIZE,
+		glyph_count,
+		len(faces[.Display].kern) + len(faces[.Body].kern),
+	)
+}
+
+@(private = "file")
+upload_font_atlas :: proc(pixels: []u8) {
 	size := vk.DeviceSize(len(pixels))
 	staging, staging_memory := create_buffer(
 		size,
@@ -146,12 +194,12 @@ create_hud_font :: proc() {
 
 	mapped: rawptr
 	vk_check(vk.MapMemory(g.device, staging_memory, 0, size, {}, &mapped))
-	mem.copy(mapped, raw_data(pixels[:]), len(pixels))
+	mem.copy(mapped, raw_data(pixels), len(pixels))
 	vk.UnmapMemory(g.device, staging_memory)
 
 	hud_font.image, hud_font.memory = create_image(
-		FONT_ATLAS_W,
-		FONT_ATLAS_H,
+		FONT_ATLAS_SIZE,
+		FONT_ATLAS_SIZE,
 		1,
 		.R8_UNORM,
 		.OPTIMAL,
@@ -172,7 +220,7 @@ create_hud_font :: proc() {
 	)
 	end_single_time_commands(cmd)
 
-	copy_buffer_to_image(staging, hud_font.image, FONT_ATLAS_W, FONT_ATLAS_H)
+	copy_buffer_to_image(staging, hud_font.image, FONT_ATLAS_SIZE, FONT_ATLAS_SIZE)
 
 	cmd = begin_single_time_commands()
 	transition_image(
@@ -196,13 +244,12 @@ create_hud_font :: proc() {
 	}
 	vk_check(vk.CreateImageView(g.device, &view_ci, nil, &hud_font.view))
 
-	// NEAREST and no mips on purpose. Text is only ever drawn at whole multiples
-	// of the cell, so every texel lands on an exact block of pixels; filtering
-	// would soften edges that are meant to be hard.
+	// LINEAR, unlike the old bitmap font: the SDF is meant to be interpolated,
+	// the smoothstep in the shader is what keeps edges crisp.
 	sampler_ci := vk.SamplerCreateInfo {
 		sType         = .SAMPLER_CREATE_INFO,
-		magFilter     = .NEAREST,
-		minFilter     = .NEAREST,
+		magFilter     = .LINEAR,
+		minFilter     = .LINEAR,
 		mipmapMode    = .NEAREST,
 		addressModeU  = .CLAMP_TO_EDGE,
 		addressModeV  = .CLAMP_TO_EDGE,
@@ -213,11 +260,13 @@ create_hud_font :: proc() {
 		maxAnisotropy = 1,
 	}
 	vk_check(vk.CreateSampler(g.device, &sampler_ci, nil, &hud_font.sampler))
-
-	log.infof("HUD font: {}x{} atlas, {} glyphs", FONT_ATLAS_W, FONT_ATLAS_H, FONT_COUNT)
 }
 
 destroy_hud_font :: proc() {
+	for &face in faces {
+		delete(face.glyphs)
+		delete(face.kern)
+	}
 	vk.DestroySampler(g.device, hud_font.sampler, nil)
 	vk.DestroyImageView(g.device, hud_font.view, nil)
 	vk.DestroyImage(g.device, hud_font.image, nil)
@@ -232,94 +281,154 @@ Hud_Align :: enum {
 	Right,
 }
 
-// Snapped to a whole multiple of the cell. Scaling a bitmap font by 2.6 gives
-// some stems two pixels and their neighbours three, which reads as a wobble
-// across a line of digits; integer multiples never do.
+// The bitmap font quantised sizes to its cell; the SDF scales freely. Kept as
+// the one place a floor on text size lives.
 hud_font_size :: proc(size: f32) -> f32 {
-	return max(FONT_GLYPH, math.round(size / FONT_GLYPH) * FONT_GLYPH)
+	return max(8, size)
 }
 
-// The ink, not the pen travel: the gap after the last glyph is not part of the
-// word, and including it would put centred text half a gap off centre.
-hud_text_width :: proc(text: string, size: f32) -> f32 {
-	if len(text) == 0 do return 0
-	px := hud_font_size(size)
-	return f32(len(text) - 1) * px * FONT_ADVANCE_RATIO + px * FONT_INK_RATIO
+@(private = "file")
+is_digit :: proc(r: rune) -> bool {
+	return r >= '0' && r <= '9'
 }
 
-// Whether this byte draws ink after the same case fold hud_text applies.
-// Sanitisers for external strings (Steam persona names) keep only these.
+// Pen travel including tracking, which is what alignment needs. `size` is cap
+// height, like everywhere.
+hud_text_width :: proc(text: string, size: f32, tracking: f32 = 0, font: Ui_Font = .Display) -> f32 {
+	face := &faces[font]
+	draw_scale := size / face.cap_height
+
+	width: f32
+	prev: rune
+	for r in text {
+		glyph, ok := face.glyphs[r]
+		advance := ok ? glyph.advance : face.space_advance
+		if is_digit(r) do advance = face.digit_advance
+		if prev != 0 {
+			width += tracking
+			if !is_digit(prev) && !is_digit(r) {
+				if k, has := face.kern[u64(prev) << 32 | u64(r)]; has do width += k * draw_scale
+			}
+		}
+		width += advance * draw_scale
+		prev = r
+	}
+	return width
+}
+
+// Whether a byte survives into the atlas. Sanitisers for external strings
+// (Steam persona names) keep only these.
 hud_font_has_glyph :: proc(c: u8) -> bool {
-	c := c
-	if c >= 'a' && c <= 'z' do c -= 32
-	index := int(c) - FONT_FIRST
-	return index >= 0 && index < FONT_COUNT && FONT_GLYPHS[index] != 0
+	return c >= 32 && c < 127
 }
 
 // Returns where the pen ended up, so runs can be chained without measuring.
+// `y` is the top of the cap line; the baseline sits at y + size, descenders
+// reach below it.
 hud_text :: proc(
 	x, y: f32,
 	text: string,
 	size: f32,
 	color: [4]f32,
 	align: Hud_Align = .Left,
+	tracking: f32 = 0,
+	font: Ui_Font = .Display,
 ) -> f32 {
-	px := hud_font_size(size)
-	advance := px * FONT_ADVANCE_RATIO
-
-	pen := math.round(x)
-	switch align {
-	case .Left:
-	case .Center:
-		pen = math.round(x - hud_text_width(text, px) * 0.5)
-	case .Right:
-		pen = math.round(x - hud_text_width(text, px))
-	}
-	top := math.round(y)
-
-	for i in 0 ..< len(text) {
-		c := text[i]
-		// The atlas holds capitals only, so lowercase is folded onto them rather
-		// than dropped.
-		if c >= 'a' && c <= 'z' do c -= 32
-
-		index := int(c) - FONT_FIRST
-		if index >= 0 && index < FONT_COUNT && FONT_GLYPHS[index] != 0 {
-			col := f32(index % FONT_COLS)
-			row := f32(index / FONT_COLS)
-			hud_quad(
-				{
-					rect = {pen, top, px, px},
-					uv = {
-						col / FONT_COLS,
-						row / FONT_ROWS,
-						(col + 1) / FONT_COLS,
-						(row + 1) / FONT_ROWS,
-					},
-					color = color,
-					params = {0, 1, 0, 0},
-				},
-			)
-		}
-		pen += advance
-	}
-	return pen
+	return draw_text(x, y, text, size, color, align, tracking, font, 0)
 }
 
-// A dark copy underneath, for the same reason the crosshair has an outline: HUD
-// text sits over a sandstone map that is bright in some places and shadowed in
-// others, and one colour cannot stay legible against both.
+// A dark, slightly fattened copy underneath: HUD text sits over a sandstone
+// map that is bright in some places and shadowed in others, and one colour
+// cannot stay legible against both.
 hud_text_shadow :: proc(
 	x, y: f32,
 	text: string,
 	size: f32,
 	color: [4]f32,
 	align: Hud_Align = .Left,
+	tracking: f32 = 0,
+	font: Ui_Font = .Display,
 ) -> f32 {
-	px := hud_font_size(size)
-	// A fraction of a texel, not a whole one. Offsetting by a full font pixel is
-	// six screen pixels at HUD sizes, which reads as the text printed twice.
-	offset := max(1, math.round(px / 24))
-	hud_text(x + offset, y + offset, text, px, {0, 0, 0, color.a * 0.7}, align)
-	return hud_text(x, y, text, px, color, align)
+	offset := max(1, math.round(size / 24))
+	draw_text(
+		x + offset,
+		y + offset,
+		text,
+		size,
+		{0, 0, 0, color.a * 0.7},
+		align,
+		tracking,
+		font,
+		FONT_SHADOW_BIAS,
+	)
+	return draw_text(x, y, text, size, color, align, tracking, font, 0)
+}
+
+@(private = "file")
+draw_text :: proc(
+	x, y: f32,
+	text: string,
+	size: f32,
+	color: [4]f32,
+	align: Hud_Align,
+	tracking: f32,
+	font: Ui_Font,
+	edge_bias: f32,
+) -> f32 {
+	face := &faces[font]
+	draw_scale := size / face.cap_height
+
+	pen := math.round(x)
+	switch align {
+	case .Left:
+	case .Center:
+		pen = math.round(x - hud_text_width(text, size, tracking, font) * 0.5)
+	case .Right:
+		pen = math.round(x - hud_text_width(text, size, tracking, font))
+	}
+	baseline := math.round(y) + size
+
+	prev: rune
+	for r in text {
+		glyph, ok := face.glyphs[r]
+		if !ok {
+			// outside the set (emoji personas): advance like a space
+			pen += face.space_advance * draw_scale + (prev != 0 ? tracking : 0)
+			prev = r
+			continue
+		}
+
+		advance := glyph.advance
+		digit := is_digit(r)
+		if digit do advance = face.digit_advance
+
+		if prev != 0 {
+			pen += tracking
+			if !digit && !is_digit(prev) {
+				if k, has := face.kern[u64(prev) << 32 | u64(r)]; has do pen += k * draw_scale
+			}
+		}
+
+		if glyph.size.x > 0 {
+			// digits centre inside their fixed cell so 1 sits where 8 does
+			slack := digit ? (face.digit_advance - glyph.advance) * 0.5 : 0
+			hud_quad(
+				{
+					rect = {
+						pen + (glyph.offset.x + slack) * draw_scale,
+						baseline + glyph.offset.y * draw_scale,
+						glyph.size.x * draw_scale,
+						glyph.size.y * draw_scale,
+					},
+					uv = glyph.uv,
+					color = color,
+					params = {0, 1, 0, edge_bias},
+				},
+			)
+		}
+
+		pen += advance * draw_scale
+		prev = r
+	}
+	return pen
 }
