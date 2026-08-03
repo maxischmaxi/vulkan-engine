@@ -34,6 +34,12 @@ SMOKE_FRAG_CODE :: #load("../shaders/smoke.frag.spv")
 TRACER_VERT_CODE :: #load("../shaders/tracer.vert.spv")
 TRACER_FRAG_CODE :: #load("../shaders/tracer.frag.spv")
 
+ARC_VERT_CODE :: #load("../shaders/arc.vert.spv")
+ARC_FRAG_CODE :: #load("../shaders/arc.frag.spv")
+
+PARTICLE_VERT_CODE :: #load("../shaders/particle.vert.spv")
+PARTICLE_FRAG_CODE :: #load("../shaders/particle.frag.spv")
+
 CROSSHAIR_VERT_CODE :: #load("../shaders/crosshair.vert.spv")
 CROSSHAIR_FRAG_CODE :: #load("../shaders/crosshair.frag.spv")
 

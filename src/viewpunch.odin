@@ -1,6 +1,7 @@
 package main
 
 import "core:math"
+import "core:math/linalg"
 import "game"
 
 // The camera's answer to firing: a render-only kick that tracks a fraction of
@@ -15,10 +16,22 @@ import "game"
 // everything rendered reads punched_view_angles via camera_forward/right.
 
 Viewpunch :: struct {
-	current: [2]f32, // degrees {yaw, pitch} added to the rendered view only
+	current:     [2]f32, // degrees {yaw, pitch} added to the rendered view only
+	// A blast's shove, kept apart from the tracked recoil above: `current`
+	// chases the spray pattern every frame and would erase anything added to
+	// it within a frame or two.
+	shake:       f32, // amplitude in degrees, decaying
+	shake_phase: f32,
 }
 
 viewpunch: Viewpunch
+
+// How a blast shoves the view. Past the range nothing happens at all, which
+// keeps a smoke going off across the map from nudging a duel.
+BLAST_SHAKE_RANGE :: f32(20)
+BLAST_SHAKE_DEGREES :: f32(2.4)
+BLAST_SHAKE_FREQ :: f32(26)
+BLAST_SHAKE_DECAY :: f32(6.5)
 
 // The fraction of the ballistic pattern the camera shows (cs shows ~0.45 of
 // its aim punch). The rest stays hidden, which is exactly what keeps a
@@ -40,6 +53,43 @@ viewpunch_update :: proc(dt: f32) {
 		game.spray_track_offset(&weapon_state.spray, current_weapon().mag_size) *
 		VIEWPUNCH_TRACKING
 	viewpunch.current += (target - viewpunch.current) * (1 - math.exp(-VIEWPUNCH_RATE * dt))
+
+	viewpunch.shake_phase += dt
+	viewpunch.shake *= math.exp(-BLAST_SHAKE_DECAY * dt)
+	if viewpunch.shake < 0.001 do viewpunch.shake = 0
+}
+
+// Something went off nearby. `strength` is 1 for a grenade at full force; the
+// distance falloff is this procedure's business, because only it knows where
+// the eye is.
+//
+// Takes the louder of the two rather than adding: two grenades landing together
+// should shake like the bigger one, not like their sum -- that way lies a view
+// that spins.
+viewpunch_note_blast :: proc(position: [3]f32, strength: f32) {
+	distance := linalg.length(position - camera.position)
+	falloff := 1 - clamp(distance / BLAST_SHAKE_RANGE, 0, 1)
+	if falloff <= 0 do return
+
+	// Squared, so the shove is felt at the blast and merely noticed at the edge
+	// of its range.
+	amplitude := BLAST_SHAKE_DEGREES * strength * falloff * falloff
+	if amplitude <= viewpunch.shake do return
+	viewpunch.shake = amplitude
+	viewpunch.shake_phase = 0
+}
+
+// The two axes run at different rates, so the view describes a wandering figure
+// rather than a diagonal line -- a single frequency on both reads as the screen
+// being dragged, not shaken.
+@(private = "file")
+shake_offset :: proc() -> [2]f32 {
+	if viewpunch.shake <= 0 do return {}
+	t := viewpunch.shake_phase
+	return {
+		math.sin(t * BLAST_SHAKE_FREQ) * viewpunch.shake,
+		math.sin(t * BLAST_SHAKE_FREQ * 0.71 + 1.3) * viewpunch.shake * 0.8,
+	}
 }
 
 // Called on every cosmetic shot: a sharp nudge upward that the chase pulls
@@ -61,6 +111,7 @@ viewpunch_note_shot :: proc() {
 // the wire or the prediction: camera.yaw and camera.pitch are untouched.
 punched_view_angles :: proc() -> (yaw, pitch: f32) {
 	lens := camera.fov_horizontal / game_settings.fov
-	return camera.yaw + viewpunch.current.x * lens,
-		clamp(camera.pitch + viewpunch.current.y * lens, -MAX_PITCH + 0.5, MAX_PITCH - 0.5)
+	offset := viewpunch.current + shake_offset()
+	return camera.yaw + offset.x * lens,
+		clamp(camera.pitch + offset.y * lens, -MAX_PITCH + 0.5, MAX_PITCH - 0.5)
 }

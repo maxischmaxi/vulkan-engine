@@ -93,8 +93,13 @@ Pawn :: struct {
 	holding_bomb:  bool,
 	// Counts left this life, seeded from the loadout at spawn.
 	grenades:      [Grenade_Kind]u8,
-	// Seconds until another throw is allowed, so one click is one grenade.
+	// Seconds until another wind-up may start, so one click is one grenade.
 	throw_cooldown: f32,
+	// The arm drawing back before a throw. Counted in ticks rather than
+	// seconds, because the client runs this very struct over the commands it
+	// sends to draw its trajectory preview -- two integer counters over the
+	// same commands agree exactly, two float accumulators would drift.
+	wind_up:        Wind_Up,
 	// Seconds of white left from a flash, and what it started at -- the client
 	// needs both to draw the fade. Server-owned; it travels in the private
 	// block, because being blind is nobody else's business.
@@ -148,6 +153,7 @@ init_pawn :: proc(p: ^Pawn, position: [3]f32, yaw: f32) {
 	p.holding_bomb = false
 	p.grenades = {}
 	p.throw_cooldown = 0
+	p.wind_up = {}
 }
 
 // Armour eats half of what is left, up to what the vest has, scaled down by

@@ -81,6 +81,17 @@ Cli :: struct {
 	// economy's -- a grenade is a mouse button, and mouse buttons are exactly
 	// what a headless test cannot press.
 	nade:          string,
+	// How long --nade holds the throw button, in multiples of a full wind-up.
+	// 1 is exactly full; more than that keeps holding, which a player lining a
+	// throw up does too. Also the only way to get the trajectory preview on
+	// screen for a screenshot -- it appears part way into a hold, and a hold is
+	// the one thing a scripted run cannot perform.
+	nade_charge:   f32,
+	// Fire this effect on a slow cycle a few metres in front of the camera:
+	// "he", "flash", "smoke", "fire". Detonations are server events, so this is
+	// the only way to photograph one without a match -- the effect bank's
+	// equivalent of --hudpreview.
+	fx:            string,
 }
 
 cli: Cli
@@ -110,11 +121,15 @@ CLI_USAGE :: `Options:
   --fow-log     log which pawn ids each snapshot carries (fog of war)
   --hand-log    log the grenade belt and what is in the hands, on every change
   --nade=KIND   buy and repeatedly throw a grenade: he, flash, smoke, molotov
+  --nade-charge=F  how long --nade holds, in full wind-ups, 0..4 (default 1)
+  --fx=KIND     repeatedly set off an effect in front of the camera: he, flash,
+                smoke, fire
   --help        print this`
 
 parse_cli :: proc() {
 	cli.gpu_index = -1
 	cli.depth_prepass = true
+	cli.nade_charge = 1
 
 	for arg in os.args[1:] {
 		switch {
@@ -193,6 +208,17 @@ parse_cli :: proc() {
 
 		case strings.has_prefix(arg, "--nade="):
 			cli.nade = arg[len("--nade="):]
+
+		case strings.has_prefix(arg, "--nade-charge="):
+			value, ok := strconv.parse_f32(arg[len("--nade-charge="):])
+			if !ok || value < 0 || value > 4 {
+				log.errorf("--nade-charge wants 0..4, got {}", arg)
+				continue
+			}
+			cli.nade_charge = value
+
+		case strings.has_prefix(arg, "--fx="):
+			cli.fx = arg[len("--fx="):]
 
 		case arg == "--no-steam":
 			when STEAM_REQUIRED {

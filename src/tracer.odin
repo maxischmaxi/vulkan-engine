@@ -236,10 +236,10 @@ update_tracers :: proc(dt: f32) {
 }
 
 // The metres a point has to be wide to cover the same pixels wherever it sits.
+// The rule itself is camera.odin's; this only names the streak's numbers.
 @(private = "file")
 tracer_half_width :: proc(point: [3]f32, half_h: f32) -> f32 {
-	distance := linalg.length(point - camera.position)
-	return min(TRACER_SCREEN_HALF * half_h * distance, TRACER_MAX_HALF_WIDTH)
+	return screen_half_width(point, half_h, TRACER_SCREEN_HALF, TRACER_MAX_HALF_WIDTH)
 }
 
 // Every frame with tracers in flight uploads, unlike the decals' dirty flag:

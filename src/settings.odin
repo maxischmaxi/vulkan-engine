@@ -47,6 +47,11 @@ Render_Settings :: struct {
 	// Ray steps through a smoke cloud. Pure fragment throughput -- exactly what
 	// a weak GPU has least of -- so it is a preset dial rather than a constant.
 	smoke_steps:       u8,
+	// How many particles may be alive at once, for the same reason: a particle
+	// costs nothing but the pixels it covers, and an explosion covers a lot of
+	// them. The pool is sized for the ceiling (MAX_PARTICLES); this is the share
+	// of it a preset takes.
+	particles:         u16,
 
 	// ------------------------------------------------------------ texturing
 	anisotropy:        u8, // 1 / 2 / 4 / 8 / 16
@@ -79,6 +84,7 @@ PRESETS := [Preset]Render_Settings {
 		shadow_resolution = 512,
 		shadow_pcf = 1,
 		smoke_steps = 8,
+		particles = 192,
 		anisotropy = 1,
 		mip_lod_bias = 0.5,
 	},
@@ -91,6 +97,7 @@ PRESETS := [Preset]Render_Settings {
 		shadow_resolution = 1024,
 		shadow_pcf = 1,
 		smoke_steps = 12,
+		particles = 384,
 		anisotropy = 2,
 	},
 	.Medium = {
@@ -102,6 +109,7 @@ PRESETS := [Preset]Render_Settings {
 		shadow_resolution = 1024,
 		shadow_pcf = 4,
 		smoke_steps = 20,
+		particles = 768,
 		anisotropy = 4,
 	},
 	.High = {
@@ -113,6 +121,7 @@ PRESETS := [Preset]Render_Settings {
 		shadow_resolution = 2048,
 		shadow_pcf = 9,
 		smoke_steps = 32,
+		particles = 1280,
 		anisotropy = 8,
 	},
 	.Ultra = {
@@ -124,6 +133,7 @@ PRESETS := [Preset]Render_Settings {
 		shadow_resolution = 2048,
 		shadow_pcf = 9,
 		smoke_steps = 48,
+		particles = 2048,
 		anisotropy = 16,
 	},
 }
@@ -166,6 +176,7 @@ clamp_to_device :: proc(s: Render_Settings) -> Render_Settings {
 	// A zero would delete the smoke's loop entirely and leave invisible clouds
 	// that still block sight; the ceiling is where more steps stop showing.
 	out.smoke_steps = clamp(out.smoke_steps, 4, 64)
+	out.particles = min(out.particles, MAX_PARTICLES)
 
 	switch {
 	case out.shadow_pcf <= 1:
@@ -278,6 +289,8 @@ create_all_pipelines :: proc() {
 	create_character_pipeline()
 	create_decal_pipeline()
 	create_tracer_pipeline()
+	create_arc_pipeline()
+	create_particle_pipelines()
 	create_hud_pipeline()
 	create_hud_quad_pipeline()
 	create_damage_pipeline()
@@ -299,6 +312,9 @@ destroy_all_pipelines :: proc() {
 	destroy_pipeline(character_renderer.pipeline)
 	destroy_pipeline(decal_renderer.pipeline)
 	destroy_pipeline(tracer_renderer.pipeline)
+	destroy_pipeline(arc_renderer.pipeline)
+	destroy_pipeline(particles.alpha_pipeline)
+	destroy_pipeline(particles.additive_pipeline)
 	destroy_pipeline(hud_renderer.quad_pipeline)
 	destroy_pipeline(hud_renderer.pipeline)
 	destroy_pipeline(damage_renderer.pipeline)

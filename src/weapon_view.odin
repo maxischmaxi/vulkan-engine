@@ -648,6 +648,26 @@ tracer_origin :: proc() -> [3]f32 {
 	)
 }
 
+// How far the arm draws back at a full wind-up: back along the barrel axis, up,
+// and a little to the right.
+//
+// This is the whole feedback for the first half second, before the trajectory
+// line appears (arc_render.odin). Without it the charge is invisible and a
+// player has no way to tell a held button from a stuck one. Eased with a
+// square root so most of the travel happens early, where the difference between
+// "pressed" and "not pressed" is the thing that has to read.
+WIND_UP_DRAW :: 0.11
+WIND_UP_RISE :: 0.06
+WIND_UP_SIDE :: 0.03
+
+@(private = "file")
+wind_up_offset :: proc(right, forward, up: [3]f32) -> [3]f32 {
+	charge, _, winding := hand_wind_up()
+	if !winding do return {}
+	t := math.sqrt(clamp(charge, 0, 1))
+	return -forward * (WIND_UP_DRAW * t) + up * (WIND_UP_RISE * t) + right * (WIND_UP_SIDE * t)
+}
+
 // The weapon mesh, plus the one part of it still made of blocks.
 submit_viewmodel :: proc() {
 	// Scoped in, the scope overlay is the whole picture.
@@ -659,7 +679,10 @@ submit_viewmodel :: proc() {
 	// Hands on a grenade or the bomb hold that instead, and nothing below
 	// applies: there is no muzzle to flash.
 	if model, held := hand_view_model(); held {
-		add_view_model(model, prop_transform_oriented(origin, 1, right, forward, up))
+		add_view_model(
+			model,
+			prop_transform_oriented(origin + wind_up_offset(right, forward, up), 1, right, forward, up),
+		)
 		return
 	}
 

@@ -2,6 +2,7 @@ package main
 
 import "../game"
 import "../physics"
+import "../protocol"
 import "core:log"
 
 // The server's half of grenades: turning a throw into a projectile, and a
@@ -10,25 +11,37 @@ import "core:log"
 
 // One grenade leaves a pawn's hand. Everything about whether they were allowed
 // to is the caller's business; this is the mechanics of the throw.
-throw_grenade :: proc(pawn_id: int, kind: game.Grenade_Kind, mode: game.Throw_Mode) -> bool {
+throw_grenade :: proc(pawn_id: int, req: game.Throw_Request) -> bool {
 	p := &sv.gs.pawns[pawn_id]
 	if !p.active || !p.alive do return false
 
-	velocity := game.throw_velocity(p.yaw, p.pitch, mode, p.body.velocity)
+	velocity := game.throw_velocity(p.yaw, p.pitch, req.style, req.charge, p.body.velocity)
 	origin := game.throw_origin(p^)
-	if !game.spawn_projectile(&sv.gs, kind, pawn_id, p.team, origin, velocity) {
-		log.warnf("Server: projectile pool full, {} throw dropped", game.GRENADES[kind].name)
+	if !game.spawn_projectile(&sv.gs, req.kind, pawn_id, p.team, origin, velocity) {
+		log.warnf("Server: projectile pool full, {} throw dropped", game.GRENADES[req.kind].name)
 		return false
 	}
 
 	log.infof(
-		"Server: pawn {} threw {} ({}) from {}",
+		"Server: pawn {} threw {} ({}, charge {:.2f}) from {}",
 		pawn_id,
-		game.GRENADES[kind].name,
-		mode,
+		game.GRENADES[req.kind].name,
+		req.style,
+		req.charge,
 		origin,
 	)
 	return true
+}
+
+// What the client is told a detonation was, so it can pick the effect and the
+// sound. The game package's Grenade_Kind never leaves the server as such: the
+// wire's vocabulary is what happened, not what it was thrown from.
+@(rodata)
+DETONATION_EVENTS := [game.Grenade_Kind]protocol.Event_Kind {
+	.He      = .He_Blast,
+	.Flash   = .Flash_Pop,
+	.Smoke   = .Smoke_Pop,
+	.Molotov = .Fire_Pop,
 }
 
 // A projectile reached the end of its life. What each kind does lives here
@@ -36,6 +49,7 @@ throw_grenade :: proc(pawn_id: int, kind: game.Grenade_Kind, mode: game.Throw_Mo
 // made in the game package, off nothing but the projectile's own state.
 apply_detonation :: proc(d: game.Detonation) {
 	log.infof("Server: {} detonated at {}", game.GRENADES[d.kind].name, d.position)
+	queue_event(DETONATION_EVENTS[d.kind], -1, d.position, game.BLAST_EVENT_RANGE)
 
 	switch d.kind {
 	case .He:

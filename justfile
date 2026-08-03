@@ -26,6 +26,12 @@ textures:
 # into sounds/, the runtime directory the audio bank reads
 sounds:
     ./tools/fetch_sounds.sh
+    python3 tools/synth_sounds.py
+
+# just the generated grenade sounds -- seconds, no downloads. Run this after
+# changing a number in tools/synth_sounds.py.
+synth-sounds:
+    python3 tools/synth_sounds.py
 
 # unpacks the model archives and bakes them into models/*.mesh plus three more
 # texture sets. Minutes, not seconds -- which is why `run` does not depend on it

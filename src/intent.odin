@@ -1,6 +1,5 @@
 package main
 
-import "core:math"
 import "game"
 import "vendor:glfw"
 
@@ -62,7 +61,19 @@ gather_player_intent :: proc() {
 
 // Sampled at tick time. Held keys are read fresh so every tick in a frame sees
 // them; the jump edge fires once and the pawn's own buffer carries it on.
+//
+// Every command that leaves here is also shown to hand_note_command, which is
+// how the client counts the same wind-up ticks the server will count off the
+// very same commands. Both prediction and the offline path come through here,
+// so there is exactly one place that has to be right.
 build_local_input :: proc() -> game.Pawn_Input {
+	cmd := gather_local_command()
+	hand_note_command(cmd)
+	return cmd
+}
+
+@(private = "file")
+gather_local_command :: proc() -> game.Pawn_Input {
 	input_: game.Pawn_Input
 	input_.yaw = camera.yaw
 	input_.pitch = camera.pitch
@@ -108,12 +119,10 @@ build_local_input :: proc() -> game.Pawn_Input {
 	}
 	// Scoped in walks slower, and only the wire can make the server agree.
 	//
-	// With a grenade in hand the same bit means the short throw instead. The
-	// throw modes are the two mouse buttons (game/throw.odin), and the right
-	// one only ever reached the wire as "currently scoped" -- which is why the
-	// short and medium throws were unreachable with an actual mouse. There is
-	// no scope to be in while holding a grenade, so the bit is free to mean
-	// the button.
+	// With a grenade in hand the same bit means the underhand throw instead:
+	// there is no scope to be in while holding one, so the bit is free to mean
+	// the button. Together with .Fire above that is the whole throw input --
+	// holding either winds up, letting go throws (game/throw.odin).
 	if hand_busy() {
 		if may_fire && glfw.GetMouseButton(g.window, glfw.MOUSE_BUTTON_RIGHT) == glfw.PRESS {
 			input_.buttons += {.Zoom}
@@ -144,9 +153,9 @@ build_local_input :: proc() -> game.Pawn_Input {
 	return input_
 }
 
-// --nade: select the grenade slot and pull the trigger on a slow cycle. The
-// throw is two mouse buttons and a number key, none of which a headless test
-// can press, so the flag writes them into the command instead.
+// --nade: select the grenade slot and work the throw on a slow cycle. The throw
+// is a held mouse button and a number key, neither of which a headless test can
+// press, so the flag writes them into the command instead.
 @(private = "file")
 nade_override_input :: proc(input_: ^game.Pawn_Input) {
 	if cli.nade == "" do return
@@ -156,7 +165,8 @@ nade_override_input :: proc(input_: ^game.Pawn_Input) {
 	// reads as one line per grenade rather than a burst.
 	period := f32(2.5)
 	phase := f32(game.clock.tick_count) * game.TICK_DT
-	slice := phase - math.floor(phase / period) * period
+	cycle := int(phase / period)
+	slice := phase - f32(cycle) * period
 
 	// Early in the cycle: rebuy, then put one in hand. The rebuy repeats
 	// rather than firing once on a phase change, because a buy that arrives
@@ -167,17 +177,25 @@ nade_override_input :: proc(input_: ^game.Pawn_Input) {
 		input_.weapon_slot = game.GRENADE_SLOT
 		return
 	}
-	if slice <= 0.3 || slice >= 0.3 + game.TICK_DT * 2 do return
 
-	// Alternating throw modes, counted rather than derived from the clock: a
-	// grenade with a carry limit of one gives a life a single throw, and
-	// keying the mode off the wall clock would make which mode that is a coin
-	// flip. The first is always short.
+	// The wind-up, held for as long as --nade-charge asks and then released.
+	// The release is what throws, so the window has to end well inside the
+	// cycle -- one that ran to the next would never let go of the button.
+	NADE_WIND_START :: f32(0.3)
+	hold := max(cli.nade_charge, 0) * f32(game.THROW_CHARGE_TICKS) * game.TICK_DT
+	hold = max(hold, game.TICK_DT * 2) // even charge 0 has to press
+	if slice < NADE_WIND_START || slice >= NADE_WIND_START + hold do return
+
+	// Deliberately standing still. Strafing through the wind-up was tried, to
+	// exercise the motion a throw inherits -- it walks the probe into walls and
+	// under fire, and the screenshot this flag exists for stops landing. The
+	// moving case is covered by the wind-up tests and by hand.
 	//
-	// Short lands at the thrower's own feet, which is what lets a headless run
-	// prove an effect at all -- self-damage needs no second player to walk
-	// into the blast.
-	@(static) throws: int
-	input_.buttons += throws % 2 == 0 ? {.Zoom} : {.Fire}
-	throws += 1
+	// The style alternates by cycle rather than by a counter across respawns:
+	// a grenade with a carry limit of one gives a life a single throw, and a
+	// static counter would make which style that is depend on how the round
+	// went. Even cycles are underhand, so the first throw of any run lands at
+	// the thrower's own feet -- which is what lets a headless run prove an
+	// effect at all, since self-damage needs no second player to walk into it.
+	input_.buttons += cycle % 2 == 0 ? {.Zoom} : {.Fire}
 }

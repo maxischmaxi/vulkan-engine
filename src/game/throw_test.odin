@@ -28,6 +28,23 @@ pull_trigger :: proc(p: ^Pawn, buttons: Buttons) -> Throw_Request {
 	return tick_pawn_grenade(p, {weapon_slot = -1, buttons = buttons}, false, TICK_DT)
 }
 
+// Winds the arm up for `ticks` and lets go. The release is the throw, so the
+// request comes back from the last call rather than the first.
+@(private = "file")
+wind_and_release :: proc(p: ^Pawn, ticks: int, buttons := Buttons{.Fire}) -> Throw_Request {
+	for _ in 0 ..< ticks do pull_trigger(p, buttons)
+	return pull_trigger(p, {})
+}
+
+// Idles until a fresh wind-up is allowed again.
+@(private = "file")
+wait_out_cooldown :: proc(p: ^Pawn) {
+	// A variable, not the constant expression: int() of a constant 38.4 is a
+	// compile error rather than a truncation.
+	cooldown := f32(THROW_COOLDOWN)
+	for _ in 0 ..< int(cooldown * TICK_RATE) + 2 do pull_trigger(p, {})
+}
+
 @(test)
 test_throw_consumes_one_grenade :: proc(t: ^testing.T) {
 	p := armed({.He = 1, .Flash = 2, .Smoke = 0, .Molotov = 0})
@@ -35,53 +52,113 @@ test_throw_consumes_one_grenade :: proc(t: ^testing.T) {
 	select_grenades(&p)
 	testing.expect(t, p.held_grenade >= 0, "the grenade slot must put one in hand")
 
-	req := pull_trigger(&p, {.Fire})
+	req := wind_and_release(&p, 10)
 	testing.expect(t, req.throwing)
-	testing.expect_value(t, req.mode, Throw_Mode.Long)
+	testing.expect_value(t, req.style, Throw_Style.Overhand)
 	testing.expect_value(t, pawn_grenade_total(p), 2)
 }
 
-// One press, one grenade. Holding the button down must not empty the belt.
+// The release throws, not the press. Holding the button is aiming.
 @(test)
-test_held_trigger_throws_once :: proc(t: ^testing.T) {
+test_holding_does_not_throw :: proc(t: ^testing.T) {
 	p := armed({.He = 1, .Flash = 2, .Smoke = 1, .Molotov = 0})
 	select_grenades(&p)
 
-	// A variable, not the constant expression: int() of a constant 38.4 is a
-	// compile error rather than a truncation.
-	cooldown := f32(THROW_COOLDOWN)
-	cooldown_ticks := int(cooldown * TICK_RATE)
-
 	thrown := 0
-	for _ in 0 ..< cooldown_ticks {
+	for _ in 0 ..< int(THROW_CHARGE_TICKS) * 3 {
 		if pull_trigger(&p, {.Fire}).throwing do thrown += 1
 	}
-	testing.expect_value(t, thrown, 1)
+	testing.expect_value(t, thrown, 0)
+	testing.expect_value(t, p.wind_up.charge, THROW_CHARGE_TICKS)
 
-	// Past the cooldown a second one is allowed -- a fast double-click is a
-	// player's business, not the belt's.
-	for _ in 0 ..< cooldown_ticks + 2 {
-		pull_trigger(&p, {})
-	}
-	testing.expect(t, pull_trigger(&p, {.Fire}).throwing, "cooldown never expired")
+	testing.expect(t, pull_trigger(&p, {}).throwing, "letting go must throw")
+	testing.expect_value(t, p.wind_up.charge, u8(0))
 }
 
+// Longer hold, faster throw -- up to the cap and no further.
 @(test)
-test_throw_modes_off_the_mouse_buttons :: proc(t: ^testing.T) {
-	long, ok1 := throw_mode_from_buttons({.Fire})
-	testing.expect(t, ok1)
-	testing.expect_value(t, long, Throw_Mode.Long)
+test_charge_buys_distance :: proc(t: ^testing.T) {
+	p := armed({.He = 1, .Flash = 2, .Smoke = 1, .Molotov = 0})
 
-	short, ok2 := throw_mode_from_buttons({.Zoom})
-	testing.expect(t, ok2)
-	testing.expect_value(t, short, Throw_Mode.Short)
+	select_grenades(&p)
+	tap := wind_and_release(&p, 1)
+	testing.expect(t, tap.throwing)
 
-	medium, ok3 := throw_mode_from_buttons({.Fire, .Zoom})
-	testing.expect(t, ok3)
-	testing.expect_value(t, medium, Throw_Mode.Medium)
+	wait_out_cooldown(&p)
+	full := wind_and_release(&p, int(THROW_CHARGE_TICKS) * 2)
+	testing.expect(t, full.throwing)
 
-	_, ok4 := throw_mode_from_buttons({.Jump, .Crouch})
-	testing.expect(t, !ok4, "no mouse button is no throw")
+	testing.expect(t, tap.charge < full.charge, "a tap must not buy a full throw")
+	testing.expect_value(t, full.charge, f32(1))
+	testing.expect(
+		t,
+		throw_speed(.Overhand, tap.charge) < throw_speed(.Overhand, full.charge),
+		"charge must reach the speed",
+	)
+	testing.expect_value(t, throw_speed(.Overhand, 1), f32(THROW_SPEED_MAX))
+}
+
+// The right button alone asks for the short arc, and no amount of winding up
+// can make it a long one.
+@(test)
+test_right_button_is_the_underhand :: proc(t: ^testing.T) {
+	p := armed({.He = 1, .Flash = 2, .Smoke = 1, .Molotov = 0})
+
+	select_grenades(&p)
+	req := wind_and_release(&p, 10, {.Zoom})
+	testing.expect_value(t, req.style, Throw_Style.Underhand)
+	testing.expect_value(t, throw_speed(.Underhand, 1), f32(THROW_UNDERHAND_SPEED))
+}
+
+// Tapping the other button while the arm is drawn back switches between the two
+// shapes, from either side. A toggle rather than "the last press wins": the
+// button already being held cannot be pressed again without letting go of it,
+// and letting go is what throws.
+@(test)
+test_tapping_switches_the_shape :: proc(t: ^testing.T) {
+	tap :: proc(p: ^Pawn, hold, other: Buttons) {
+		pull_trigger(p, hold + other) // the press edge
+		pull_trigger(p, hold) // still winding on the first button
+	}
+
+	p := armed({.He = 1, .Flash = 2, .Smoke = 1, .Molotov = 0})
+	select_grenades(&p)
+
+	// Holding left: long, short, long again.
+	for _ in 0 ..< 5 do pull_trigger(&p, {.Fire})
+	testing.expect(t, !p.wind_up.underhand, "the left button starts long")
+	tap(&p, {.Fire}, {.Zoom})
+	testing.expect(t, p.wind_up.underhand, "one tap must reach the short arc")
+	tap(&p, {.Fire}, {.Zoom})
+	testing.expect(t, !p.wind_up.underhand, "a second tap must come back")
+
+	// The wind-up survives the switching, and the release throws what is showing.
+	testing.expect(t, p.wind_up.charge > 5, "switching must not drop the charge")
+	tap(&p, {.Fire}, {.Zoom})
+	testing.expect_value(t, pull_trigger(&p, {}).style, Throw_Style.Underhand)
+
+	// And the same the other way round: holding right, tapping left.
+	wait_out_cooldown(&p)
+	for _ in 0 ..< 5 do pull_trigger(&p, {.Zoom})
+	testing.expect(t, p.wind_up.underhand, "the right button starts short")
+	tap(&p, {.Zoom}, {.Fire})
+	testing.expect(t, !p.wind_up.underhand, "tapping left must reach the long arc")
+	testing.expect_value(t, pull_trigger(&p, {}).style, Throw_Style.Overhand)
+}
+
+// Changing hands mid-wind-up drops the throw without costing the grenade.
+@(test)
+test_switching_cancels_the_wind_up :: proc(t: ^testing.T) {
+	p := armed({.He = 1, .Flash = 1, .Smoke = 0, .Molotov = 0})
+
+	select_hand(&p, select_grenade(.He))
+	for _ in 0 ..< 20 do pull_trigger(&p, {.Fire})
+	testing.expect(t, p.wind_up.charge > 0)
+
+	select_hand(&p, select_grenade(.Flash))
+	testing.expect_value(t, p.wind_up.charge, u8(0))
+	testing.expect(t, !pull_trigger(&p, {}).throwing, "a cancelled wind-up threw anyway")
+	testing.expect_value(t, pawn_grenade_total(p), 2)
 }
 
 @(test)
@@ -89,16 +166,33 @@ test_cannot_throw_what_is_not_carried :: proc(t: ^testing.T) {
 	p := armed({})
 	select_grenades(&p)
 	testing.expect_value(t, p.held_grenade, i8(-1))
-	testing.expect(t, !pull_trigger(&p, {.Fire}).throwing, "an empty belt throws nothing")
+	testing.expect(t, !wind_and_release(&p, 10).throwing, "an empty belt throws nothing")
 
 	// One grenade, thrown, then nothing left.
 	p = armed({.He = 1, .Flash = 0, .Smoke = 0, .Molotov = 0})
 	select_grenades(&p)
-	testing.expect(t, pull_trigger(&p, {.Fire}).throwing)
-	cooldown := f32(THROW_COOLDOWN)
-	for _ in 0 ..< int(cooldown * TICK_RATE) + 2 do pull_trigger(&p, {})
-	testing.expect(t, !pull_trigger(&p, {.Fire}).throwing, "threw a grenade it did not have")
+	testing.expect(t, wind_and_release(&p, 10).throwing)
+	wait_out_cooldown(&p)
+	testing.expect(t, !wind_and_release(&p, 10).throwing, "threw a grenade it did not have")
 	testing.expect_value(t, p.held_grenade, i8(-1))
+}
+
+// A button held across a throw must not fire again the instant the cooldown
+// expires: that is the old held-trigger behaviour under a new name.
+@(test)
+test_held_button_does_not_rearm :: proc(t: ^testing.T) {
+	p := armed({.He = 1, .Flash = 2, .Smoke = 1, .Molotov = 0})
+	select_grenades(&p)
+
+	testing.expect(t, wind_and_release(&p, 10).throwing)
+
+	cooldown := f32(THROW_COOLDOWN)
+	thrown := 0
+	for _ in 0 ..< int(cooldown * TICK_RATE) * 3 {
+		if pull_trigger(&p, {.Fire}).throwing do thrown += 1
+	}
+	testing.expect_value(t, thrown, 0)
+	testing.expect_value(t, p.wind_up.charge, u8(0))
 }
 
 // Pressing the slot again cycles, which is how counter-strike's key 4 behaves.
@@ -171,10 +265,14 @@ test_dead_pawns_drop_the_grenade :: proc(t: ^testing.T) {
 	select_grenades(&p)
 	testing.expect(t, p.held_grenade >= 0)
 
+	// Wound up and then killed: neither the throw nor the grenade survives.
+	for _ in 0 ..< 20 do pull_trigger(&p, {.Fire})
 	p.alive = false
-	req := pull_trigger(&p, {.Fire})
+	req := pull_trigger(&p, {})
 	testing.expect(t, !req.throwing, "a corpse threw a grenade")
 	testing.expect_value(t, p.held_grenade, i8(-1))
+	testing.expect_value(t, p.wind_up.charge, u8(0))
+	testing.expect_value(t, pawn_grenade_total(p), 2)
 }
 
 // ---------------------------------------------------------------- the belt

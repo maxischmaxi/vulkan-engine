@@ -102,7 +102,7 @@ note_fire_block :: proc(slot: ^Client_Slot, ev: game.Fire_Events) {
 sim_tick :: proc(dt: f32) {
 	for &f in fired_this_tick do f = false
 	for &n in pending_damage_count do n = 0
-	sound_reset()
+	event_reset()
 
 	for &slot in clients {
 		if slot.state != .In_Game do continue
@@ -126,7 +126,7 @@ sim_tick :: proc(dt: f32) {
 		if game.phase_is_action(match.phase) && p.alive {
 			carrying := bomb_carried_by(slot.pawn_id)
 			if req := game.tick_pawn_grenade(p, cmd, carrying, dt); req.throwing {
-				throw_grenade(slot.pawn_id, req.kind, req.mode)
+				throw_grenade(slot.pawn_id, req)
 			}
 			if p.held_grenade >= 0 || p.holding_bomb {
 				cmd.buttons -= {.Fire, .Fire_Pressed, .Zoom}
@@ -233,7 +233,7 @@ sim_tick :: proc(dt: f32) {
 
 	// After everything moved and everything that fired has said so: footsteps
 	// come from the distance actually covered this tick, bots included.
-	tick_sounds(dt)
+	tick_world_events(dt)
 
 	// After everything moved: history[N] must equal what snapshot N tells the
 	// clients -- the agreement the rewind rests on.
@@ -487,7 +487,7 @@ send_snapshots :: proc() {
 				// an enemy behind a wall audible once fog of war removes them
 				// from the entity array. The dead keep listening from where
 				// they fell.
-				fill_client_sounds(&s, game.eye_position(p^), slot.pawn_id)
+				fill_client_events(&s, game.eye_position(p^), slot.pawn_id)
 
 				// The pawn's gear, not the slot's: a buy stored for the next
 				// spawn must not light the HUD up a round early.

@@ -70,6 +70,13 @@ horizontal_length :: proc(v: [3]f32) -> f32 {
 FOOTSTEP_HEARING_RANGE :: f32(28)
 GUNSHOT_HEARING_RANGE :: f32(90)
 
+// Detonations carry further than the map is wide, which makes them effectively
+// unfiltered. That is on purpose and not laziness: an explosion is seen as well
+// as heard, and a range that cut it off would hide the flash going up over a
+// wall from the one player who most needs to see where it came from. The
+// number stays a range rather than a flag so the filter has exactly one shape.
+BLAST_EVENT_RANGE :: f32(200)
+
 // One tick of the cadence. `travelled` is the accumulator the caller keeps per
 // pawn; a pawn that is airborne, stopped or moving under the threshold resets
 // it, so a step never lands the instant someone starts walking again.

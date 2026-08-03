@@ -231,6 +231,9 @@ bomb_explode :: proc() {
 	if bomb.state != .Planted do return
 	bomb.state = .Exploded
 	log.info("Server: bomb exploded")
+	// The same blast the HE gets. A round ending in a silent, invisible
+	// explosion is worse than one ending in no explosion at all.
+	queue_event(.He_Blast, -1, bomb.position, game.BLAST_EVENT_RANGE)
 	for &p, i in sv.gs.pawns {
 		if !p.active || !p.alive do continue
 		delta := p.body.position - bomb.position

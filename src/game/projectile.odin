@@ -98,31 +98,51 @@ GRENADE_COUNT :: len(Grenade_Kind)
 // Total grenades one player may carry across all kinds.
 GRENADE_CARRY_TOTAL :: 4
 
-// How hard it was thrown. Counter-strike's three, off the two mouse buttons:
-// left alone throws long, right alone lobs it just ahead, both together splits
-// the difference.
-Throw_Mode :: enum u8 {
-	Long,
-	Medium,
-	Short,
+// How it left the hand. Two shapes rather than counter-strike's three fixed
+// distances: the overhand covers every distance continuously through the
+// wind-up (see THROW_CHARGE_TICKS), and the underhand is the one throw a charge
+// cannot express -- straight up and barely forward, to drop something at your
+// own feet or over a box you are standing behind.
+Throw_Style :: enum u8 {
+	Overhand,
+	Underhand,
 }
 
-// Metres per second out of the hand. The long throw is counter-strike's 750
-// units per second expressed in this project's units.
-THROW_SPEED := [Throw_Mode]f32 {
-	.Long   = 750 * UNIT,
-	.Medium = 500 * UNIT,
-	.Short  = 250 * UNIT,
-}
+// Metres per second out of the hand. The overhand's ceiling is
+// counter-strike's 750 units per second expressed in this project's units; its
+// floor is a lob that lands a few metres ahead, so that even a flicked click
+// puts the grenade somewhere rather than nowhere.
+THROW_SPEED_MIN :: 300 * UNIT
+THROW_SPEED_MAX :: 750 * UNIT
+THROW_UNDERHAND_SPEED :: 190 * UNIT
 
 // Grenades leave the hand a little above the aim line, which is what makes a
-// flat-aimed long throw travel rather than hit the floor.
+// flat-aimed long throw travel rather than hit the floor. The underhand leaves
+// it far higher: that arc is the whole point of the button.
 THROW_PITCH_LIFT :: f32(7)
+THROW_UNDERHAND_LIFT :: f32(22)
 
 // How much of the thrower's own motion carries into the throw. Running throws
 // go further -- counter-strike does the same, and it is what makes a run-up
 // smoke a thing worth practising.
+//
+// The underhand inherits far less on purpose. At the full share a run-up adds
+// about three metres a second to a throw that only has five of its own, which
+// would make the short throw anything but short exactly when a player is
+// falling back through a door and needs it to land where they are.
 THROW_INHERIT :: f32(0.6)
+THROW_UNDERHAND_INHERIT :: f32(0.25)
+
+// Ticks of holding the button that buy the full overhand throw. Counted in
+// ticks rather than seconds so that both ends of the wire arrive at the same
+// number by counting the same commands -- the client's trajectory preview is
+// only honest if the speed it draws is the speed the server will use.
+THROW_CHARGE_TICKS :: u8(45) // ~0.7 s at 64 Hz
+
+// 0..1 from the tick count.
+throw_charge_fraction :: proc(ticks: u8) -> f32 {
+	return min(f32(ticks) / f32(THROW_CHARGE_TICKS), 1)
+}
 
 // Where the grenade appears: at eye level and far enough forward that it never
 // starts inside the thrower's own hull.
@@ -170,12 +190,26 @@ grenade_allowed :: proc(kind: Grenade_Kind, team: Team) -> bool {
 	return team in GRENADES[kind].teams
 }
 
+// How fast this throw leaves the hand. The underhand ignores the charge: it is
+// a fixed drop, and letting it be wound up would make it a second overhand.
+throw_speed :: proc(style: Throw_Style, charge: f32) -> f32 {
+	if style == .Underhand do return THROW_UNDERHAND_SPEED
+	return THROW_SPEED_MIN + (THROW_SPEED_MAX - THROW_SPEED_MIN) * clamp(charge, 0, 1)
+}
+
 // The velocity a throw leaves the hand with. Pure, and quantized-angle safe:
 // it reads the same yaw and pitch the wire carries, so both ends compute the
-// same arc.
-throw_velocity :: proc(yaw, pitch: f32, mode: Throw_Mode, thrower_velocity: [3]f32) -> [3]f32 {
-	dir := view_forward(yaw, clamp(pitch + THROW_PITCH_LIFT, -89, 89))
-	return dir * THROW_SPEED[mode] + thrower_velocity * THROW_INHERIT
+// same arc -- which is what the client's preview line is drawn from.
+throw_velocity :: proc(
+	yaw, pitch: f32,
+	style: Throw_Style,
+	charge: f32,
+	thrower_velocity: [3]f32,
+) -> [3]f32 {
+	lift := style == .Underhand ? THROW_UNDERHAND_LIFT : THROW_PITCH_LIFT
+	inherit := style == .Underhand ? THROW_UNDERHAND_INHERIT : THROW_INHERIT
+	dir := view_forward(yaw, clamp(pitch + lift, -89, 89))
+	return dir * throw_speed(style, charge) + thrower_velocity * inherit
 }
 
 throw_origin :: proc(p: Pawn) -> [3]f32 {

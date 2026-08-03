@@ -145,6 +145,20 @@ visible_half_tangents :: proc(fov_horizontal: f32, masked: bool) -> (half_w, hal
 	return
 }
 
+// How wide a thing at `point` has to be, in metres, to cover a fixed count of
+// pixels wherever it sits. `screen_half` is that count as a fraction of the
+// vertical half tangent, `limit` the metric ceiling.
+//
+// Every world-space line the engine draws needs this: a width fixed in metres
+// comes out a wedge -- fifty pixels near the eye and sub-pixel at the far end
+// of the same sightline -- and through a scope it is worse again, because the
+// lens changes the metres a pixel is worth without moving anything. Lives with
+// the camera because it is a fact about the lens, not about what is drawn.
+screen_half_width :: proc(point: [3]f32, half_h, screen_half, limit: f32) -> f32 {
+	distance := linalg.length(point - camera.position)
+	return min(screen_half * half_h * distance, limit)
+}
+
 camera_projection :: proc() -> linalg.Matrix4f32 {
 	half_w, half_h := camera_half_tangents(camera.fov_horizontal)
 	return perspective_tangents(half_w, half_h, camera.near, camera.far)

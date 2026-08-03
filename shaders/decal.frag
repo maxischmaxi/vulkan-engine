@@ -12,8 +12,12 @@
 
 layout(location = 0) in vec2 v_local;
 layout(location = 1) in float v_seed;
+layout(location = 2) in float v_kind;
 
 layout(location = 0) out vec4 out_color;
+
+// KEEP IN SYNC with Decal_Kind in src/decal_render.odin.
+#define KIND_SCORCH 1.0
 
 // Cheap angular noise so no two holes have the same silhouette.
 float edge_wobble(vec2 p, float seed) {
@@ -26,6 +30,21 @@ void main() {
     if (r > 1.0) discard;
 
     float wobble = edge_wobble(v_local, v_seed);
+
+    if (v_kind > KIND_SCORCH - 0.5) {
+        // A blast leaves soot, not a hole: no core, no rim, just a smudge that
+        // is darkest in the middle and gone before the quad's edge.
+        //
+        // The wobble stays at the bullet hole's amplitude here, and only
+        // displaces the outer edge. Driving it harder was tried and turned the
+        // mark into a five-pointed star -- the lobes of sin(angle * 5) become
+        // the whole silhouette once the falloff has nothing else to say.
+        float soot = 1.0 - smoothstep(0.12, 0.95 + wobble, r);
+        soot = pow(soot, 1.5);
+        if (soot < 0.01) discard;
+        out_color = vec4(tonemap_aces(vec3(0.05, 0.043, 0.038) * frame.params.x), soot * 0.66);
+        return;
+    }
 
     // Dark core, then a ring of pulverised material, fading to nothing. The core
     // has to hold a good share of the quad or the light rim swallows it and the

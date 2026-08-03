@@ -42,7 +42,7 @@ test_he_detonates_on_its_fuse :: proc(t: ^testing.T) {
 	gs := make_world()
 	defer destroy_world(&gs)
 
-	velocity := throw_velocity(0, 0, .Long, {})
+	velocity := throw_velocity(0, 0, .Overhand, 1, {})
 	testing.expect(t, spawn_projectile(&gs, .He, 0, .T, {0, 0, 1.6}, velocity))
 
 	// Count the ticks to the bang and compare against the spec's fuse.
@@ -68,7 +68,7 @@ test_smoke_detonates_where_it_settles :: proc(t: ^testing.T) {
 	gs := make_world()
 	defer destroy_world(&gs)
 
-	velocity := throw_velocity(0, 0, .Short, {})
+	velocity := throw_velocity(0, 0, .Underhand, 1, {})
 	testing.expect(t, spawn_projectile(&gs, .Smoke, 0, .T, {0, 0, 1.6}, velocity))
 
 	d, ok := run_until_detonation(&gs, 10)
@@ -94,7 +94,7 @@ test_throws_are_deterministic :: proc(t: ^testing.T) {
 
 	// Aimed at the wall so the arc includes a bounce, which is where a
 	// divergence would show up first.
-	velocity := throw_velocity(12, -3, .Long, {1, 0.5, 0})
+	velocity := throw_velocity(12, -3, .Overhand, 1, {1, 0.5, 0})
 	spawn_projectile(&a, .Smoke, 0, .T, {0, 0, 1.6}, velocity)
 	spawn_projectile(&b, .Smoke, 0, .T, {0, 0, 1.6}, velocity)
 
@@ -107,34 +107,29 @@ test_throws_are_deterministic :: proc(t: ^testing.T) {
 	testing.expect_value(t, da.position.z, db.position.z)
 }
 
+// The wind-up has to buy reach, and the underhand has to stay under the
+// weakest overhand -- it is the throw for putting something at your own feet.
 @(test)
-test_throw_modes_reach_different_distances :: proc(t: ^testing.T) {
-	distances: [Throw_Mode]f32
-	for mode in Throw_Mode {
+test_charge_reaches_further_than_a_tap :: proc(t: ^testing.T) {
+	throw_distance :: proc(t: ^testing.T, style: Throw_Style, charge: f32) -> f32 {
 		gs := make_world()
 		defer destroy_world(&gs)
 
-		velocity := throw_velocity(0, 0, mode, {})
+		velocity := throw_velocity(0, 0, style, charge, {})
 		spawn_projectile(&gs, .Smoke, 0, .T, {0, 0, 1.6}, velocity)
 		d, ok := run_until_detonation(&gs, 12)
-		testing.expectf(t, ok, "{} throw never settled", mode)
-		distances[mode] = d.position.x
+		testing.expectf(t, ok, "{} throw at charge {} never settled", style, charge)
+		return d.position.x
 	}
 
-	testing.expectf(
-		t,
-		distances[.Long] > distances[.Medium],
-		"long ({}) must outreach medium ({})",
-		distances[.Long],
-		distances[.Medium],
-	)
-	testing.expectf(
-		t,
-		distances[.Medium] > distances[.Short],
-		"medium ({}) must outreach short ({})",
-		distances[.Medium],
-		distances[.Short],
-	)
+	tap := throw_distance(t, .Overhand, 0)
+	half := throw_distance(t, .Overhand, 0.5)
+	full := throw_distance(t, .Overhand, 1)
+	under := throw_distance(t, .Underhand, 1)
+
+	testing.expectf(t, half > tap, "half charge ({}) must outreach a tap ({})", half, tap)
+	testing.expectf(t, full > half, "full charge ({}) must outreach half ({})", full, half)
+	testing.expectf(t, under < tap, "the underhand ({}) must land short of a tap ({})", under, tap)
 }
 
 // Running forward throws further than standing still. It is what makes a
@@ -146,14 +141,14 @@ test_movement_carries_into_the_throw :: proc(t: ^testing.T) {
 	running := make_world()
 	defer destroy_world(&running)
 
-	spawn_projectile(&still, .Smoke, 0, .T, {0, 0, 1.6}, throw_velocity(0, 0, .Long, {}))
+	spawn_projectile(&still, .Smoke, 0, .T, {0, 0, 1.6}, throw_velocity(0, 0, .Overhand, 1, {}))
 	spawn_projectile(
 		&running,
 		.Smoke,
 		0,
 		.T,
 		{0, 0, 1.6},
-		throw_velocity(0, 0, .Long, {WALK_SPEED, 0, 0}),
+		throw_velocity(0, 0, .Overhand, 1, {WALK_SPEED, 0, 0}),
 	)
 
 	a, oka := run_until_detonation(&still, 12)

@@ -96,30 +96,47 @@ Private_State :: struct {
 	hand:           i8,
 }
 
-// What a client heard this tick. Filtered by earshot rather than by sight --
-// that split is the whole reason this block exists. With fog of war a pawn
-// nobody can see is absent from the entity array, and the client used to
-// derive remote footsteps and gunfire from exactly that array, so an unseen
-// enemy would also have been an inaudible one.
+// Something that happened at a place this tick, for the client to hear and to
+// show. Filtered by range rather than by sight -- that split is the whole
+// reason this block exists. With fog of war a pawn nobody can see is absent
+// from the entity array, and the client used to derive remote footsteps and
+// gunfire from exactly that array, so an unseen enemy would also have been an
+// inaudible one.
+//
+// Detonations ride here too, and not in a block of their own: they are the same
+// shape of fact -- one tick, one position, no history worth repairing. Without
+// them the client learns of an explosion only by a projectile going missing
+// from the snapshot, which a single dropped datagram fakes perfectly.
 //
 // Transient by nature, so they are never delta-encoded: a lost datagram costs
 // one footstep, and repairing it a tick later would only play it in the wrong
 // place.
-Sound_Kind :: enum u8 {
+Event_Kind :: enum u8 {
 	Footstep,
 	Gunshot,
+	He_Blast,
+	Flash_Pop,
+	Smoke_Pop,
+	Fire_Pop,
 }
 
-Sound_Event :: struct {
-	kind:     Sound_Kind,
+World_Event :: struct {
+	kind:     Event_Kind,
 	weapon:   u8, // gunshot only -- the bank picks the sample from it
-	position: [3]f32, // quantized on the wire; audio panning only
+	position: [3]f32, // quantized on the wire; audio panning and effect placement
+}
+
+// Whether this kind is a detonation, which is the one question both the client
+// (audio or effect?) and the server (how far does it carry?) have to ask.
+event_is_blast :: proc(kind: Event_Kind) -> bool {
+	return kind >= .He_Blast
 }
 
 // Well past what a full server produces: ten players running produce a step
 // every ~19 ticks each, and even five on full auto add under one gunshot a
-// tick. Overflow drops the tail, which is one unheard footstep.
-MAX_SOUND_EVENTS :: 12
+// tick. Four more than the old twelve, because a nade stack landing together
+// must not push footsteps out. Overflow drops the tail.
+MAX_WORLD_EVENTS :: 16
 
 // Grenades in the air. Their own block rather than an entry in the entity
 // array: Present_Mask indexes pawn ids, and a projectile is not a pawn.
@@ -174,8 +191,8 @@ Snapshot :: struct {
 	bomb_position:   [3]f32, // meaningful only when bomb_has_position(state)
 	present:         Present_Mask,
 	entities:        [game.MAX_PAWNS]Snapshot_Entity, // indexed by pawn id
-	sound_count:     u8,
-	sounds:          [MAX_SOUND_EVENTS]Sound_Event,
+	event_count:     u8,
+	events:          [MAX_WORLD_EVENTS]World_Event,
 	projectile_count: u8,
 	projectiles:     [MAX_SNAPSHOT_PROJECTILES]Snapshot_Projectile,
 	zone_count:      u8,
@@ -186,10 +203,10 @@ Snapshot :: struct {
 
 // Appends one event, dropping it when the block is full. Returns whether it
 // fit, so a caller that cares can log the loss rather than wonder.
-snapshot_add_sound :: proc(s: ^Snapshot, e: Sound_Event) -> bool {
-	if s.sound_count >= MAX_SOUND_EVENTS do return false
-	s.sounds[s.sound_count] = e
-	s.sound_count += 1
+snapshot_add_event :: proc(s: ^Snapshot, e: World_Event) -> bool {
+	if s.event_count >= MAX_WORLD_EVENTS do return false
+	s.events[s.event_count] = e
+	s.event_count += 1
 	return true
 }
 
@@ -259,10 +276,10 @@ write_snapshot :: proc(w: ^Writer, s: Snapshot, base: ^Snapshot) {
 
 	// Sounds sit outside the delta machinery: every one is new, so a baseline
 	// would have nothing to say about it.
-	count := min(s.sound_count, MAX_SOUND_EVENTS)
+	count := min(s.event_count, MAX_WORLD_EVENTS)
 	write_u8(w, count)
 	for i in 0 ..< int(count) {
-		e := s.sounds[i]
+		e := s.events[i]
 		write_u8(w, u8(e.kind))
 		write_u8(w, e.weapon)
 		write_u16(w, transmute(u16)quantize_coarse_pos(e.position.x))
@@ -363,10 +380,10 @@ read_snapshot :: proc(r: ^Reader, base: ^Snapshot) -> (s: Snapshot, ok: bool) {
 
 	// A corrupt count must not walk the reader off the end; the reader flags
 	// its own overruns, but clamping keeps the loop bounded either way.
-	s.sound_count = min(read_u8(r), MAX_SOUND_EVENTS)
-	for i in 0 ..< int(s.sound_count) {
-		e := &s.sounds[i]
-		e.kind = Sound_Kind(read_u8(r))
+	s.event_count = min(read_u8(r), MAX_WORLD_EVENTS)
+	for i in 0 ..< int(s.event_count) {
+		e := &s.events[i]
+		e.kind = Event_Kind(read_u8(r))
 		e.weapon = read_u8(r)
 		e.position.x = dequantize_coarse_pos(transmute(i16)read_u16(r))
 		e.position.y = dequantize_coarse_pos(transmute(i16)read_u16(r))

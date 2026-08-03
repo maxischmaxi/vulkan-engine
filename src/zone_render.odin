@@ -7,13 +7,12 @@ import "protocol"
 // wire rather than being re-derived from an age this side would have to track,
 // so what is drawn is exactly what the server blocks sight with.
 //
-// Boxes and a light for now. The volumetric smoke is its own piece of work
-// (its own render pass, a depth buffer it can sample, and a split of
-// record_scene_pass to get there); none of the netcode or the sight blocking
-// depends on it, which is why it comes last rather than first.
-
-SMOKE_COLOR :: [3]f32{0.62, 0.64, 0.66}
-FIRE_COLOR :: [3]f32{0.95, 0.45, 0.12}
+// Neither is geometry any more. The cloud is the volumetric shader
+// (smoke_render.odin) with particles curling off its rim, the fire is particles
+// and a light. Both used to be boxes standing in for the real thing, and the
+// smoke's box outlived its usefulness badly: it was opaque and wrote depth, so
+// the ray march stopped dead in the middle of the very cloud it was standing in
+// for and the far half was never accumulated.
 
 // The fire's light, which is most of what sells it from a distance.
 FIRE_LIGHT_COLOR :: [3]f32{1.0, 0.55, 0.18}
@@ -21,6 +20,7 @@ FIRE_LIGHT_INTENSITY :: f32(14)
 
 Zone_Draw :: struct {
 	kind:     game.Zone_Kind,
+	id:       u8, // the server's slot; each zone carries its own emitter remainder
 	position: [3]f32,
 	radius:   f32,
 }
@@ -45,6 +45,7 @@ read_snapshot_zones :: proc(s: ^protocol.Snapshot) {
 
 		zones.drawn[zones.drawn_count] = {
 			kind     = game.Zone_Kind(z.kind),
+			id       = z.id,
 			position = z.position,
 			radius   = z.radius,
 		}
@@ -57,22 +58,18 @@ submit_zones :: proc() {
 		z := &zones.drawn[i]
 		switch z.kind {
 		case .Smoke:
-			// A cube standing in for the cloud: the right size in the right
-			// place, so lines of sight read correctly even before it looks
-			// like smoke.
-			add_world_prop(
-				prop_transform(z.position + {0, 0, z.radius * 0.5}, {z.radius, z.radius, z.radius}),
-				SMOKE_COLOR,
-				roughness = 1,
+			// The cloud itself is smoke_render.odin's ray march, built from
+			// this same list. All that happens here is the rim: puffs curling
+			// off the sphere, which is what stops it reading as a sphere.
+			fx_smoke_cloud(
+				z.id,
+				z.position + {0, 0, z.radius * 0.6},
+				z.radius,
+				game.ZONE_SPECS[.Smoke].radius,
+				ui.dt,
 			)
 		case .Fire:
-			// Flat and wide: fire is a patch of ground, not a ball.
-			add_world_prop(
-				prop_transform(z.position + {0, 0, 0.15}, {z.radius, z.radius, 0.3}),
-				FIRE_COLOR,
-				roughness = 0.9,
-				emissive = 1,
-			)
+			fx_fire_zone(z.id, z.position, z.radius, ui.dt)
 			// Re-added every frame with a one-frame life, so it follows the
 			// zone rather than needing its own bookkeeping.
 			add_transient_light(

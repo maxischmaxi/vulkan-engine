@@ -1,6 +1,7 @@
 package main
 
 import "core:log"
+import "core:math/linalg"
 import "game"
 
 // The client's own idea of what is in its hands, and the one place a key press
@@ -23,15 +24,88 @@ import "game"
 HAND_ADOPT_QUIET :: f32(0.25)
 
 hand_view: struct {
-	grenade:    i8, // game.Grenade_Kind, -1 for none
-	bomb:       bool,
-	since_pick: f32,
+	grenade:        i8, // game.Grenade_Kind, -1 for none
+	bomb:           bool,
+	since_pick:     f32,
+	// The client's own copy of the arm drawing back, run over the commands it
+	// sends with the very procedure the server runs over the commands it
+	// receives. Not a re-implementation: two integer counters over the same
+	// stream of commands agree exactly, which is what makes the trajectory
+	// preview a promise rather than a guess.
+	wind:           game.Wind_Up,
+	// Mirrored for the same reason -- it is the gate on starting a wind-up, and
+	// a client that thinks it may start one the server will refuse would draw a
+	// line for a throw that never happens.
+	throw_cooldown: f32,
+	// The pawn's velocity at the START of the current tick, the exact twin of
+	// game.Pawn.prev_position. A throw inherits 60 % of it, so the preview line
+	// is drawn from it -- and reading only the end-of-tick value made the line
+	// jump in 64 Hz steps while strafing, because that is how often it changes.
+	// With both ends the renderer can interpolate it like it interpolates
+	// everything else it draws.
+	prev_velocity:  [3]f32,
 }
 
 hand_reset :: proc() {
 	hand_view = {
 		grenade = -1,
 	}
+}
+
+// Every command the client sends, shown to the wind-up. Called from
+// build_local_input, which is the one place a command is built.
+//
+// Gated exactly the way the server gates it (tick_pawn_grenade): the wind-up
+// only runs while a grenade is in the hand, so a trigger held on a rifle never
+// draws anything back. The bomb is deliberately not included -- it is placed,
+// not thrown.
+hand_note_command :: proc(cmd: game.Pawn_Input) {
+	hand_view.throw_cooldown = max(hand_view.throw_cooldown - game.TICK_DT, 0)
+	// Before the movement this command is about to drive, which is what makes
+	// it the start-of-tick value.
+	hand_view.prev_velocity = player.body.velocity
+
+	if hand_view.grenade < 0 || !player.alive {
+		game.wind_up_cancel(&hand_view.wind)
+		return
+	}
+
+	if _, _, throwing := game.tick_wind_up(&hand_view.wind, cmd.buttons, hand_view.throw_cooldown);
+	   throwing {
+		hand_view.throw_cooldown = game.THROW_COOLDOWN
+	}
+}
+
+// What the hand would throw if the button came up now, and how far the wind-up
+// has got. Zero charge means nothing is drawn back.
+hand_wind_up :: proc() -> (charge: f32, style: game.Throw_Style, winding: bool) {
+	charge, style = game.wind_up_throw(hand_view.wind)
+	return charge, style, hand_view.wind.charge > 0
+}
+
+// Where a throw would leave from and how fast, in RENDER space -- both
+// interpolated across the tick exactly the way the camera position is.
+//
+// This is the whole fix for a preview that juddered while strafing, and it is
+// worth spelling out, because the obvious version of this code is the broken
+// one. game.throw_origin reads the pawn's simulation eye, which moves once per
+// tick; the camera sits at the INTERPOLATED eye and moves every frame. Anchoring
+// a line 45 cm in front of the eye to one of those while looking through the
+// other swings it by up to 8 degrees, sixty-four times a second -- the line
+// pivots around a point that is chasing the camera.
+//
+// The velocity gets the same treatment for the same reason: 60 % of it goes
+// into the throw, so a value that only changes on tick boundaries steps the
+// whole arc every time it does. Interpolating is not a smoothing filter and does
+// not lag -- it lands on the exact value the server will use, at the moment the
+// tick it belongs to arrives.
+hand_throw_ray :: proc() -> (origin, velocity: [3]f32) {
+	charge, style, _ := hand_wind_up()
+	inherited := linalg.lerp(hand_view.prev_velocity, player.body.velocity, game.clock.alpha)
+
+	origin = camera.position + game.view_forward(camera.yaw, camera.pitch) * game.THROW_FORWARD
+	velocity = game.throw_velocity(camera.yaw, camera.pitch, style, charge, inherited)
+	return
 }
 
 // The viewmodel meshes for the things that are not weapons. Same names the
@@ -86,6 +160,8 @@ hand_carry :: proc() -> (items: [game.MAX_CARRY]game.Hand, count: int) {
 // the way a number key has always made them happen.
 hand_pick :: proc(h: game.Hand) -> i8 {
 	hand_view.since_pick = 0
+	// Whatever was drawn back belongs to the item that is leaving the hand.
+	game.wind_up_cancel(&hand_view.wind)
 
 	switch h.kind {
 	case .Weapon:

@@ -40,6 +40,16 @@ Audio_Event_Kind :: enum {
 	Bomb_Planted,
 	Round_Start,
 	Round_End,
+	// Grenades. The samples are generated rather than sampled -- no CC0 pack
+	// this project fetches contains an explosion -- so they live in their own
+	// directory and are rebuilt by tools/synth_sounds.py.
+	Explosion,
+	Flash_Pop,
+	// The ring in your ears after a flash caught you. Local and 2D by nature:
+	// it is not a sound in the world, it is what the world sounds like now.
+	Flash_Ring,
+	Smoke_Hiss,
+	Fire_Start,
 }
 
 // Reserved slot for material-dependent footsteps. The collision bake strips
@@ -174,6 +184,51 @@ AUDIO_BANK := [Audio_Event_Kind]Audio_Spec {
 		volume = 0.5,
 		cooldown = 0.5,
 		chrome = true,
+	},
+	// Carries almost as far as a gunshot and then some: an explosion is the one
+	// thing on this map everyone is meant to hear. Still inside
+	// game.BLAST_EVENT_RANGE, which is what the server filters against.
+	.Explosion = {
+		files = {
+			"grenades/explosion_01.ogg",
+			"grenades/explosion_02.ogg",
+			"grenades/explosion_03.ogg",
+		},
+		bus = .Effects,
+		volume = 0.9,
+		pitch_jitter = 0.07,
+		spatial = true,
+		min_distance = 6,
+		max_distance = 120,
+	},
+	.Flash_Pop = {
+		files = {"grenades/flash_pop_01.ogg", "grenades/flash_pop_02.ogg"},
+		bus = .Effects,
+		volume = 0.8,
+		pitch_jitter = 0.06,
+		spatial = true,
+		min_distance = 4,
+		max_distance = 90,
+	},
+	// Not spatial: it is in your head, not in the room.
+	.Flash_Ring = {files = {"grenades/flash_ring.ogg"}, bus = .Effects, volume = 0.45},
+	.Smoke_Hiss = {
+		files = {"grenades/smoke_hiss.ogg"},
+		bus = .Effects,
+		volume = 0.6,
+		pitch_jitter = 0.08,
+		spatial = true,
+		min_distance = 3,
+		max_distance = 40,
+	},
+	.Fire_Start = {
+		files = {"grenades/fire_start.ogg"},
+		bus = .Effects,
+		volume = 0.7,
+		pitch_jitter = 0.06,
+		spatial = true,
+		min_distance = 3,
+		max_distance = 45,
 	},
 }
 

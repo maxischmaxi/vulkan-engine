@@ -198,6 +198,8 @@ record_scene_pass :: proc(cmd: vk.CommandBuffer, image_index, frame: u32) {
 	// Tracers share the decal timing slot: both are a handful of thin blended
 	// quads, and neither is worth its own query.
 	record_tracer_pass(cmd, frame)
+	record_particle_pass(cmd, frame)
+	record_arc_pass(cmd, frame)
 	gpu_timer_mark(cmd, frame, .Decals)
 
 	if !split {
@@ -455,6 +457,8 @@ draw_frame :: proc() {
 	upload_character_instances(frame)
 	upload_decals(frame)
 	upload_tracers(frame)
+	upload_throw_arc(frame)
+	upload_particles(frame)
 	upload_smoke(frame)
 	upload_hud_quads(frame)
 

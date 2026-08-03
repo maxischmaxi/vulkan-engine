@@ -267,6 +267,10 @@ reset_match :: proc() {
 	buy_reset(player.loadout)
 	clear_decals()
 	killfeed_reset()
+	// A match that starts with the last one's smoke still hanging in the air
+	// looks like a bug and is one.
+	clear_particles()
+	fx_reset_zones()
 
 	// The startup init spawned local pawns for the benchmark; a networked
 	// match renders remotes instead, so the local ones go dark.

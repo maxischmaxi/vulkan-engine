@@ -20,14 +20,23 @@ DECAL_SIZE :: 0.16
 // a negative depth bias.
 DECAL_OFFSET :: 0.002
 
-Decal_Vertex :: struct {
-	pos:   [3]f32,
-	// local coordinates in [-1,1]; the fragment shader draws the hole from these
-	local: [2]f32,
-	seed:  f32,
+// What a decal is a mark of. Both are drawn from the same quad by the same
+// shader; only the pattern differs, which is why this is a vertex attribute
+// rather than a second pipeline.
+Decal_Kind :: enum u8 {
+	Hole, // a bullet: dark core, pale rim
+	Scorch, // a blast: a wide soot smudge with no core
 }
 
-#assert(size_of(Decal_Vertex) == 24)
+Decal_Vertex :: struct {
+	pos:   [3]f32,
+	// local coordinates in [-1,1]; the fragment shader draws the mark from these
+	local: [2]f32,
+	seed:  f32,
+	kind:  f32,
+}
+
+#assert(size_of(Decal_Vertex) == 28)
 
 Decal_Renderer :: struct {
 	vertex_buffers:  [MAX_FRAMES_IN_FLIGHT]vk.Buffer,
@@ -50,7 +59,7 @@ decal_binding_description :: proc() -> vk.VertexInputBindingDescription {
 	return {binding = 0, stride = size_of(Decal_Vertex), inputRate = .VERTEX}
 }
 
-decal_attribute_descriptions :: proc() -> [3]vk.VertexInputAttributeDescription {
+decal_attribute_descriptions :: proc() -> [4]vk.VertexInputAttributeDescription {
 	return {
 		{
 			location = 0,
@@ -69,6 +78,12 @@ decal_attribute_descriptions :: proc() -> [3]vk.VertexInputAttributeDescription 
 			binding = 0,
 			format = .R32_SFLOAT,
 			offset = u32(offset_of(Decal_Vertex, seed)),
+		},
+		{
+			location = 3,
+			binding = 0,
+			format = .R32_SFLOAT,
+			offset = u32(offset_of(Decal_Vertex, kind)),
 		},
 	}
 }
@@ -151,7 +166,9 @@ destroy_decal_renderer :: proc() {
 
 // Any two vectors perpendicular to the normal will do; picking the world axis
 // least aligned with it keeps the cross product well conditioned.
-@(private = "file")
+//
+// Package-visible because anything laid flat on a surface needs it -- the
+// throw preview's impact ring is drawn on exactly this basis.
 surface_basis :: proc(normal: [3]f32) -> (right, up: [3]f32) {
 	reference := [3]f32{0, 0, 1}
 	if abs(normal.z) > 0.9 {
@@ -162,10 +179,16 @@ surface_basis :: proc(normal: [3]f32) -> (right, up: [3]f32) {
 	return
 }
 
-add_decal :: proc(point, normal: [3]f32, seed: f32) {
+// `size` is the full width of the quad; the default is one bullet's worth.
+add_decal :: proc(
+	point, normal: [3]f32,
+	seed: f32,
+	size: f32 = DECAL_SIZE,
+	kind := Decal_Kind.Hole,
+) {
 	right, up := surface_basis(normal)
 
-	half := f32(DECAL_SIZE) * 0.5
+	half := size * 0.5
 	center := point + normal * DECAL_OFFSET
 
 	slot := decal_renderer.next
@@ -178,6 +201,7 @@ add_decal :: proc(point, normal: [3]f32, seed: f32) {
 			pos   = center + right * (c.x * half) + up * (c.y * half),
 			local = c,
 			seed  = seed,
+			kind  = f32(kind),
 		}
 	}
 

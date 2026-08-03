@@ -178,7 +178,14 @@ def held(name, stem, length, materials, tweak_euler=(0.0, 0.0, 0.0),
     with build_world_weapon, so each of these also yields the world_* mesh that
     the thrown version and the dropped bomb are drawn with. What differs is the
     texturing: these meshes bring their own UVs, so they point at a texture set
-    of their own instead of at a palette swatch."""
+    of their own instead of at a palette swatch.
+
+    The arms are posed but not exported (`no_arms`). The retro arms belong to a
+    pistol grip and read as a fist wrapped around nothing once the thing in it
+    is a canister; a dedicated pair is a later piece of work, and until then a
+    floating grenade beats a wrong grip. The pose still runs, because it is what
+    hand_matrix() measures the placement from -- the object lands in exactly the
+    spot it would have been held in."""
     return {
         "name": name,
         **PISTOL_ARMS,
@@ -189,6 +196,7 @@ def held(name, stem, length, materials, tweak_euler=(0.0, 0.0, 0.0),
             "tweak_offset": tweak_offset,
         },
         "materials": materials,
+        "no_arms": True,
     }
 
 
@@ -695,6 +703,9 @@ def build_viewmodel(spec):
 
     builder = Builder("viewmodel", bpy.context.scene.unit_settings.scale_length)
     for obj in exportable_meshes(spec.get("exclude", ())):
+        # no_arms keeps the posed scene but exports only what it is holding.
+        if spec.get("no_arms") and obj not in attached:
+            continue
         before = len(builder.vertices)
         builder.add_object(obj, attach_map if obj in attached else scene_map)
         # Per object, in engine view space: this is where a weapon that ends up

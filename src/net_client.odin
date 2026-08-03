@@ -706,7 +706,17 @@ handle_snapshot :: proc(s: protocol.Snapshot) {
 	net_client.ct_score = int(s.ct_score)
 	if s.has_private {
 		net_client.money = int(s.private.money)
-		net_client.flash_left = f32(s.private.flash_left_cs) / 100
+
+		// A blind that got worse means one just caught us: the ring goes in the
+		// ears now. Measured against what is LEFT rather than against the
+		// total, because a second flash while still blind extends the timer
+		// without necessarily raising it (apply_detonation), and that second
+		// one is still a bang the player heard.
+		blind := f32(s.private.flash_left_cs) / 100
+		if blind > net_client.flash_left + 0.05 {
+			audio_emit({kind = .Flash_Ring, local = true})
+		}
+		net_client.flash_left = blind
 		net_client.flash_total = f32(s.private.flash_total_cs) / 100
 	}
 
@@ -766,7 +776,7 @@ log_fow_snapshot :: proc(s: protocol.Snapshot) {
 		s.server_tick,
 		string(buf[:n]),
 		card(s.present),
-		s.sound_count,
+		s.event_count,
 		s.projectile_count,
 	)
 }

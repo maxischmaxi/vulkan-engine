@@ -237,20 +237,22 @@ scan_remote_fire :: proc() {
 			add_transient_light(muzzle, {1.0, 0.82, 0.5}, 26, 7, MUZZLE_FLASH_TIME)
 		}
 
-		play_snapshot_sounds(s)
+		play_snapshot_events(s)
 	}
 
 	remote.fire_scanned = max(remote.fire_scanned, t0)
 }
 
-// The audible half, off the snapshot's sound block. Played on the same delayed
-// clock as the tracers above rather than the moment the packet lands: the
-// world is drawn INTERP_TICKS behind, and a bang arriving ~94 ms before its
-// own muzzle flash is worse than one arriving with it.
+// The heard and the seen, off the snapshot's event block. Played on the same
+// delayed clock as the tracers above rather than the moment the packet lands:
+// the world is drawn INTERP_TICKS behind, and a bang arriving ~94 ms before its
+// own muzzle flash is worse than one arriving with it. A detonation has the
+// same problem twice over -- the flash of it has to land with the grenade the
+// eye was following, not a tenth of a second ahead of it.
 @(private = "file")
-play_snapshot_sounds :: proc(s: ^protocol.Snapshot) {
-	for i in 0 ..< int(s.sound_count) {
-		e := &s.sounds[i]
+play_snapshot_events :: proc(s: ^protocol.Snapshot) {
+	for i in 0 ..< int(s.event_count) {
+		e := &s.events[i]
 		switch e.kind {
 		case .Footstep:
 			audio_emit({kind = .Footstep, pos = e.position})
@@ -258,6 +260,10 @@ play_snapshot_sounds :: proc(s: ^protocol.Snapshot) {
 			weapon := int(e.weapon)
 			if weapon >= game.WEAPON_COUNT do continue
 			audio_emit({kind = .Fire, weapon = weapon, pos = e.position})
+		case .He_Blast, .Flash_Pop, .Smoke_Pop, .Fire_Pop:
+			// One call for the light, the particles, the decal, the shake and
+			// the noise: fx.odin owns what a detonation looks and sounds like.
+			fx_emit(e.kind, e.position)
 		}
 	}
 }

@@ -214,6 +214,9 @@ main :: proc() {
 	create_character_renderer()
 	create_decal_renderer()
 	create_tracer_renderer()
+	create_arc_renderer()
+	create_particle_renderer()
+	init_particles()
 	create_smoke_renderer()
 
 	// After the meshes exist, because it looks up every model it places.
@@ -239,6 +242,8 @@ main :: proc() {
 	defer destroy_character_renderer()
 	defer destroy_decal_renderer()
 	defer destroy_tracer_renderer()
+	defer destroy_arc_renderer()
+	defer destroy_particle_renderer()
 	defer destroy_smoke_renderer()
 	defer destroy_hud_renderer()
 
@@ -365,6 +370,11 @@ update :: proc() {
 	}
 	update_transient_lights(game.clock.frame_dt)
 	update_tracers(game.clock.frame_dt)
+	update_throw_arc(game.clock.frame_dt)
+	update_particles(game.clock.frame_dt)
+	// After the camera: the probe places its effect relative to where the eye
+	// is looking, so a screenshot of one is repeatable.
+	fx_probe_tick()
 	// After the camera has settled: the listener sits where the eye is.
 	update_audio(game.clock.frame_dt)
 

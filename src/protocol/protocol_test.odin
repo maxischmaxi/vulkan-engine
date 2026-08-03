@@ -310,18 +310,49 @@ test_snapshot_delta_subset :: proc(t: ^testing.T) {
 	testing.expect_value(t, got.entities[2].flags, client_base.entities[2].flags)
 }
 
+// Detonations ride the same block as footsteps and cost the same seven bytes.
+// Worth its own test because the client draws the whole explosion off these
+// three fields: get the kind wrong and the flashbang is an HE.
+@(test)
+test_snapshot_detonation_events :: proc(t: ^testing.T) {
+	s: Snapshot
+	kinds := [?]Event_Kind{.He_Blast, .Flash_Pop, .Smoke_Pop, .Fire_Pop}
+	for kind, i in kinds {
+		testing.expect(t, snapshot_add_event(&s, {kind = kind, position = {f32(i) * 3, -2, 0.75}}))
+		testing.expectf(t, event_is_blast(kind), "{} must count as a blast", kind)
+	}
+	testing.expect(t, !event_is_blast(.Footstep) && !event_is_blast(.Gunshot))
+
+	zero: Snapshot
+	buf: [MTU]u8
+	w := writer(buf[:])
+	write_snapshot(&w, s, &zero)
+	testing.expect(t, !w.overflow)
+	testing.expect_value(t, w.off, SNAP_FIXED_BYTES + len(kinds) * SOUND_EVENT_BYTES + 1)
+
+	r := reader(buf[:w.off])
+	got, ok := read_snapshot(&r, &zero)
+	testing.expect(t, ok)
+	testing.expect_value(t, got.event_count, u8(len(kinds)))
+	for kind, i in kinds {
+		testing.expect_value(t, got.events[i].kind, kind)
+		delta := abs(got.events[i].position.x - s.events[i].position.x)
+		testing.expectf(t, delta <= 0.01, "{} drifted {} m", kind, delta)
+	}
+}
+
 // The sound block. It exists so hearing survives fog of war, so the roundtrip
 // has to hold even when the entity array is empty -- that is exactly the case
 // it was built for: an enemy nobody can see, still audible.
 @(test)
 test_snapshot_sound_events :: proc(t: ^testing.T) {
 	s: Snapshot
-	testing.expect(t, snapshot_add_sound(&s, {kind = .Footstep, position = {12.34, -5.67, 1.5}}))
+	testing.expect(t, snapshot_add_event(&s, {kind = .Footstep, position = {12.34, -5.67, 1.5}}))
 	testing.expect(
 		t,
-		snapshot_add_sound(&s, {kind = .Gunshot, weapon = 7, position = {-40.5, 20.25, 0}}),
+		snapshot_add_event(&s, {kind = .Gunshot, weapon = 7, position = {-40.5, 20.25, 0}}),
 	)
-	testing.expect_value(t, s.sound_count, u8(2))
+	testing.expect_value(t, s.event_count, u8(2))
 
 	zero: Snapshot
 	buf: [MTU]u8
@@ -335,15 +366,15 @@ test_snapshot_sound_events :: proc(t: ^testing.T) {
 	r := reader(buf[:w.off])
 	got, ok := read_snapshot(&r, &zero)
 	testing.expect(t, ok)
-	testing.expect_value(t, got.sound_count, u8(2))
-	testing.expect_value(t, got.sounds[0].kind, Sound_Kind.Footstep)
-	testing.expect_value(t, got.sounds[1].kind, Sound_Kind.Gunshot)
-	testing.expect_value(t, got.sounds[1].weapon, u8(7))
+	testing.expect_value(t, got.event_count, u8(2))
+	testing.expect_value(t, got.events[0].kind, Event_Kind.Footstep)
+	testing.expect_value(t, got.events[1].kind, Event_Kind.Gunshot)
+	testing.expect_value(t, got.events[1].weapon, u8(7))
 
 	// Positions survive to the centimetre, which is all a pan needs.
 	for i in 0 ..< 2 {
 		for axis in 0 ..< 3 {
-			delta := abs(got.sounds[i].position[axis] - s.sounds[i].position[axis])
+			delta := abs(got.events[i].position[axis] - s.events[i].position[axis])
 			testing.expectf(t, delta <= 0.01, "sound {} axis {} drifted {}", i, axis, delta)
 		}
 	}
@@ -398,12 +429,12 @@ test_snapshot_projectile_block :: proc(t: ^testing.T) {
 @(test)
 test_snapshot_sound_block_overflows_by_dropping :: proc(t: ^testing.T) {
 	s: Snapshot
-	for i in 0 ..< MAX_SOUND_EVENTS {
-		testing.expect(t, snapshot_add_sound(&s, {kind = .Footstep, position = {f32(i), 0, 0}}))
+	for i in 0 ..< MAX_WORLD_EVENTS {
+		testing.expect(t, snapshot_add_event(&s, {kind = .Footstep, position = {f32(i), 0, 0}}))
 	}
 	// One too many is refused rather than overwriting the block or growing it.
-	testing.expect(t, !snapshot_add_sound(&s, {kind = .Gunshot}))
-	testing.expect_value(t, s.sound_count, u8(MAX_SOUND_EVENTS))
+	testing.expect(t, !snapshot_add_event(&s, {kind = .Gunshot}))
+	testing.expect_value(t, s.event_count, u8(MAX_WORLD_EVENTS))
 }
 
 @(test)
