@@ -6,9 +6,18 @@ package game
 // disagree.
 
 Loadout :: struct {
-	primary:   i8, // WEAPONS index, -1 for none
-	secondary: i8, // WEAPONS index, always valid after validation
-	armor:     bool,
+	primary:    i8, // WEAPONS index, -1 for none
+	secondary:  i8, // WEAPONS index, always valid after validation
+	armor:      bool,
+	// The vest's head coverage, sold separately and never on its own -- see
+	// hit_group_bypasses_armor for what wearing it actually changes.
+	helmet:     bool,
+	// Halves the defuse; CT-only, and the one loadout field the bomb reads.
+	defuse_kit: bool,
+	// How many of each grenade is carried. Counts rather than flags, because
+	// the flash is worth carrying two of; the per-kind cap and the total are
+	// both enforced by validate_loadout.
+	grenades:   [Grenade_Kind]u8,
 }
 
 // T spawns holding the glock, CT the usp -- counter-strike's starting pistols.
@@ -17,7 +26,7 @@ team_pistol :: proc(team: Team) -> i8 {
 }
 
 default_loadout :: proc(team: Team) -> Loadout {
-	return {primary = -1, secondary = team_pistol(team), armor = false}
+	return {primary = -1, secondary = team_pistol(team)}
 }
 
 // The weapon a number key means for this loadout: slot 0 primary, 1 secondary,
@@ -62,7 +71,49 @@ validate_loadout :: proc(l: Loadout, team: Team) -> Loadout {
 		out.secondary = l.secondary
 	}
 	out.armor = l.armor
+	// A helmet is head coverage for a vest, not a hat: without one it is not a
+	// thing the buy menu can sell, so a packet claiming otherwise loses it.
+	out.helmet = l.armor && l.helmet
+	out.defuse_kit = team == .CT && l.defuse_kit
+	out.grenades = validate_grenades(l.grenades, team)
 	return out
+}
+
+// Grenade counts a player could actually have bought: nothing their side does
+// not sell, no more of one kind than its spec allows, and no more than the belt
+// holds in total.
+//
+// The total is filled in enum order rather than proportionally, so a packet
+// claiming four of everything yields the same loadout every time -- an
+// arbitrary rule, but a deterministic one, and a hand-crafted packet only ever
+// costs its sender the tail of their own belt.
+validate_grenades :: proc(counts: [Grenade_Kind]u8, team: Team) -> (out: [Grenade_Kind]u8) {
+	total := 0
+	for kind in Grenade_Kind {
+		if !grenade_allowed(kind, team) do continue
+
+		want := min(int(counts[kind]), GRENADES[kind].max_carried)
+		want = min(want, GRENADE_CARRY_TOTAL - total)
+		if want <= 0 do continue
+
+		out[kind] = u8(want)
+		total += want
+	}
+	return
+}
+
+grenade_total :: proc(l: Loadout) -> int {
+	total := 0
+	for count in l.grenades do total += int(count)
+	return total
+}
+
+// Whether one more of this kind would still be a legal belt. The buy menu grays
+// a row out with it, and it is the same question validate_grenades answers.
+can_carry_grenade :: proc(l: Loadout, kind: Grenade_Kind, team: Team) -> bool {
+	if !grenade_allowed(kind, team) do return false
+	if int(l.grenades[kind]) >= GRENADES[kind].max_carried do return false
+	return grenade_total(l) < GRENADE_CARRY_TOTAL
 }
 
 // The hand after a buy applied to a live pawn: the changed slot goes into the

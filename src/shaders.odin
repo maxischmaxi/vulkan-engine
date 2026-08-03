@@ -28,6 +28,9 @@ PROP_FRAG_CODE :: #load("../shaders/prop.frag.spv")
 DECAL_VERT_CODE :: #load("../shaders/decal.vert.spv")
 DECAL_FRAG_CODE :: #load("../shaders/decal.frag.spv")
 
+SMOKE_VERT_CODE :: #load("../shaders/smoke.vert.spv")
+SMOKE_FRAG_CODE :: #load("../shaders/smoke.frag.spv")
+
 TRACER_VERT_CODE :: #load("../shaders/tracer.vert.spv")
 TRACER_FRAG_CODE :: #load("../shaders/tracer.frag.spv")
 

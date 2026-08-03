@@ -44,6 +44,9 @@ Render_Settings :: struct {
 	shadow_cascades:   u8, // 0 turns shadows off entirely
 	shadow_resolution: u16,
 	shadow_pcf:        u8, // taps per lookup: 1, 4 or 9
+	// Ray steps through a smoke cloud. Pure fragment throughput -- exactly what
+	// a weak GPU has least of -- so it is a preset dial rather than a constant.
+	smoke_steps:       u8,
 
 	// ------------------------------------------------------------ texturing
 	anisotropy:        u8, // 1 / 2 / 4 / 8 / 16
@@ -75,6 +78,7 @@ PRESETS := [Preset]Render_Settings {
 		shadow_cascades = 0,
 		shadow_resolution = 512,
 		shadow_pcf = 1,
+		smoke_steps = 8,
 		anisotropy = 1,
 		mip_lod_bias = 0.5,
 	},
@@ -86,6 +90,7 @@ PRESETS := [Preset]Render_Settings {
 		shadow_cascades = 2,
 		shadow_resolution = 1024,
 		shadow_pcf = 1,
+		smoke_steps = 12,
 		anisotropy = 2,
 	},
 	.Medium = {
@@ -96,6 +101,7 @@ PRESETS := [Preset]Render_Settings {
 		shadow_cascades = 3,
 		shadow_resolution = 1024,
 		shadow_pcf = 4,
+		smoke_steps = 20,
 		anisotropy = 4,
 	},
 	.High = {
@@ -106,6 +112,7 @@ PRESETS := [Preset]Render_Settings {
 		shadow_cascades = 3,
 		shadow_resolution = 2048,
 		shadow_pcf = 9,
+		smoke_steps = 32,
 		anisotropy = 8,
 	},
 	.Ultra = {
@@ -116,6 +123,7 @@ PRESETS := [Preset]Render_Settings {
 		shadow_cascades = 3,
 		shadow_resolution = 2048,
 		shadow_pcf = 9,
+		smoke_steps = 48,
 		anisotropy = 16,
 	},
 }
@@ -155,6 +163,9 @@ clamp_to_device :: proc(s: Render_Settings) -> Render_Settings {
 	out.shadow_resolution = clamp(out.shadow_resolution, 256, 4096)
 	out.mip_lod_bias = clamp(out.mip_lod_bias, 0, 4)
 	out.render_scale = clamp(out.render_scale, 0.5, 1.0)
+	// A zero would delete the smoke's loop entirely and leave invisible clouds
+	// that still block sight; the ceiling is where more steps stop showing.
+	out.smoke_steps = clamp(out.smoke_steps, 4, 64)
 
 	switch {
 	case out.shadow_pcf <= 1:
@@ -175,11 +186,15 @@ settings_scope :: proc(old, new: Render_Settings) -> Settings_Scope {
 	// change that only rebuilt pipelines would not take effect until some
 	// unrelated resize recreated it.
 	if old.vsync != new.vsync do return .Swapchain
+	// smoke_steps belongs here for the same reason the shadow numbers do: it is
+	// a specialization constant, baked into the pipeline at build time, so
+	// changing it without a rebuild changes nothing at all.
 	if old.msaa != new.msaa ||
 	   old.render_scale != new.render_scale ||
 	   old.shadow_cascades != new.shadow_cascades ||
 	   old.shadow_resolution != new.shadow_resolution ||
-	   old.shadow_pcf != new.shadow_pcf {
+	   old.shadow_pcf != new.shadow_pcf ||
+	   old.smoke_steps != new.smoke_steps {
 		return .Pipelines
 	}
 	if old.anisotropy != new.anisotropy || old.mip_lod_bias != new.mip_lod_bias {
@@ -246,7 +261,8 @@ rebuild_renderer :: proc(swapchain_too: bool) {
 	create_shadow_map()
 	create_render_targets()
 
-	// The shadow image is new, so the descriptors that point at it are stale.
+	// The shadow image and the depth target are both new, so the descriptors
+	// that point at either are stale.
 	write_frame_sets()
 	create_all_pipelines()
 
@@ -255,6 +271,7 @@ rebuild_renderer :: proc(swapchain_too: bool) {
 
 create_all_pipelines :: proc() {
 	create_world_pipeline()
+	create_smoke_pipeline()
 	create_shadow_pipelines()
 	create_prop_pipeline()
 	create_model_pipeline()
@@ -269,6 +286,7 @@ create_all_pipelines :: proc() {
 destroy_all_pipelines :: proc() {
 	destroy_pipeline(world_renderer.pipeline)
 	destroy_pipeline(world_renderer.overdraw_pipe)
+	destroy_pipeline(smoke_renderer.pipeline)
 	// zero handles are legal to destroy, so this needs no flag check
 	destroy_pipeline(world_renderer.prepass_pipe)
 	world_renderer.prepass_pipe = {}
@@ -284,4 +302,5 @@ destroy_all_pipelines :: proc() {
 	destroy_pipeline(hud_renderer.quad_pipeline)
 	destroy_pipeline(hud_renderer.pipeline)
 	destroy_pipeline(damage_renderer.pipeline)
+	check_pipelines_released()
 }

@@ -418,8 +418,16 @@ WEAPONS := [?]Weapon {
 
 WEAPON_COUNT :: len(WEAPONS)
 
-// The number keys: 1 primary, 2 secondary, 3 knife.
+// The number keys that name a weapon: 1 primary, 2 secondary, 3 knife. The
+// HUD's slot strip lists exactly these.
 WEAPON_SLOTS :: 3
+
+// How many slots a command may name at all. One more than the weapons: key 4
+// selects grenades, which are not weapons (see game/throw.odin) but do arrive
+// through the same field. The server's command validation clamps against this,
+// so a slot missing from here is one the wire silently drops.
+INPUT_SLOTS :: WEAPON_SLOTS + 1
+#assert(GRENADE_SLOT < INPUT_SLOTS)
 
 // Long enough that an empty magazine reads as a failure to fire rather than as
 // the game dropping the click.
@@ -727,7 +735,9 @@ tick_pawn_weapon :: proc(
 		if !weapon.melee {
 			// Zones only scale ranged damage: a knife to the head is a knife.
 			dmg = scaled_damage(weapon.damage, shot.group)
-			if hit_group_bypasses_armor(shot.group) do pen = 1
+			if hit_group_bypasses_armor(shot.group, gs.pawns[shot.pawn].loadout.helmet) {
+				pen = 1
+			}
 		}
 		v.nominal += dmg
 		if damage_pawn(&gs.pawns[shot.pawn], dmg, pen) {

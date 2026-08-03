@@ -55,6 +55,9 @@ main :: proc() {
 			comp.fast = true
 			COMP_MODE.countdown_s = COMP_FAST_WARMUP_S
 
+		case arg == "-tdm-fast":
+			TDM_MODE.match_len_s = TDM_FAST_MATCH_S
+
 		case strings.has_prefix(arg, "-expected-humans="):
 			value, ok := strconv.parse_int(arg[len("-expected-humans="):])
 			if !ok || value < 0 {
@@ -135,6 +138,7 @@ main :: proc() {
 				"  -port=N          listen on UDP port N (default 27015)\n" +
 				"  -mode=tdm|comp   game mode this server runs (default tdm)\n" +
 				"  -comp-fast       shortened comp timings for testing\n" +
+			"  -tdm-fast        one-minute deathmatch instead of ten, for testing\n" +
 				"  -expected-humans=N  how many humans matchmaking intends to send\n" +
 				"  -insecure        UDP only, no Steam (dev builds)\n" +
 				"  -banlist=F       ban list file (default bans.txt)\n" +

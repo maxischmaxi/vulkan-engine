@@ -58,6 +58,12 @@ layout(std430, set = 0, binding = 3) readonly buffer LightTiles {
     uvec2 light_tiles[];
 };
 
+// The scene's depth, written by the opaque pass and resolved to one sample per
+// pixel. Only the volumetric smoke binds a pipeline that reads it -- everything
+// else draws while it is still an attachment, where sampling it would be a
+// feedback loop.
+layout(set = 0, binding = 5) uniform sampler2D scene_depth;
+
 uvec2 tile_light_mask(vec2 frag_coord) {
     uvec2 tile = uvec2(frag_coord) >> frame.light_grid.y;
     return light_tiles[tile.y * frame.light_grid.x + tile.x];

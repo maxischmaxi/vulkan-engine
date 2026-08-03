@@ -2,7 +2,6 @@ package main
 
 import "core:fmt"
 import "core:log"
-import "core:math/linalg"
 import "core:math/rand"
 import "core:strings"
 import "game"
@@ -19,24 +18,14 @@ import ma "vendor:miniaudio"
 MAX_VOICES :: 32 // simultaneous one-shots; a ring like the tracers
 MAX_VARIANTS :: 6 // file variants per event or weapon
 
-// Metres of ground travel between two footsteps.
-FOOTSTEP_STRIDE :: f32(1.9)
-
-// Derived from the run speed rather than written as a number so a movement
-// rebalance keeps the guarantee: sneak (0.52x), crouch (0.34x) and scoped
-// walk (0.4x) all sit under 0.6x, so slow movement is silent without the
-// audio code ever reading a key.
-FOOTSTEP_MIN_SPEED :: game.WALK_SPEED * 0.6
+// The footstep cadence itself lives in game/footstep.odin, because the server
+// runs it too: remote steps arrive as sound events rather than being derived
+// from snapshot positions, so that an enemy fog of war hides stays audible.
+// Only the local player's steps are still produced here, off predicted
+// movement, so they do not wait for a round trip.
 
 // Below this downward speed a landing is a stair step, not a thud.
 LAND_MIN_IMPACT :: f32(2.0)
-
-// A remote pawn moving this far in one frame respawned; reset its stride.
-REMOTE_TELEPORT :: f32(2.0)
-
-// Vertical speed above which a remote pawn counts as airborne. Crude next to
-// a real On_Ground scan, but ramps at walking pace stay under it.
-REMOTE_AIRBORNE_VZ :: f32(3.0)
 
 // A preloaded variant. Never played directly: emits copy it, sharing the
 // decoded buffer. Only .DECODE templates may be copied -- the streamed loops
@@ -64,12 +53,6 @@ Audio_Settings :: struct {
 	master, music, effects, ambient: f32, // 0..1
 }
 
-Foot_Tracker :: struct {
-	travelled: f32, // metres since the last step sound
-	prev:      [3]f32,
-	seen:      bool,
-}
-
 Audio :: struct {
 	ok:              bool, // engine came up; false makes every proc a no-op
 	engine:          ma.engine,
@@ -81,8 +64,7 @@ Audio :: struct {
 	music:           Audio_Loop,
 	ambient:         Audio_Loop,
 	cooldown:        [Audio_Event_Kind]f32,
-	feet:            [game.MAX_PAWNS]Foot_Tracker,
-	local_travelled: f32,
+	local_travelled: f32, // the local player's stride; remotes come off the wire
 }
 
 audio: Audio
@@ -376,6 +358,35 @@ audio_preload :: proc() {
 		missing += m
 	}
 	log.infof("Audio: engine up, {} sounds loaded, {} missing", loaded, missing)
+	check_hearing_ranges()
+}
+
+// The server filters sound events by earshot before they reach the wire, so a
+// bank entry audible past that radius would be cut off mid-falloff and the
+// cause would be nowhere near the symptom. Checked at startup rather than
+// asserted, because the bank is a table of runtime values.
+@(private = "file")
+check_hearing_ranges :: proc() {
+	pairs := [?]struct {
+		kind:  Audio_Event_Kind,
+		range: f32,
+		name:  string,
+	} {
+		{.Footstep, game.FOOTSTEP_HEARING_RANGE, "FOOTSTEP_HEARING_RANGE"},
+		{.Fire, game.GUNSHOT_HEARING_RANGE, "GUNSHOT_HEARING_RANGE"},
+	}
+	for p in pairs {
+		reach := AUDIO_BANK[p.kind].max_distance
+		if reach > p.range {
+			log.warnf(
+				"Audio: {} carries {} m but the server only sends it within {} m ({}) -- raise the latter",
+				p.kind,
+				reach,
+				p.range,
+				p.name,
+			)
+		}
+	}
 }
 
 @(private = "file")
@@ -412,66 +423,29 @@ load_variants :: proc(
 	return
 }
 
-// The footstep cadence: a distance accumulator instead of animation events.
-// Steps come from actual ground covered, so speed changes shift the rhythm
-// the way feet would.
+// The local player's footstep cadence: a distance accumulator instead of
+// animation events, so speed changes shift the rhythm the way feet would.
+//
+// Only the local player. Remote steps used to be derived here from the drawn
+// positions, which tied hearing to seeing -- with fog of war that would have
+// silenced every enemy behind a wall. They now arrive as sound events in the
+// snapshot (see play_snapshot_sounds in remote.odin). This half stays local
+// because the player's own movement is predicted and their own step should not
+// wait for the server to agree.
 @(private = "file")
 update_footsteps :: proc(dt: f32) {
 	if !scene_playing() || dt <= 0 {
 		audio.local_travelled = 0
-		for &f in audio.feet do f.seen = false
 		return
 	}
 
-	speed := physics.horizontal_speed(player.body.velocity)
-	if player.alive && player.body.on_ground && speed >= FOOTSTEP_MIN_SPEED {
-		audio.local_travelled += speed * dt
-		if audio.local_travelled >= FOOTSTEP_STRIDE {
-			audio.local_travelled -= FOOTSTEP_STRIDE
-			audio_emit({kind = .Footstep, local = true})
-		}
-	} else {
-		audio.local_travelled = 0
-	}
-
-	// Remote pawns walk the same accumulator over their interpolated drawn
-	// positions -- what the player sees is what they hear. Sneaking remotes
-	// move slowly and fall under the same threshold, which is the point.
-	drawn_now: [game.MAX_PAWNS]bool
-	for i in 0 ..< remote.drawn_count {
-		d := remote.drawn[i]
-		drawn_now[d.id] = true
-		f := &audio.feet[d.id]
-		if !f.seen {
-			f^ = {
-				prev = d.position,
-				seen = true,
-			}
-			continue
-		}
-		delta := d.position - f.prev
-		f.prev = d.position
-		if linalg.length(delta) > REMOTE_TELEPORT {
-			f.travelled = 0
-			continue
-		}
-		// Bots wander below a human's sneak speed, so the human threshold
-		// would keep every bot silent. Bots do not sneak; their gait is
-		// simply audible.
-		min_speed := d.is_bot ? f32(BOT_SPEED) * 0.6 : FOOTSTEP_MIN_SPEED
-		speed_h := physics.horizontal_speed(delta) / dt
-		airborne := abs(delta.z) / dt > REMOTE_AIRBORNE_VZ
-		if speed_h >= min_speed && !airborne {
-			f.travelled += speed_h * dt
-			if f.travelled >= FOOTSTEP_STRIDE {
-				f.travelled -= FOOTSTEP_STRIDE
-				audio_emit({kind = .Footstep, pos = d.position})
-			}
-		} else {
-			f.travelled = 0
-		}
-	}
-	for &f, id in audio.feet {
-		if !drawn_now[id] do f.seen = false
-	}
+	stepped: bool
+	audio.local_travelled, stepped = game.footstep_step(
+		audio.local_travelled,
+		physics.horizontal_speed(player.body.velocity),
+		player.body.on_ground,
+		player.alive,
+		dt,
+	)
+	if stepped do audio_emit({kind = .Footstep, local = true})
 }

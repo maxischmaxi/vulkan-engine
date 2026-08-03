@@ -102,6 +102,7 @@ note_fire_block :: proc(slot: ^Client_Slot, ev: game.Fire_Events) {
 sim_tick :: proc(dt: f32) {
 	for &f in fired_this_tick do f = false
 	for &n in pending_damage_count do n = 0
+	sound_reset()
 
 	for &slot in clients {
 		if slot.state != .In_Game do continue
@@ -116,6 +117,20 @@ sim_tick :: proc(dt: f32) {
 		// never mistake a plant for an illegal pull.
 		if bomb_hands_busy(slot.pawn_id, cmd) {
 			cmd.buttons -= {.Fire, .Fire_Pressed}
+		}
+
+		// A grenade in hand takes the trigger the same way, and for the same
+		// reason: the fire path owns the spray, the rewind and the aim
+		// telemetry, and a throw belongs in none of them. The bomb rides along
+		// -- both hands are hands that are not on a gun.
+		if game.phase_is_action(match.phase) && p.alive {
+			carrying := bomb_carried_by(slot.pawn_id)
+			if req := game.tick_pawn_grenade(p, cmd, carrying, dt); req.throwing {
+				throw_grenade(slot.pawn_id, req.kind, req.mode)
+			}
+			if p.held_grenade >= 0 || p.holding_bomb {
+				cmd.buttons -= {.Fire, .Fire_Pressed, .Zoom}
+			}
 		}
 
 		// Before any branch: the telemetry's turn stream must see every
@@ -198,6 +213,27 @@ sim_tick :: proc(dt: f32) {
 	if game.phase_is_action(match.phase) {
 		tick_server_bots(dt)
 	}
+
+	// Grenades fly after the pawns have moved, so a throw made this tick
+	// starts from where the thrower ended up.
+	detonations := game.tick_projectiles(&sv.gs, dt)
+	for i in 0 ..< detonations.count {
+		apply_detonation(detonations.items[i])
+	}
+	// Smoke and fire outlive the throw: they age, burn and expire on their own.
+	tick_effect_zones(dt)
+
+	// Blindness runs down here rather than in the pawn tick, so a blinded
+	// player who is standing in a phase that skips movement still recovers.
+	for &p in sv.gs.pawns {
+		if p.flash_left <= 0 do continue
+		p.flash_left = max(p.flash_left - dt, 0)
+		if p.flash_left == 0 do p.flash_total = 0
+	}
+
+	// After everything moved and everything that fired has said so: footsteps
+	// come from the distance actually covered this tick, bots included.
+	tick_sounds(dt)
 
 	// After everything moved: history[N] must equal what snapshot N tells the
 	// clients -- the agreement the rewind rests on.
@@ -386,20 +422,58 @@ send_snapshots :: proc() {
 		e.weapon = u8(p.weapon.index)
 	}
 
-	snap_history_store(&snap, sv.tick)
+	// Grenades in flight, unfiltered: a thrown grenade is meant to be seen
+	// coming, and one arcing over a wall is information the throw paid for.
+	// The slot index travels as the id so the client can follow one across
+	// snapshots and interpolate it.
+	for &proj, i in sv.gs.projectiles {
+		if !proj.active do continue
+		if snap.projectile_count >= protocol.MAX_SNAPSHOT_PROJECTILES do break
+		snap.projectiles[snap.projectile_count] = {
+			id       = u8(i),
+			kind     = u8(proj.kind),
+			team_ct  = proj.team == .CT,
+			position = proj.position,
+		}
+		snap.projectile_count += 1
+	}
 
+	// Smoke and fire, everyone's business: a cloud you cannot see is one you
+	// would walk into, and the radius travels so the client's cloud is the
+	// server's even mid-bloom.
+	for &z, i in sv.gs.zones {
+		if !z.active do continue
+		if snap.zone_count >= protocol.MAX_SNAPSHOT_ZONES do break
+		snap.zones[snap.zone_count] = {
+			id       = u8(i),
+			kind     = u8(z.kind),
+			radius   = game.zone_radius(z.kind, z.age),
+			position = z.position,
+		}
+		snap.zone_count += 1
+	}
+
+	// `snap` above is the unfiltered world. Each client gets its own copy from
+	// here on, and its own history entry once it has actually been sent.
 	zero_base: protocol.Snapshot
 
-	for &slot in clients {
+	for &slot, slot_index in clients {
 		if slot.state == .Empty || slot.state == .Authenticating do continue
 
 		s := snap
 		s.last_input_tick = slot.consumed_tick
+		// The whole of fog of war on the wire: everything below still works
+		// off s.present, and a pawn cleared here is one this client is never
+		// told about. The delta encoder already sends a reappearing entity in
+		// full, so nothing else has to know.
+		if slot.state == .In_Game {
+			s.present = fow_present_mask(slot_index, &slot, snap.present)
+		}
 
 		// Delta against what the client confirms holding; anything else --
 		// fresh join, stale ack, fabricated tick -- degrades to a full
 		// snapshot, never to a guess.
-		base := snap_history_at(slot.acked_snapshot)
+		base := snap_history_at(slot_index, slot.acked_snapshot)
 		if base == nil {
 			base = &zero_base
 		} else {
@@ -409,10 +483,23 @@ send_snapshots :: proc() {
 		if slot.state == .In_Game {
 			p := &sv.gs.pawns[slot.pawn_id]
 			if p.active {
+				// Filtered by earshot, not by sight: this block is what keeps
+				// an enemy behind a wall audible once fog of war removes them
+				// from the entity array. The dead keep listening from where
+				// they fell.
+				fill_client_sounds(&s, game.eye_position(p^), slot.pawn_id)
+
+				// The pawn's gear, not the slot's: a buy stored for the next
+				// spawn must not light the HUD up a round early.
+				gear: protocol.Private_Gear_Flags
+				if p.loadout.helmet do gear += {.Helmet}
+				if p.loadout.defuse_kit do gear += {.Defuse_Kit}
+
 				s.has_private = true
 				s.private = {
 					velocity       = p.body.velocity,
 					armor          = u8(clamp(p.armor, 0, 255)),
+					gear           = gear,
 					ammo_mag       = u8(clamp(p.weapon.ammo[p.weapon.index].mag, 0, 255)),
 					ammo_reserve   = u8(clamp(p.weapon.ammo[p.weapon.index].reserve, 0, 255)),
 					cooldown_ticks = u8(clamp(int(p.weapon.cooldown * game.TICK_RATE), 0, 255)),
@@ -422,6 +509,10 @@ send_snapshots :: proc() {
 					spray_progress = u8(clamp(int(p.weapon.spray.progress * 8), 0, 255)),
 					spray_seed     = p.weapon.spray.seed,
 					money          = u16(clamp(slot.money, 0, 65535)),
+					flash_left_cs  = u16(clamp(p.flash_left * 100, 0, 65535)),
+					flash_total_cs = u16(clamp(p.flash_total * 100, 0, 65535)),
+					grenades       = grenade_counts(p^),
+					hand           = pawn_hand_code(p^),
 				}
 			}
 		}
@@ -447,9 +538,26 @@ send_snapshots :: proc() {
 			continue
 		}
 		send_to(slot.peer, w.buf[:w.off])
+		// Only what went out becomes a baseline: the client can never ack
+		// something it was not sent.
+		snap_history_store(slot_index, &s, sv.tick)
 	}
 
 	log_server_stats()
+}
+
+// The belt, from the enum-indexed array the simulation keeps to the plain one
+// the wire carries. Same crossing loadout_msg makes on the client, and the only
+// place the two representations meet on this side.
+@(private = "file")
+grenade_counts :: proc(p: game.Pawn) -> (out: [game.GRENADE_COUNT]u8) {
+	for kind in game.Grenade_Kind do out[int(kind)] = p.grenades[kind]
+	return
+}
+
+@(private = "file")
+pawn_hand_code :: proc(p: game.Pawn) -> i8 {
+	return game.select_code(game.pawn_hand(p))
 }
 
 // One line every few seconds, so the server's health is visible in a terminal
@@ -473,7 +581,7 @@ log_server_stats :: proc() {
 		avg_age = f32(lag_stats.age_sum) / f32(lag_stats.rewound)
 	}
 	log.infof(
-		"Server: tick {}  phase {}  T {} : {} CT  {} client(s)  {:.0f}s left  lagcomp {}/{} avg {:.1f}t",
+		"Server: tick {}  phase {}  T {} : {} CT  {} client(s)  {:.0f}s left  lagcomp {}/{} avg {:.1f}t  fow {} checks {} seen {} linger {:.2f} ms/s",
 		sv.tick,
 		match.phase,
 		match.t_score,
@@ -483,7 +591,20 @@ log_server_stats :: proc() {
 		lag_stats.rewound,
 		lag_stats.fires,
 		avg_age,
+		fow_rays,
+		fow_seen,
+		fow_linger,
+		time.duration_milliseconds(fow_time) / 5,
 	)
+	// The visibility pass is the one addition here with an unbounded-looking
+	// cost, so it reports rather than being assumed cheap. Per second of wall
+	// clock, over the five the window covers. The seen/linger split is what
+	// separates "nobody was visible" from "the filter never lets anyone
+	// through", which look identical from the client's side.
+	fow_rays = 0
+	fow_seen = 0
+	fow_linger = 0
+	fow_time = 0
 	// Only when there is something to say: on a clean server this line never
 	// appears, which is what makes it worth reading when it does.
 	if denied > 0 {

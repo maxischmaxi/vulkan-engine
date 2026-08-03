@@ -14,6 +14,7 @@ apply_loadout_to_pawn :: proc(p: ^game.Pawn, l: game.Loadout) {
 	game.refill_pawn_ammo(&p.weapon)
 	p.weapon.index = game.loadout_spawn_index(l)
 	p.armor = l.armor ? game.PAWN_MAX_ARMOR : 0
+	game.apply_grenades_to_pawn(p, l)
 }
 
 // The wire handler. Validation repairs rather than rejects; the choice is
@@ -27,7 +28,17 @@ apply_loadout_to_pawn :: proc(p: ^game.Pawn, l: game.Loadout) {
 handle_loadout :: proc(slot: ^Client_Slot, m: protocol.Loadout_Msg) {
 	if slot.state != .In_Game do return
 
-	l := game.validate_loadout({m.primary, m.secondary, m.armor}, slot.team)
+	requested := game.Loadout {
+		primary    = m.primary,
+		secondary  = m.secondary,
+		armor      = m.armor,
+		helmet     = m.helmet,
+		defuse_kit = m.defuse_kit,
+	}
+	for kind in game.Grenade_Kind {
+		requested.grenades[kind] = m.grenades[int(kind)]
+	}
+	l := game.validate_loadout(requested, slot.team)
 	before := slot.loadout
 
 	if match.mode.id == .Comp {
@@ -60,11 +71,14 @@ handle_loadout :: proc(slot: ^Client_Slot, m: protocol.Loadout_Msg) {
 		p.weapon.index = game.loadout_held_after_buy(before, l, held)
 	}
 	log.infof(
-		"Server: client {} loadout primary={} secondary={} armor={} ({})",
+		"Server: client {} loadout primary={} secondary={} armor={} helmet={} kit={} nades={} ({})",
 		client_index(slot),
 		loadout_weapon_name(l.primary),
 		loadout_weapon_name(l.secondary),
 		l.armor,
+		l.helmet,
+		l.defuse_kit,
+		l.grenades,
 		apply_now ? "applied now" : "next spawn",
 	)
 }

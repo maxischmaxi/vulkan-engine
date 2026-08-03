@@ -101,6 +101,18 @@ scene_transition_to :: proc(next: Scene) {
 	}
 }
 
+// A direct scene change takes an in-flight fade over: its midpoint would
+// otherwise switch back to the scene it was aimed at, undoing the newer one.
+// That is not hypothetical -- picking a team arms a fade to .Connecting, and
+// the server's phase lands enter_scene(.Playing) inside those 140 ms every
+// time on a local server. The fade keeps running so the screen still uncovers;
+// only its pending side effect is cancelled.
+ui_transition_claim :: proc() {
+	if !ui.trans.active || ui.trans.fired do return
+	ui.trans.fired = true
+	ui.trans.t = max(ui.trans.t, 0.5) // past the midpoint: uncover from here
+}
+
 ui_transition_active :: proc() -> bool {
 	return ui.trans.active
 }

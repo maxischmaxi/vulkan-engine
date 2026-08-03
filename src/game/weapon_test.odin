@@ -210,6 +210,10 @@ test_m4_armored_headshot_leaves_sliver :: proc(t: ^testing.T) {
 	}
 	gs.pawns[0].weapon.index = WEAPON_M4
 	gs.pawns[0].pitch = 0
+	// The vest only reaches the head with a helmet on it; without one this is
+	// the test below instead.
+	gs.pawns[1].loadout.armor = true
+	gs.pawns[1].loadout.helmet = true
 
 	input := Pawn_Input {
 		buttons     = {.Fire_Pressed},
@@ -222,6 +226,34 @@ test_m4_armored_headshot_leaves_sliver :: proc(t: ^testing.T) {
 	testing.expect(t, !ev.victims[0].killed)
 	testing.expect(t, gs.pawns[1].alive)
 	testing.expect_value(t, gs.pawns[1].health, 2)
+}
+
+// The same shot against the same vest with no helmet on it: the head is
+// uncovered, so the full 140 lands and the sliver the test above measures is
+// exactly what the 350 dollars bought.
+@(test)
+test_m4_headshot_kills_through_helmetless_vest :: proc(t: ^testing.T) {
+	gs := make_range()
+	defer destroy_range(&gs)
+	gs.pawns[0].loadout = {
+		primary   = WEAPON_M4,
+		secondary = WEAPON_USP,
+	}
+	gs.pawns[0].weapon.index = WEAPON_M4
+	gs.pawns[0].pitch = 0
+	gs.pawns[1].loadout.armor = true
+
+	input := Pawn_Input {
+		buttons     = {.Fire_Pressed},
+		weapon_slot = -1,
+	}
+	ev := tick_pawn_weapon(&gs, 0, input, TICK_DT, .Live)
+
+	testing.expect_value(t, ev.shots[0].group, Hit_Group.Head)
+	testing.expect(t, ev.victims[0].killed)
+	testing.expect(t, !gs.pawns[1].alive)
+	// The vest is untouched: nothing was absorbed on the way through.
+	testing.expect_value(t, gs.pawns[1].armor, PAWN_MAX_ARMOR)
 }
 
 @(test)

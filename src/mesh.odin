@@ -81,6 +81,16 @@ mesh_material_index :: proc(name: string) -> (u32, bool) {
 		return MODEL_MAT_GUN_METAL, true
 	case "mod_palette":
 		return MODEL_MAT_MOD_PALETTE, true
+	case "nade_frag":
+		return MODEL_MAT_NADE_FRAG, true
+	case "nade_flash":
+		return MODEL_MAT_NADE_FLASH, true
+	case "nade_smoke":
+		return MODEL_MAT_NADE_SMOKE, true
+	case "nade_molotov":
+		return MODEL_MAT_NADE_MOLOTOV, true
+	case "bomb_c4":
+		return MODEL_MAT_BOMB_C4, true
 	// The character's two. They name the T rows; the CT instance offsets past
 	// them, so the skin needs only one set of names.
 	case "char_main":
@@ -191,6 +201,20 @@ MESH_FILES := []string {
 	"world_usp",
 	"world_deagle",
 	"world_knife",
+	// What the hands hold that is not a gun, and the same models again for the
+	// grenade in the air and the bomb on the ground. The pack's other fourteen
+	// models are built (pack_*.mesh) but not loaded: nothing places them yet,
+	// and a mesh nobody draws is only vertex memory.
+	"view_he",
+	"view_flash",
+	"view_smoke",
+	"view_molotov",
+	"view_c4",
+	"world_he",
+	"world_flash",
+	"world_smoke",
+	"world_molotov",
+	"world_c4",
 	"prop_crate_01",
 	"prop_crate_02",
 	"prop_box_01",

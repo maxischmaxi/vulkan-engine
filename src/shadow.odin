@@ -35,6 +35,9 @@ shadows_enabled :: proc() -> bool {
 // neither.
 SPEC_SHADOW_CASCADES :: 0
 SPEC_SHADOW_PCF :: 1
+// Not a shadow constant, but the ids share one namespace across every pipeline
+// that binds the frame set, so they are numbered together.
+SPEC_SMOKE_STEPS :: 2
 
 // What every pipeline that samples shadows has to be built with.
 shadow_spec_constants :: proc() -> []Spec_Constant {

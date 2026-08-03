@@ -573,6 +573,14 @@ drop_client :: proc(slot: ^Client_Slot) {
 		}
 		sv.gs.pawns[slot.pawn_id] = {}
 	}
+	// The delta baselines belong to the occupant, not to the slot: the next one
+	// must not be able to ack its way into the previous one's world. Same for
+	// the sight stamps behind them.
+	snap_history_reset(client_index(slot))
+	fow_reset_client(client_index(slot))
+	if was_in_game && slot.pawn_id >= 0 {
+		fow_pawn_removed(slot.pawn_id)
+	}
 	slot^ = {}
 	if was_in_game {
 		match_human_left()
@@ -587,7 +595,10 @@ drop_client :: proc(slot: ^Client_Slot) {
 @(private = "file")
 validate_command :: proc(cmd: ^game.Pawn_Input) {
 	cmd.pitch = clamp(cmd.pitch, -89, 89)
-	if cmd.weapon_slot < -1 || int(cmd.weapon_slot) >= game.WEAPON_SLOTS {
+	// INPUT_SELECT_COUNT, not WEAPON_SLOTS: the same field also carries the
+	// grenade cycle, one code per grenade kind and one for the bomb, none of
+	// which are weapons. A slot missing from that count is one the wire drops.
+	if cmd.weapon_slot < -1 || int(cmd.weapon_slot) >= game.INPUT_SELECT_COUNT {
 		cmd.weapon_slot = -1
 	}
 	// Noclip is a debug affordance; the server simply never grants it, and a

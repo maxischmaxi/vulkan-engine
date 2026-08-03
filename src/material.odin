@@ -248,6 +248,61 @@ MATERIALS := []Material {
 		normal_scale  = 1.0,
 		saturation    = 0.55,
 	},
+	// The explosives pack. Each carries its own PBR set, so there is nothing to
+	// correct here: no tint, no desaturation, only how metallic the thing is,
+	// which is the one property the pack ships as a map the engine does not
+	// read (the ORM array's blue channel is a per-material scalar).
+	{
+		// nade_frag: cast iron body, painted olive
+		tint          = {1, 1, 1, 1},
+		layer         = 15,
+		uv_scale      = 1.0,
+		roughness_mul = 1.0,
+		metallic      = 0.35,
+		normal_scale  = 1.0,
+		saturation    = 1.0,
+	},
+	{
+		// nade_flash: bare steel canister, the shiniest thing in the belt
+		tint          = {1, 1, 1, 1},
+		layer         = 16,
+		uv_scale      = 1.0,
+		roughness_mul = 1.0,
+		metallic      = 0.8,
+		normal_scale  = 1.0,
+		saturation    = 1.0,
+	},
+	{
+		// nade_smoke: painted canister
+		tint          = {1, 1, 1, 1},
+		layer         = 17,
+		uv_scale      = 1.0,
+		roughness_mul = 1.0,
+		metallic      = 0.3,
+		normal_scale  = 1.0,
+		saturation    = 1.0,
+	},
+	{
+		// nade_molotov: glass, rag and fuel share one atlas; glass is smooth and
+		// not a metal, and the roughness map carries the rag
+		tint          = {1, 1, 1, 1},
+		layer         = 18,
+		uv_scale      = 1.0,
+		roughness_mul = 0.7,
+		metallic      = 0,
+		normal_scale  = 1.0,
+		saturation    = 1.0,
+	},
+	{
+		// bomb_c4: taped bricks and a keypad, matte
+		tint          = {1, 1, 1, 1},
+		layer         = 19,
+		uv_scale      = 1.0,
+		roughness_mul = 1.0,
+		metallic      = 0.1,
+		normal_scale  = 1.0,
+		saturation    = 1.0,
+	},
 	// The players, twice over. The character mesh carries the T pair's indices
 	// and the CT instance adds an offset to reach its own, which is how one mesh
 	// and one draw cover both teams -- see character.vert. That makes the order
@@ -316,13 +371,21 @@ MODEL_MAT_PROP_PALETTE :: MODEL_MAT_RETRO_ARMS + 2
 MODEL_MAT_GUN_MATTE :: MODEL_MAT_RETRO_ARMS + 3
 MODEL_MAT_GUN_METAL :: MODEL_MAT_RETRO_ARMS + 4
 MODEL_MAT_MOD_PALETTE :: MODEL_MAT_RETRO_ARMS + 5
+// The explosives pack's five, one texture layer each. Everything else the pack
+// ships stays on the gun palette's plain swatch (gun_matte) until somebody
+// gives it a set of its own -- see build_pack_models in convert_models.py.
+MODEL_MAT_NADE_FRAG :: MODEL_MAT_RETRO_ARMS + 6
+MODEL_MAT_NADE_FLASH :: MODEL_MAT_RETRO_ARMS + 7
+MODEL_MAT_NADE_SMOKE :: MODEL_MAT_RETRO_ARMS + 8
+MODEL_MAT_NADE_MOLOTOV :: MODEL_MAT_RETRO_ARMS + 9
+MODEL_MAT_BOMB_C4 :: MODEL_MAT_RETRO_ARMS + 10
 // The character's four: two materials per team, T first. The mesh is authored
 // against the T pair and the CT instance adds CHARACTER_MATERIAL_STRIDE, so
-// these four have to stay adjacent and in this order.
-MODEL_MAT_CHAR_MAIN :: MODEL_MAT_RETRO_ARMS + 6
-MODEL_MAT_CHAR_JOINTS :: MODEL_MAT_RETRO_ARMS + 7
+// these four have to stay adjacent, in this order, and last.
+MODEL_MAT_CHAR_MAIN :: MODEL_MAT_RETRO_ARMS + 11
+MODEL_MAT_CHAR_JOINTS :: MODEL_MAT_RETRO_ARMS + 12
 CHARACTER_MATERIAL_STRIDE :: u32(2)
-MODEL_MATERIAL_COUNT :: 10
+MODEL_MATERIAL_COUNT :: 15
 
 // Everything behind descriptor set 1: the material table and the texture arrays
 // it indexes into. None of it changes after load.
@@ -352,7 +415,12 @@ create_material_buffer :: proc() {
 	// order the table above claims. Nothing else would notice if they were not:
 	// the defenders would simply come out in the attackers' colour.
 	#assert(MODEL_MAT_CHAR_JOINTS == MODEL_MAT_CHAR_MAIN + 1)
-	#assert(MODEL_MAT_CHAR_MAIN + CHARACTER_MATERIAL_STRIDE == MODEL_MAT_MOD_PALETTE + 3)
+	// char_ct_joints is the last row in the table, which is what makes the four
+	// character rows adjacent no matter what gets appended before them.
+	#assert(
+		MODEL_MAT_CHAR_MAIN + CHARACTER_MATERIAL_STRIDE + 1 ==
+		MODEL_MAT_RETRO_ARMS + MODEL_MATERIAL_COUNT - 1,
+	)
 
 	// The model material constants are offsets into this table rather than
 	// entries of an enum, so this is what keeps them pointing at the right rows.

@@ -81,6 +81,25 @@ Pawn :: struct {
 	// The server's fire control state. The client keeps its own cosmetic copy
 	// and never reads this locally.
 	weapon:        Pawn_Weapon,
+	// The grenade in hand, -1 for none. Deliberately NOT a weapon index: the
+	// fire path carries the spray, the lag compensation and the anti-cheat
+	// telemetry, and a throw has no business passing through any of it. The
+	// trigger is taken off the command before the weapon sees it, exactly the
+	// way the bomb does it.
+	held_grenade:  i8,
+	// The bomb in hand, which is what plants it. Same deal as the grenade: it
+	// is not a weapon, it takes the trigger away, and at most one of the two is
+	// ever set (hand.odin owns that invariant).
+	holding_bomb:  bool,
+	// Counts left this life, seeded from the loadout at spawn.
+	grenades:      [Grenade_Kind]u8,
+	// Seconds until another throw is allowed, so one click is one grenade.
+	throw_cooldown: f32,
+	// Seconds of white left from a flash, and what it started at -- the client
+	// needs both to draw the fade. Server-owned; it travels in the private
+	// block, because being blind is nobody else's business.
+	flash_left:    f32,
+	flash_total:   f32,
 	kills:         int,
 	deaths:        int,
 }
@@ -90,13 +109,19 @@ Pawn :: struct {
 // into. The collision world lives here so the two binaries cannot bake it
 // differently.
 Game_State :: struct {
-	tick:      u64,
-	pawns:     [MAX_PAWNS]Pawn,
-	collision: []physics.Aabb,
-	grid:      physics.Grid,
+	tick:        u64,
+	pawns:       [MAX_PAWNS]Pawn,
+	// Grenades in the air. Server-authoritative and never predicted: nobody
+	// steers one after it leaves the hand, so the client interpolates them the
+	// way it interpolates other players.
+	projectiles: [MAX_PROJECTILES]Projectile,
+	// What grenades left behind: smoke that blocks sight, fire that burns.
+	zones:       [MAX_ZONES]Effect_Zone,
+	collision:   []physics.Aabb,
+	grid:        physics.Grid,
 	// Server-authoritative randomness only (bot AI, spawn picks, shot
 	// inaccuracy). Prediction must never draw from this.
-	rng:       rand.Generator,
+	rng:         rand.Generator,
 }
 
 // A fresh life at a spot. The hull is the player's; bots override theirs after
@@ -118,6 +143,11 @@ init_pawn :: proc(p: ^Pawn, position: [3]f32, yaw: f32) {
 	p.alive = true
 	p.respawn_in = 0
 	p.jump_buffer = 0
+	// Empty-handed until apply_loadout says otherwise, like the weapon slots.
+	p.held_grenade = -1
+	p.holding_bomb = false
+	p.grenades = {}
+	p.throw_cooldown = 0
 }
 
 // Armour eats half of what is left, up to what the vest has, scaled down by

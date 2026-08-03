@@ -54,7 +54,15 @@ scaled_damage :: proc(base: int, group: Hit_Group) -> int {
 	return int(f32(base) * HIT_GROUP_MULTIPLIER[group])
 }
 
-// Counter-strike's rule: the vest does not cover the legs.
-hit_group_bypasses_armor :: proc(group: Hit_Group) -> bool {
+// Counter-strike's rule: the vest does not cover the legs, and it covers the
+// head only when a helmet was bought with it. The helmet therefore does not
+// scale headshot damage down -- it lets the vest see the hit at all, which is
+// the same thing by a different route and needs no second multiplier table.
+//
+// Defaulted so every call site that has no victim to ask -- the tests, and any
+// caller predating the helmet -- keeps the pre-helmet behaviour of a head the
+// vest covers.
+hit_group_bypasses_armor :: proc(group: Hit_Group, helmet := true) -> bool {
+	if group == .Head do return !helmet
 	return group == .Legs || group == .Feet
 }

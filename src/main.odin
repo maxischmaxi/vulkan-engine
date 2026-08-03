@@ -65,6 +65,12 @@ Globals :: struct {
 	depth_memory:               vk.DeviceMemory,
 	depth_view:                 vk.ImageView,
 	depth_format:               vk.Format,
+	// Single-sample copy of the depth buffer, only under MSAA: a multisampled
+	// attachment cannot be sampled as a texture, and the volumetric smoke has
+	// to read the scene's depth to know where its rays stop.
+	depth_resolve_image:        vk.Image,
+	depth_resolve_memory:       vk.DeviceMemory,
+	depth_resolve_view:         vk.ImageView,
 	anisotropy_enabled:         bool,
 	max_anisotropy:             f32,
 	bc_enabled:                 bool, // BC-compressed texture formats usable
@@ -194,6 +200,8 @@ main :: proc() {
 	// that point at those resources come after everything exists.
 	create_descriptor_layouts()
 	create_descriptor_pool()
+	// Sampler for binding 5, before the sets that name it.
+	create_depth_sampler()
 	defer destroy_descriptors()
 
 	create_frame_data()
@@ -206,6 +214,7 @@ main :: proc() {
 	create_character_renderer()
 	create_decal_renderer()
 	create_tracer_renderer()
+	create_smoke_renderer()
 
 	// After the meshes exist, because it looks up every model it places.
 	place_map_props()
@@ -230,6 +239,7 @@ main :: proc() {
 	defer destroy_character_renderer()
 	defer destroy_decal_renderer()
 	defer destroy_tracer_renderer()
+	defer destroy_smoke_renderer()
 	defer destroy_hud_renderer()
 
 	create_command_buffers()

@@ -72,6 +72,11 @@ update_remote_clock :: proc(frame_dt: f32) {
 
 	interpolate_remotes()
 	scan_remote_fire()
+
+	// Blindness runs down at frame rate between snapshots: the server owns the
+	// timer, but stepping the fade at 64 Hz on a 165 Hz screen would be visible
+	// as a stutter in the one effect the player is staring straight at.
+	net_client.flash_left = max(net_client.flash_left - frame_dt, 0)
 }
 
 @(private = "file")
@@ -121,6 +126,13 @@ interpolate_remotes :: proc() {
 		)
 		factor = clamp(factor, 0, 1)
 	}
+
+	// Grenades ride the same pair and the same clock: an arc drawn on a
+	// different delay than the players around it would not read as one world.
+	interpolate_projectiles(from, to, factor)
+	// Zones take the older of the pair too, so a cloud never appears before
+	// the grenade that made it has visibly landed.
+	read_snapshot_zones(from)
 
 	for id in 0 ..< game.MAX_PAWNS {
 		if id not_in from.present do continue
@@ -217,13 +229,37 @@ scan_remote_fire :: proc() {
 				end = hit.point
 			}
 
+			// The visible half only. The bang comes from the snapshot's sound
+			// block instead, because it has to reach a player who cannot see
+			// the shooter -- and this loop only ever walks entities that are
+			// in the snapshot, which under fog of war means visible ones.
 			add_tracer(muzzle, end, weapon.tracer_speed)
 			add_transient_light(muzzle, {1.0, 0.82, 0.5}, 26, 7, MUZZLE_FLASH_TIME)
-			audio_emit({kind = .Fire, weapon = weapon_index, pos = muzzle})
 		}
+
+		play_snapshot_sounds(s)
 	}
 
 	remote.fire_scanned = max(remote.fire_scanned, t0)
+}
+
+// The audible half, off the snapshot's sound block. Played on the same delayed
+// clock as the tracers above rather than the moment the packet lands: the
+// world is drawn INTERP_TICKS behind, and a bang arriving ~94 ms before its
+// own muzzle flash is worse than one arriving with it.
+@(private = "file")
+play_snapshot_sounds :: proc(s: ^protocol.Snapshot) {
+	for i in 0 ..< int(s.sound_count) {
+		e := &s.sounds[i]
+		switch e.kind {
+		case .Footstep:
+			audio_emit({kind = .Footstep, pos = e.position})
+		case .Gunshot:
+			weapon := int(e.weapon)
+			if weapon >= game.WEAPON_COUNT do continue
+			audio_emit({kind = .Fire, weapon = weapon, pos = e.position})
+		}
+	}
 }
 
 // Shortest way round between two angles in degrees. The wire quantizes yaw to

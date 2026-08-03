@@ -20,6 +20,7 @@ BOMB_NO_PAWN :: u8(0xFF)
 
 BOMB_PLANT_TIME :: 3.2
 BOMB_DEFUSE_TIME :: 10.0
+BOMB_DEFUSE_TIME_KIT :: 5.0
 BOMB_FUSE :: 40.0
 BOMB_PICKUP_RANGE :: 1.2 // horizontal metres to a dropped bomb
 BOMB_DEFUSE_RANGE :: 1.6 // horizontal metres to a planted bomb
@@ -53,6 +54,20 @@ bomb_site_at :: proc(sites: []Bombsite, position: [3]f32) -> int {
 	return -1
 }
 
+// Whether this pawn is in a state that plants: alive, standing on a site, and
+// with the bomb actually in its hands rather than merely in its backpack.
+//
+// Counter-strike's rule, and the reason it is a rule at all: the hands that
+// hold the bomb are hands that cannot shoot (sim_tick strips the trigger), so
+// planting has a cost beyond standing still. The carrier check is the caller's
+// -- only the server knows who carries -- but everything else about the moment
+// is here, where a test can reach it.
+bomb_plant_ready :: proc(p: Pawn, sites: []Bombsite) -> bool {
+	if !p.active || !p.alive || !p.body.on_ground do return false
+	if !p.holding_bomb do return false
+	return bomb_site_at(sites, p.body.position) >= 0
+}
+
 bomb_explosion_damage :: proc(dist: f32) -> int {
 	if dist >= BOMB_DAMAGE_RADIUS do return 0
 	return int(f32(BOMB_DAMAGE_MAX) * (1 - dist / BOMB_DAMAGE_RADIUS))
@@ -67,8 +82,23 @@ bomb_plant_step :: proc(progress: f32, engaged: bool, dt: f32) -> (next: f32, do
 	return next, next >= BOMB_PLANT_TIME
 }
 
-bomb_defuse_step :: proc(progress: f32, engaged: bool, dt: f32) -> (next: f32, done: bool) {
+// What a defuse costs the defuser holding it: the kit halves the wire. Both
+// the stepper and the snapshot's progress fraction read it, so the bar the
+// client fills always spans the time its own defuser actually needs.
+bomb_defuse_time :: proc(kit: bool) -> f32 {
+	return kit ? BOMB_DEFUSE_TIME_KIT : BOMB_DEFUSE_TIME
+}
+
+bomb_defuse_step :: proc(
+	progress: f32,
+	engaged: bool,
+	dt: f32,
+	total: f32 = BOMB_DEFUSE_TIME,
+) -> (
+	next: f32,
+	done: bool,
+) {
 	if !engaged do return 0, false
 	next = progress + dt
-	return next, next >= BOMB_DEFUSE_TIME
+	return next, next >= total
 }

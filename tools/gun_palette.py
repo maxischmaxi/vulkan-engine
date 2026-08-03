@@ -18,6 +18,12 @@ from pathlib import Path
 # 14 names today; the assert below trips if the pack ever outgrows it.
 GRID = 4
 
+# The last cell, reserved rather than coloured: models that are on disk but have
+# no texture set of their own point every UV here and come out plain grey. Being
+# a named cell rather than "whatever is left over" is what keeps a growing pack
+# from quietly stealing it.
+PLAIN_INDEX = GRID * GRID - 1
+
 # Materials that read as bare metal get the metallic engine material; everything
 # else (polymer, wood, glass) stays dielectric. Roughness is per-swatch in the
 # texture, so this split only decides metalness.
@@ -68,7 +74,10 @@ def swatches(assets_dir):
             seen = by_name.setdefault(name, rgb)
             assert seen == rgb, f"material {name} has two colours in the pack"
     out = sorted(by_name.items())
-    assert len(out) <= GRID * GRID, f"{len(out)} swatches exceed the {GRID}x{GRID} grid"
+    assert len(out) < GRID * GRID, (
+        f"{len(out)} swatches leave no room for the plain cell in the "
+        f"{GRID}x{GRID} grid"
+    )
     return out
 
 

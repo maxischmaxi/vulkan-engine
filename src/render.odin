@@ -24,6 +24,12 @@ build_frame :: proc(alpha: f32) {
 			submit_bots(alpha)
 		} else {
 			submit_remote_entities()
+			// Grenades are server-authoritative and never predicted, so the
+			// local sim above has none to draw.
+			submit_projectiles()
+			submit_zones()
+			// After submit_zones, which is what fills the list this reads.
+			build_smoke_instances()
 		}
 		submit_viewmodel()
 	}
@@ -90,6 +96,18 @@ record_frame :: proc(cmd: vk.CommandBuffer, image_index, frame: u32) {
 }
 
 // Everything with a depth buffer, at whatever size the render scale asked for.
+//
+// One rendering block, unless there is smoke on screen. Volumetric smoke has to
+// SAMPLE the depth this pass writes, and an attachment cannot be sampled while
+// it is still bound -- so with smoke the frame splits into three:
+//
+//   A  opaque world, props, characters, decals, tracers   (writes depth)
+//   B  smoke                                              (reads depth, no depth attachment)
+//   C  viewmodel                                          (its own cleared depth)
+//
+// The weapon stays in C rather than moving up into A, so it draws in front of
+// the smoke instead of being swallowed by it. Under MSAA the colour resolve
+// moves to whichever block ends the frame.
 @(private = "file")
 record_scene_pass :: proc(cmd: vk.CommandBuffer, image_index, frame: u32) {
 	extent := scene_extent()
@@ -99,32 +117,46 @@ record_scene_pass :: proc(cmd: vk.CommandBuffer, image_index, frame: u32) {
 	// window, and the swapchain image when it is neither.
 	target := scene_scaled() ? g.scene_view : g.swapchain_views[image_index]
 
-	// With MSAA the pass renders into the multisampled image and the hardware
-	// resolves into the target on the way out, so the multisampled contents
-	// themselves never need storing.
+	// The split costs two extra rendering blocks and a barrier, so it only
+	// happens when there is actually smoke to draw.
+	split := smoke_active() && debug_mode != .Overdraw
+
+	// ------------------------------------------------------------- block A
 	color_attachment := vk.RenderingAttachmentInfo {
 		sType = .RENDERING_ATTACHMENT_INFO,
 		imageView = msaa_enabled() ? g.color_view : target,
 		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
 		loadOp = .CLEAR,
-		storeOp = msaa_enabled() ? .DONT_CARE : .STORE,
+		// Without the split this is the only block, so it resolves on the way
+		// out as before. With it, the multisampled colour has to survive into
+		// the blocks that follow.
+		storeOp = (msaa_enabled() && !split) ? .DONT_CARE : .STORE,
 		clearValue = {color = {float32 = SKY_COLOR}},
 	}
-	if msaa_enabled() {
+	if msaa_enabled() && !split {
 		color_attachment.resolveMode = {.AVERAGE}
 		color_attachment.resolveImageView = target
 		color_attachment.resolveImageLayout = .COLOR_ATTACHMENT_OPTIMAL
 	}
 
-	// DONT_CARE on store: nothing reads the depth values after the frame.
-	// Cleared to 0, which is the far plane under reversed-Z.
+	// Cleared to 0, which is the far plane under reversed-Z. Nothing reads the
+	// depth values after the frame unless the smoke does, which is what turns
+	// the store on -- and under MSAA also resolves them into a single-sample
+	// image, because a multisampled depth buffer cannot be sampled.
 	depth_attachment := vk.RenderingAttachmentInfo {
 		sType = .RENDERING_ATTACHMENT_INFO,
 		imageView = g.depth_view,
 		imageLayout = .DEPTH_ATTACHMENT_OPTIMAL,
 		loadOp = .CLEAR,
-		storeOp = .DONT_CARE,
+		storeOp = split ? .STORE : .DONT_CARE,
 		clearValue = {depthStencil = {depth = 0.0, stencil = 0}},
+	}
+	if split && msaa_enabled() {
+		// SAMPLE_ZERO, not an average: depth has no meaningful mean, and one
+		// sample per pixel is all a ray needs to know where to stop.
+		depth_attachment.resolveMode = {.SAMPLE_ZERO}
+		depth_attachment.resolveImageView = g.depth_resolve_view
+		depth_attachment.resolveImageLayout = .DEPTH_ATTACHMENT_OPTIMAL
 	}
 
 	rendering_info := vk.RenderingInfo {
@@ -168,9 +200,91 @@ record_scene_pass :: proc(cmd: vk.CommandBuffer, image_index, frame: u32) {
 	record_tracer_pass(cmd, frame)
 	gpu_timer_mark(cmd, frame, .Decals)
 
+	if !split {
+		record_viewmodel_block(cmd, frame)
+		gpu_timer_mark(cmd, frame, .Viewmodel)
+		vk.CmdEndRendering(cmd)
+		return
+	}
+
+	vk.CmdEndRendering(cmd)
+
+	// ------------------------------------------------------------- block B
+	// The depth this frame just wrote becomes a texture. Late fragment tests
+	// wrote it; the fragment shader below reads it.
+	transition_image(
+		cmd,
+		depth_texture_image(),
+		.DEPTH_ATTACHMENT_OPTIMAL,
+		.SHADER_READ_ONLY_OPTIMAL,
+		{.LATE_FRAGMENT_TESTS},
+		{.FRAGMENT_SHADER},
+		{.DEPTH_STENCIL_ATTACHMENT_WRITE},
+		{.SHADER_READ},
+		0,
+		1,
+		{.DEPTH},
+	)
+
+	smoke_color := color_attachment
+	smoke_color.loadOp = .LOAD
+	smoke_color.storeOp = .STORE
+	smoke_info := rendering_info
+	smoke_info.pColorAttachments = &smoke_color
+	// No depth attachment at all: the image is bound as a texture instead, and
+	// binding it as both would be a feedback loop the validation layer refuses.
+	smoke_info.pDepthAttachment = nil
+
+	vk.CmdBeginRendering(cmd, &smoke_info)
+	set_full_viewport(cmd, extent)
+	record_smoke_pass(cmd, frame)
+	vk.CmdEndRendering(cmd)
+
+	// ------------------------------------------------------------- block C
+	// Without MSAA the smoke sampled the very image the viewmodel is about to
+	// draw into, so it has to go back to being an attachment. With MSAA the
+	// sampled copy is a separate image and the attachment never left its
+	// layout.
+	if !msaa_enabled() {
+		transition_image(
+			cmd,
+			g.depth_image,
+			.SHADER_READ_ONLY_OPTIMAL,
+			.DEPTH_ATTACHMENT_OPTIMAL,
+			{.FRAGMENT_SHADER},
+			{.EARLY_FRAGMENT_TESTS},
+			{.SHADER_READ},
+			{.DEPTH_STENCIL_ATTACHMENT_WRITE},
+			0,
+			1,
+			{.DEPTH},
+		)
+	}
+
+	view_color := color_attachment
+	view_color.loadOp = .LOAD
+	if msaa_enabled() {
+		// The frame's one resolve, moved here from block A.
+		view_color.storeOp = .DONT_CARE
+		view_color.resolveMode = {.AVERAGE}
+		view_color.resolveImageView = target
+		view_color.resolveImageLayout = .COLOR_ATTACHMENT_OPTIMAL
+	}
+
+	view_depth := depth_attachment
+	view_depth.loadOp = .CLEAR
+	view_depth.storeOp = .DONT_CARE
+	view_depth.resolveMode = {}
+	view_depth.resolveImageView = 0
+
+	view_info := rendering_info
+	view_info.pColorAttachments = &view_color
+	view_info.pDepthAttachment = &view_depth
+
+	vk.CmdBeginRendering(cmd, &view_info)
+	set_full_viewport(cmd, extent)
 	record_viewmodel_block(cmd, frame)
 	gpu_timer_mark(cmd, frame, .Viewmodel)
-
 	vk.CmdEndRendering(cmd)
 }
 
@@ -341,6 +455,7 @@ draw_frame :: proc() {
 	upload_character_instances(frame)
 	upload_decals(frame)
 	upload_tracers(frame)
+	upload_smoke(frame)
 	upload_hud_quads(frame)
 
 	cpu_zone(.Record)

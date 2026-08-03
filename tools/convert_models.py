@@ -42,13 +42,20 @@ MAGIC = b"DMSH"
 VERSION = 1
 NAME_LEN = 32
 
-# Tile origins in the RetroWeapons atlas, in UV space with v running down the
-# image. Must match TILES in build_model_textures.py.
+# Tile origins inside an atlased texture set, in UV space with v running down
+# the image. Two sets are atlased and both are 2x2, which is why one scale
+# covers them: RetroWeapons (rifle, pistol, arms, projectiles) and NadeMolotov,
+# whose bottle, wick and liquid each ship their own maps and would otherwise
+# cost three layers for one bottle. Must match TILES and EXPLOSIVE_SETS in
+# build_model_textures.py.
 ATLAS_TILES = {
     "rifle": (0.0, 0.0),
     "pistol": (0.5, 0.0),
     "arms": (0.0, 0.5),
     "projectiles": (0.5, 0.5),
+    "molotov_bottle": (0.0, 0.0),
+    "molotov_fabric": (0.5, 0.0),
+    "molotov_liquid": (0.0, 0.5),
 }
 ATLAS_SCALE = 0.5
 
@@ -147,6 +154,83 @@ VIEWMODELS = [
 ]
 
 
+class AllTo:
+    """A material map that answers the same thing whatever it is asked.
+
+    The explosives pack names its materials Mat, Mat.1, Luger -- names that
+    collide between models and describe nothing -- but each of its models has
+    exactly one texture set, so the name never has to be consulted. Meshes that
+    carry no material slots at all (four of them do) also land here, which the
+    dict form could not do."""
+
+    def __init__(self, target, tile=None):
+        self.answer = (target, tile)
+
+    def get(self, name, default=None):
+        return self.answer
+
+
+def held(name, stem, length, materials, tweak_euler=(0.0, 0.0, 0.0),
+         tweak_offset=(0.0, 0.0, 0.0)):
+    """A viewmodel for something that is not a gun: a grenade, the bomb.
+
+    Same arms scene and the same hand attachment as gun(), and the same pairing
+    with build_world_weapon, so each of these also yields the world_* mesh that
+    the thrown version and the dropped bomb are drawn with. What differs is the
+    texturing: these meshes bring their own UVs, so they point at a texture set
+    of their own instead of at a palette swatch."""
+    return {
+        "name": name,
+        **PISTOL_ARMS,
+        "attach": {
+            "fbx": f"explosives/{stem}.fbx",
+            "length": length,
+            "tweak_euler": tweak_euler,
+            "tweak_offset": tweak_offset,
+        },
+        "materials": materials,
+    }
+
+
+# Everything the hands can hold that is not a gun. Lengths are the real-world
+# size of the object, metres -- the pack models arrive at roughly that scale
+# already, so these are close to their own bounds rather than a correction.
+# The offsets push the thing out of the fist: the pistol pose closes the hand
+# around a grip, and an object centred on that grip is swallowed by the fingers
+# the way a 15 cm canister has no business being. Forward and a little up is
+# where a held grenade reads, and it is the same correction the knife needed.
+HELD_ITEMS = [
+    held("view_he", "FragGrenadeModel", 0.11, AllTo("nade_frag"),
+         tweak_offset=(15.0, 0.0, 10.0)),
+    held("view_flash", "Flashbang", 0.13, AllTo("nade_flash"),
+         tweak_offset=(15.0, 0.0, 10.0)),
+    held("view_smoke", "Smoke_Grenade", 0.15, AllTo("nade_smoke"),
+         tweak_offset=(15.0, 0.0, 10.0)),
+    # The bottle and the satchel are wide enough to fill the frame at their real
+    # size, so both are cut down and lifted least: what matters is recognising
+    # them at a glance, not measuring them.
+    held("view_molotov", "Molotov_Cocktail", 0.20, {
+        "Bottle": ("nade_molotov", "molotov_bottle"),
+        "Fabric": ("nade_molotov", "molotov_fabric"),
+        "Liquid": ("nade_molotov", "molotov_liquid"),
+    }, tweak_offset=(15.0, 0.0, 4.0)),
+    held("view_c4", "C4", 0.17, AllTo("bomb_c4"),
+         tweak_offset=(16.0, 0.0, 1.0)),
+]
+
+# The rest of the explosives pack: on disk as geometry, plain grey until one of
+# them is wanted. Promoting one is a texture set in build_model_textures.py, a
+# material row in src/material.odin, a name in mesh_material_index, and a
+# HELD_ITEMS entry (or a prop placement) -- the five above are the worked
+# example. Not converted through HELD_ITEMS because none of them belongs in a
+# hand: they are mines, bombs and a second set of guns.
+PACK_MODELS = [
+    "AK47", "AT_MINE", "Claymore", "FlareGun", "Grease_Gun", "Luger",
+    "M24Grenade", "M4A1", "Makarov", "Nuclear_Bomb", "Pipe_Bomb", "Shotgun",
+    "Sniper", "Suomi_KP",
+]
+
+
 # --------------------------------------------------------------------- scene
 
 
@@ -190,15 +274,27 @@ def attach_weapon(spec):
     before = set(bpy.data.objects)
     bpy.ops.import_scene.fbx(filepath=str(ASSETS / spec["fbx"]))
     added = [o for o in bpy.data.objects if o not in before]
-    root = added[0]
-    for obj in added[1:]:
-        if obj.parent is None:
-            obj.parent = root
+    # Every piece the import brought that is not already hanging off another
+    # one. The old version parented them all to added[0] and moved that -- which
+    # works for a one-mesh file and scatters a multi-part one, because the list
+    # order is arbitrary and "the root" ended up being the smoke grenade's pin.
+    # Applying the same matrix to each of them needs no parenting at all.
+    tops = [o for o in added if o.parent is None or o.parent not in added]
 
     scale = 1.0
     if "length" in spec:
         unit = bpy.context.scene.unit_settings.scale_length
-        corners = [root.matrix_world @ Vector(c) for c in root.bound_box]
+        # Every mesh the import brought, not just the root's own box. The gun
+        # pack is one mesh per file, so this measures the same thing it always
+        # did there; the explosives pack is not, and its root is sometimes an
+        # empty whose box has no size at all.
+        corners = []
+        for obj in added:
+            if obj.type != "MESH":
+                continue
+            corners += [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+        if not corners:
+            sys.exit(f"{spec['fbx']}: the import brought no mesh to measure")
         longest = max(
             max(c[i] for c in corners) - min(c[i] for c in corners) for i in range(3)
         )
@@ -217,7 +313,8 @@ def attach_weapon(spec):
     # Multiplied onto whatever the import left on the object rather than
     # replacing it: an FBX arrives carrying its own unit conversion in the
     # object scale, and dropping that is how a knife ends up 19 metres long.
-    root.matrix_world = m @ root.matrix_world
+    for obj in tops:
+        obj.matrix_world = m @ obj.matrix_world
     bpy.context.view_layer.update()
     return added
 
@@ -310,6 +407,15 @@ class Builder:
                     slots.append(None)
                     continue
                 slots.append((self.material_slot(target), tile))
+
+            if not slots:
+                # No material slots at all -- four of the explosives pack's
+                # models ship that way, and every triangle on them reports
+                # material_index 0. One synthetic slot covers the mesh; a map
+                # that answers per name has nothing to answer here, so this only
+                # ever resolves through an AllTo.
+                target, tile = material_map.get("", (None, None))
+                slots.append(None if target is None else (self.material_slot(target), tile))
 
             for tri in mesh.loop_triangles:
                 slot = slots[tri.material_index] if tri.material_index < len(slots) else None
@@ -550,6 +656,23 @@ def add_collada(builder, path):
 # ------------------------------------------------------------------- models
 
 
+def gun_swatch_map():
+    """Gun-pack material name -> (engine material, swatch UV)."""
+    out = {}
+    for index, (mat_name, _) in enumerate(gun_palette.swatches(ASSETS)):
+        out[mat_name] = (
+            gun_palette.engine_material(mat_name),
+            ("swatch", gun_palette.swatch_uv(index)),
+        )
+    return out
+
+
+def plain_map():
+    """Everything onto the palette's reserved grey cell -- for models that are
+    on disk without a texture set of their own."""
+    return AllTo("gun_matte", ("swatch", gun_palette.swatch_uv(gun_palette.PLAIN_INDEX)))
+
+
 def build_viewmodel(spec):
     print(f"{spec['name']}:")
     open_blend(spec["blend"])
@@ -557,19 +680,23 @@ def build_viewmodel(spec):
 
     # The gun-pack material names (Black, Metal, ...) never collide with the
     # retro names, so the swatch map simply rides along in every scene.
-    material_map = dict(RETRO_MATERIALS)
-    for index, (mat_name, _) in enumerate(gun_palette.swatches(ASSETS)):
-        material_map[mat_name] = (
-            gun_palette.engine_material(mat_name),
-            ("swatch", gun_palette.swatch_uv(index)),
-        )
+    scene_map = dict(RETRO_MATERIALS)
+    scene_map.update(gun_swatch_map())
+
+    # A held item brings its own texture set; the arms holding it must not. Two
+    # maps rather than one merged one, because the pack's material names are
+    # generic enough (Mat, Mat.1) that merging would be a collision waiting to
+    # re-texture somebody's forearm.
+    attach_map = spec.get("materials", scene_map)
+
+    attached = set()
     if "attach" in spec:
-        attach_weapon(spec["attach"])
+        attached = set(attach_weapon(spec["attach"]))
 
     builder = Builder("viewmodel", bpy.context.scene.unit_settings.scale_length)
     for obj in exportable_meshes(spec.get("exclude", ())):
         before = len(builder.vertices)
-        builder.add_object(obj, material_map)
+        builder.add_object(obj, attach_map if obj in attached else scene_map)
         # Per object, in engine view space: this is where a weapon that ends up
         # inside a fist or behind the camera shows itself.
         added = [v[0] for v in builder.vertices[before:]]
@@ -594,12 +721,7 @@ def build_world_weapon(spec):
     open_blend(spec["blend"])
     apply_actions(spec.get("actions", {}), spec.get("frame", 1))
 
-    material_map = {}
-    for index, (mat_name, _) in enumerate(gun_palette.swatches(ASSETS)):
-        material_map[mat_name] = (
-            gun_palette.engine_material(mat_name),
-            ("swatch", gun_palette.swatch_uv(index)),
-        )
+    material_map = spec.get("materials", gun_swatch_map())
 
     added = attach_weapon(spec["attach"])
 
@@ -698,20 +820,72 @@ def build_modular():
         builder.write(OUT / f"{name}.mesh")
 
 
+def build_pack_models():
+    """The explosives pack's leftovers, as plain geometry.
+
+    Kept out of the hand-and-arms path on purpose: these are mines, satchels
+    and a second set of rifles, none of which anything holds yet. They convert
+    so the pack is on disk in the engine's own format rather than as FBX nobody
+    has looked at, and they wear the palette's grey until one of them earns a
+    texture set."""
+    src = ASSETS / "explosives"
+    if not src.exists():
+        print("no explosives pack found")
+        return
+    print(f"explosives pack ({len(PACK_MODELS)}):")
+    material_map = plain_map()
+
+    for stem in PACK_MODELS:
+        path = src / f"{stem}.fbx"
+        if not path.exists():
+            sys.exit(f"missing {path} -- run tools/extract_models.sh")
+
+        # A fresh empty scene per model, like build_modular: these carry generic
+        # material names, and one import seeing another's objects is how a
+        # Mat.001 ends up meaning two different things.
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        bpy.ops.import_scene.fbx(filepath=str(path))
+
+        builder = Builder("world", 1.0)
+        for obj in bpy.context.scene.objects:
+            if obj.type != "MESH" or not obj.data.polygons:
+                continue
+            builder.add_object(obj, material_map, flat_tangents=True)
+        if not builder.vertices:
+            print(f"    warn: {stem} exported nothing")
+            continue
+
+        # Same convention as the props: origin at the footprint centre, floor
+        # level, so a placement only has to say where it stands.
+        mn, mx = builder.bounds()
+        builder.translate((-(mn[0] + mx[0]) * 0.5, -(mn[1] + mx[1]) * 0.5, -mn[2]))
+        builder.write(OUT / f"pack_{stem.lower()}.mesh")
+
+
 def main():
     if not ASSETS.exists():
         sys.exit("assets/ missing -- run tools/extract_models.sh first")
     OUT.mkdir(parents=True, exist_ok=True)
 
     # `blender -b -P convert_models.py -- modular` rebuilds only the modular
-    # pieces; the full run re-bakes every viewmodel and takes minutes.
+    # pieces, `-- held` only the grenades and the bomb (the loop their hand
+    # poses are tuned in), `-- pack` only the untextured leftovers. The full run
+    # re-bakes everything and takes minutes.
     args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    if "modular" not in args:
+    only = set(args)
+    if not only or "held" in only:
+        for spec in HELD_ITEMS:
+            build_viewmodel(spec)
+            build_world_weapon(spec)
+    if not only:
         for spec in VIEWMODELS:
             build_viewmodel(spec)
             build_world_weapon(spec)
         build_props()
-    build_modular()
+    if not only or "pack" in only:
+        build_pack_models()
+    if not only or "modular" in only:
+        build_modular()
     print(f"models written to {OUT}")
 
 

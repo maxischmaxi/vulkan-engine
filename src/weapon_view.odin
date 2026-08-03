@@ -44,8 +44,12 @@ MUZZLE_FLASH_TIME :: 0.045
 HIT_MARKER_TIME :: 0.18
 RECOIL_RECOVERY :: 9.0
 
-// Number keys, in slot order: primary, secondary, knife.
-SLOT_KEYS := [game.WEAPON_SLOTS]i32{glfw.KEY_1, glfw.KEY_2, glfw.KEY_3}
+// Number keys, in slot order: primary, secondary, knife, grenades, bomb. The
+// last two are not weapons -- hand_view.odin owns them -- but they reach the
+// simulation through the same slot field, so they belong in the same table.
+// The index is what hand_key reads, so the order is the meaning.
+SLOT_KEYS := [?]i32{glfw.KEY_1, glfw.KEY_2, glfw.KEY_3, glfw.KEY_4, glfw.KEY_5}
+#assert(len(SLOT_KEYS) == KEY_SLOT_BOMB + 1)
 
 current_weapon :: proc() -> game.Weapon {
 	return game.WEAPONS[weapon_state.index]
@@ -114,6 +118,7 @@ default_weapon_index :: proc() -> int {
 init_weapons :: proc() {
 	weapon_state = {}
 	weapon_state.index = default_weapon_index()
+	hand_reset()
 	refill_all_ammo()
 	// Last, so it reads the weapon that was just drawn. A no-op without a scope.
 	if cli.zoom do weapon_toggle_zoom()
@@ -126,6 +131,8 @@ init_weapons :: proc() {
 // fov, so setting it here is the whole render-side job. The wire side rides
 // build_local_input as a held button.
 weapon_toggle_zoom :: proc() {
+	// A right click with a grenade in hand is the short throw, not the lens.
+	if hand_busy() do return
 	if current_weapon().zoom_fov <= 0 do return
 	weapon_state.zoom_active = !weapon_state.zoom_active
 	camera.fov_horizontal =
@@ -237,22 +244,18 @@ update_weapon :: proc(dt: f32, alpha: f32) {
 		}
 	}
 
-	// While the buy menu is up, number keys navigate it, not the holster.
-	if !buy_menu.open {
-		for key, slot in SLOT_KEYS {
-			if !key_pressed(key) do continue
-			if index := game.loadout_weapon_in_slot(player.loadout, slot); index >= 0 {
-				select_weapon(index)
-			}
-		}
-	}
+	// Holstering is gather_player_intent's job now: the keys and the wheel both
+	// come out of hand_view as one pick, and it calls select_weapon below.
+	hand_tick(dt)
 
 	// A corpse holds neither trigger nor magazine, and neither does anybody
-	// still waiting for the clock to start. The cursor stays a separate
-	// question: a loose one means a menu owns the mouse, which is context
-	// rather than a rule of the match. The benchmark holds a trigger without
-	// a cursor to grab.
-	if local_fire_block() != .None || (!input.cursor_grabbed && !bench_active()) {
+	// still waiting for the clock to start, nor anybody whose hands are on a
+	// grenade or the bomb -- the server strips the trigger for those two
+	// (sim_tick), so firing here would draw a flash for a shot nobody took.
+	// The cursor stays a separate question: a loose one means a menu owns the
+	// mouse, which is context rather than a rule of the match. The benchmark
+	// holds a trigger without a cursor to grab.
+	if local_fire_block() != .None || hand_busy() || (!input.cursor_grabbed && !bench_active()) {
 		weapon_state.trigger_held = false
 		consume_fire_click()
 		return
@@ -450,7 +453,8 @@ fire :: proc(alpha: f32) {
 				pen := weapon.armor_pen
 				if !weapon.melee {
 					dmg = game.scaled_damage(weapon.damage, shot.group)
-					if game.hit_group_bypasses_armor(shot.group) do pen = 1
+					helmet := bot_pawn(shot.target).loadout.helmet
+					if game.hit_group_bypasses_armor(shot.group, helmet) do pen = 1
 				}
 				if local_damage_bot(shot.target, dmg, pen) {
 					killed = true
@@ -651,6 +655,13 @@ submit_viewmodel :: proc() {
 
 	weapon := current_weapon()
 	origin, right, forward, up := weapon_origin()
+
+	// Hands on a grenade or the bomb hold that instead, and nothing below
+	// applies: there is no muzzle to flash.
+	if model, held := hand_view_model(); held {
+		add_view_model(model, prop_transform_oriented(origin, 1, right, forward, up))
+		return
+	}
 
 	add_view_model(weapon.model, prop_transform_oriented(origin, 1, right, forward, up))
 

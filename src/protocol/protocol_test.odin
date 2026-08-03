@@ -179,9 +179,18 @@ test_damage_roundtrip :: proc(t: ^testing.T) {
 	}
 }
 
-// header 17 + bomb block 4 + present 2: the fixed cost of every snapshot on
-// the wire (a dropped or planted bomb adds its 12-byte position)
-SNAP_FIXED_BYTES :: 23
+// header 17 + bomb block 4 + present 2 + sound count 1 + projectile count 1 +
+// zone count 1:
+// the fixed cost of every snapshot on the wire (a dropped or planted bomb adds
+// its 12-byte position, each sound event another 8, each projectile 8, each
+// zone 9)
+SNAP_FIXED_BYTES :: 26
+// velocity 12, then nine single bytes (armor, gear, mag, reserve, cooldown,
+// reload, kills, deaths, spray depth), spray seed 4, money 2, flash 4, one byte
+// per grenade kind and one for the hand
+PRIVATE_BYTES :: 12 + 9 + 4 + 2 + 4 + game.GRENADE_COUNT + 1
+SOUND_EVENT_BYTES :: 8
+PROJECTILE_BYTES :: 8
 
 @(test)
 test_snapshot_roundtrip :: proc(t: ^testing.T) {
@@ -210,12 +219,15 @@ test_snapshot_roundtrip :: proc(t: ^testing.T) {
 	s.private = {
 		velocity       = {1, 2, -3},
 		armor          = 88,
+		gear           = {.Helmet, .Defuse_Kit},
 		ammo_mag       = 17,
 		ammo_reserve   = 90,
 		kills          = 4,
 		deaths         = 2,
 		spray_progress = 44, // 5.5 shots deep, in eighths
 		spray_seed     = 0xDEAD_BEEF,
+		grenades       = {0, 2, 1, 0},
+		hand           = game.select_grenade(.Flash),
 	}
 
 	zero: Snapshot
@@ -223,8 +235,8 @@ test_snapshot_roundtrip :: proc(t: ^testing.T) {
 	w := writer(buf[:])
 	write_snapshot(&w, s, &zero)
 	testing.expect(t, !w.overflow)
-	// full: fixed + 2 x (mask 1 + fields 18) + has_private 1 + private 26
-	testing.expect_value(t, w.off, SNAP_FIXED_BYTES + 2 * 19 + 1 + 26)
+	// full: fixed + 2 x (mask 1 + fields 18) + has_private 1 + the private block
+	testing.expect_value(t, w.off, SNAP_FIXED_BYTES + 2 * 19 + 1 + PRIVATE_BYTES)
 
 	r := reader(buf[:w.off])
 	got, ok := read_snapshot(&r, &zero)
@@ -239,9 +251,13 @@ test_snapshot_roundtrip :: proc(t: ^testing.T) {
 	testing.expect_value(t, got.entities[0].health, s.entities[0].health)
 	testing.expect(t, got.has_private)
 	testing.expect_value(t, got.private.velocity, s.private.velocity)
+	testing.expect_value(t, got.private.armor, s.private.armor)
+	testing.expect_value(t, got.private.gear, s.private.gear)
 	testing.expect_value(t, got.private.kills, s.private.kills)
 	testing.expect_value(t, got.private.spray_progress, s.private.spray_progress)
 	testing.expect_value(t, got.private.spray_seed, s.private.spray_seed)
+	testing.expect_value(t, got.private.grenades, s.private.grenades)
+	testing.expect_value(t, got.private.hand, s.private.hand)
 }
 
 // A changed subset travels; everything else comes out of the receiver's
@@ -292,6 +308,102 @@ test_snapshot_delta_subset :: proc(t: ^testing.T) {
 	testing.expect_value(t, got.entities[2].yaw, client_base.entities[2].yaw)
 	testing.expect_value(t, got.entities[2].pitch, client_base.entities[2].pitch)
 	testing.expect_value(t, got.entities[2].flags, client_base.entities[2].flags)
+}
+
+// The sound block. It exists so hearing survives fog of war, so the roundtrip
+// has to hold even when the entity array is empty -- that is exactly the case
+// it was built for: an enemy nobody can see, still audible.
+@(test)
+test_snapshot_sound_events :: proc(t: ^testing.T) {
+	s: Snapshot
+	testing.expect(t, snapshot_add_sound(&s, {kind = .Footstep, position = {12.34, -5.67, 1.5}}))
+	testing.expect(
+		t,
+		snapshot_add_sound(&s, {kind = .Gunshot, weapon = 7, position = {-40.5, 20.25, 0}}),
+	)
+	testing.expect_value(t, s.sound_count, u8(2))
+
+	zero: Snapshot
+	buf: [MTU]u8
+	w := writer(buf[:])
+	write_snapshot(&w, s, &zero)
+	testing.expect(t, !w.overflow)
+	// No entities at all: the fixed cost plus two events, plus the has_private
+	// byte. This is the "unseen but heard" packet.
+	testing.expect_value(t, w.off, SNAP_FIXED_BYTES + 2 * SOUND_EVENT_BYTES + 1)
+
+	r := reader(buf[:w.off])
+	got, ok := read_snapshot(&r, &zero)
+	testing.expect(t, ok)
+	testing.expect_value(t, got.sound_count, u8(2))
+	testing.expect_value(t, got.sounds[0].kind, Sound_Kind.Footstep)
+	testing.expect_value(t, got.sounds[1].kind, Sound_Kind.Gunshot)
+	testing.expect_value(t, got.sounds[1].weapon, u8(7))
+
+	// Positions survive to the centimetre, which is all a pan needs.
+	for i in 0 ..< 2 {
+		for axis in 0 ..< 3 {
+			delta := abs(got.sounds[i].position[axis] - s.sounds[i].position[axis])
+			testing.expectf(t, delta <= 0.01, "sound {} axis {} drifted {}", i, axis, delta)
+		}
+	}
+}
+
+@(test)
+test_snapshot_projectile_block :: proc(t: ^testing.T) {
+	s: Snapshot
+	s.projectile_count = 2
+	s.projectiles[0] = {
+		id       = 3,
+		kind     = 2, // smoke
+		team_ct  = true,
+		position = {12.34, -5.67, 1.5},
+	}
+	s.projectiles[1] = {
+		id       = 7,
+		kind     = 0, // he
+		team_ct  = false,
+		position = {-40.5, 20.25, 0.75},
+	}
+
+	zero: Snapshot
+	buf: [MTU]u8
+	w := writer(buf[:])
+	write_snapshot(&w, s, &zero)
+	testing.expect(t, !w.overflow)
+	testing.expect_value(t, w.off, SNAP_FIXED_BYTES + 2 * PROJECTILE_BYTES + 1)
+
+	r := reader(buf[:w.off])
+	got, ok := read_snapshot(&r, &zero)
+	testing.expect(t, ok)
+	testing.expect_value(t, got.projectile_count, u8(2))
+
+	// The id is what lets the client match a projectile across two snapshots
+	// and interpolate it; kind and side share a byte and must not bleed.
+	testing.expect_value(t, got.projectiles[0].id, u8(3))
+	testing.expect_value(t, got.projectiles[0].kind, u8(2))
+	testing.expect(t, got.projectiles[0].team_ct)
+	testing.expect_value(t, got.projectiles[1].id, u8(7))
+	testing.expect_value(t, got.projectiles[1].kind, u8(0))
+	testing.expect(t, !got.projectiles[1].team_ct)
+
+	for i in 0 ..< 2 {
+		for axis in 0 ..< 3 {
+			delta := abs(got.projectiles[i].position[axis] - s.projectiles[i].position[axis])
+			testing.expectf(t, delta <= 0.01, "projectile {} axis {} drifted {}", i, axis, delta)
+		}
+	}
+}
+
+@(test)
+test_snapshot_sound_block_overflows_by_dropping :: proc(t: ^testing.T) {
+	s: Snapshot
+	for i in 0 ..< MAX_SOUND_EVENTS {
+		testing.expect(t, snapshot_add_sound(&s, {kind = .Footstep, position = {f32(i), 0, 0}}))
+	}
+	// One too many is refused rather than overwriting the block or growing it.
+	testing.expect(t, !snapshot_add_sound(&s, {kind = .Gunshot}))
+	testing.expect_value(t, s.sound_count, u8(MAX_SOUND_EVENTS))
 }
 
 @(test)
@@ -408,14 +520,25 @@ test_debug_flags_roundtrip :: proc(t: ^testing.T) {
 
 @(test)
 test_loadout_roundtrip :: proc(t: ^testing.T) {
+	// Every gear combination, because the three bools share one byte and a
+	// crossed bit would silently hand out a vest nobody bought. Grenade counts
+	// ride along as a byte each; over-cap values are deliberate here, since the
+	// wire carries them verbatim and validate_loadout is what trims them.
 	for m in ([]Loadout_Msg {
-			{primary = -1, secondary = 1, armor = false},
+			{primary = -1, secondary = 1},
 			{primary = 9, secondary = 3, armor = true},
+			{primary = 9, secondary = 3, armor = true, helmet = true},
+			{primary = 9, secondary = 3, armor = true, helmet = true, defuse_kit = true},
+			{primary = 0, secondary = 2, defuse_kit = true},
+			{primary = -1, secondary = 1, helmet = true},
+			{primary = 7, secondary = 1, grenades = {1, 2, 1, 0}},
+			{primary = -1, secondary = 1, armor = true, grenades = {9, 9, 9, 9}},
 		}) {
-		buf: [8]u8
+		buf: [16]u8
 		w := writer(buf[:])
 		write_loadout(&w, m)
-		testing.expect_value(t, w.off, 3)
+		// Two weapon slots, one flags byte, and one byte per grenade kind.
+		testing.expect_value(t, w.off, 3 + game.GRENADE_COUNT)
 		r := reader(buf[:w.off])
 		got, ok := read_loadout(&r)
 		testing.expect(t, ok)

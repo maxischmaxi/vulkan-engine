@@ -17,6 +17,7 @@ psx=psx-first-person-arms-free-game-assets.zip
 guns=UltimateGunPackByQuaternius.zip
 modular=ModularGameAssetsForPrototyping.zip
 characters="Universal Animation Library 2[Source].zip"
+explosives=GunsAndExplosives.rar
 
 # An archive may be deleted once its assets are on disk; a re-run then keeps
 # what is extracted. Only a pack missing both archive and assets is an error.
@@ -34,12 +35,22 @@ pull() {
     unzip -joq "$archive" "$@" -d "$out"
 }
 
+# The same for a RAR, which unzip cannot read. `7z e` flattens like unzip -j and
+# -aoa overwrites. Safe to flatten here: every file in the pack is prefixed with
+# its own model name, so no two collide once the directories are gone.
+pull_rar() {
+    local archive="$1" out="$2"; shift 2
+    mkdir -p "$out"
+    7z e -bso0 -bsp0 -aoa -o"$out" "$archive" "$@"
+}
+
 need "$retro" assets/retro/blend
 need "$props" assets/props/models
 need "$palettes" assets/props/palettes
 need "$guns" assets/guns/obj
 need "$modular" assets/modular/pieces
 need "$characters" assets/characters
+need "$explosives" assets/explosives
 
 # The blend files are the good source: arms and gun sit in one scene, already
 # posed and animated. The FBX are the fallback for anything the blend lacks.
@@ -97,6 +108,14 @@ fi
 # its own, so neither is unpacked.
 if [ -e "$characters" ]; then
     pull "$characters" assets/characters "Unreal-Godot/UAL2.glb" "Unreal-Godot/UAL2_RM.glb" "License.txt"
+fi
+
+# Grenades, the C4 and a dozen more explosives, the one pack in here with real
+# UVs and PBR maps. Everything comes out: the meshes are cheap, and which of
+# them the game ends up holding is a decision for convert_models.py, not for an
+# unpack step.
+if [ -e "$explosives" ]; then
+    pull_rar "$explosives" assets/explosives "Guns&Explosives/*/*.fbx" "Guns&Explosives/*/*.png"
 fi
 
 echo "assets/ ready:"

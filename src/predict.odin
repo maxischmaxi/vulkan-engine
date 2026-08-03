@@ -132,6 +132,10 @@ reconcile :: proc(s: ^protocol.Snapshot) {
 	if s.has_private {
 		p := s.private
 		player.armor = int(p.armor)
+		// What the pawn wears, which is not what the buy menu has pending: a
+		// buy delivered on respawn only reaches the HUD once it is worn.
+		player.loadout.helmet = .Helmet in p.gear
+		player.loadout.defuse_kit = .Defuse_Kit in p.gear
 		// kill confirmation: the red marker arrives with the server's word.
 		// The first private block only seeds the counter, so a rejoin cannot
 		// flash a marker for kills from another life.
@@ -143,6 +147,13 @@ reconcile :: proc(s: ^protocol.Snapshot) {
 		net_client.kills_synced = true
 		player.kills = int(p.kills)
 		player.deaths = int(p.deaths)
+		// The belt is the server's word without qualification: nothing local
+		// spends a grenade, the throw does, and that happens over there. The
+		// count therefore drops one round trip after the throw, which nobody can
+		// see -- unlike the hand below, which has to move on the frame it is
+		// asked for.
+		for kind in game.Grenade_Kind do player.grenades[kind] = p.grenades[int(kind)]
+		adopt_server_hand(p.hand)
 		// The cosmetic ammo counter re-syncs to the authoritative one, but only
 		// while the local weapon is quiet and matches the server's hand --
 		// mid-burst the local count is fresher than the snapshot's. Reload and

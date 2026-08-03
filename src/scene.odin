@@ -132,6 +132,9 @@ init_scene :: proc() {
 // The only place a scene change happens, so cursor grabbing and per-scene
 // side effects cannot scatter across the codebase.
 enter_scene :: proc(next: Scene) {
+	// Whoever gets here wins: a fade still waiting for its midpoint must not
+	// overwrite this scene a moment from now.
+	ui_transition_claim()
 	scene.current = next
 	scene.paused = false
 	audio_stop_effects()
@@ -248,6 +251,7 @@ team_select_pick :: proc(team: game.Team) {
 	scene.chosen_team = team
 	if net_client.got_accept {
 		net_join_team(team)
+		if !net_client.active do return // a failed send already sent us to the menu
 	} else {
 		scene.join_wish_pending = true
 	}

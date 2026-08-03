@@ -2,6 +2,7 @@ package main
 
 import "core:log"
 import "core:strings"
+import "game"
 import "vendor:glfw"
 
 // --hudpreview=<view>: the practice range with a competitive HUD state forced
@@ -108,6 +109,19 @@ hud_preview_apply :: proc() {
 		net_client.time_left = 9
 		buy_menu.open = true
 
+	case "nades", "nades-he", "nades-flash", "nades-smoke", "nades-molotov", "nades-c4":
+		// A full belt plus the bomb, with one thing in the hands: the belt, the
+		// stowed-weapon dimming and the held model all in one frame, without a
+		// server and without a key press. The suffix picks what is held, which
+		// is how each of the five poses gets photographed.
+		net_client.phase = .Live
+		net_client.time_left = 75
+		player.grenades = {.He = 1, .Flash = 2, .Smoke = 1, .Molotov = 1}
+		hud_preview.carry_bomb = true
+		if !hud_preview.seeded {
+			hand_pick(preview_hand(cli.hudpreview))
+		}
+
 	case "death":
 		net_client.phase = .Live
 		net_client.time_left = 75
@@ -134,14 +148,32 @@ hud_preview_apply :: proc() {
 
 	case:
 		log.errorf(
-			"--hudpreview wants topbar, warmup, freeze, roundend, bomb, killfeed, scoreboard, " +
-			"buy, death, pause, settings*, outro, menu, connecting, modeselect*, teamselect*, got {}",
+			"--hudpreview wants topbar, warmup, freeze, roundend, bomb, nades[-KIND], killfeed, " +
+			"scoreboard, buy, death, pause, settings*, outro, menu, connecting, " +
+			"modeselect*, teamselect*, got {}",
 			cli.hudpreview,
 		)
 		cli.hudpreview = ""
 		return
 	}
 	hud_preview.seeded = true
+}
+
+// What --hudpreview=nades-<kind> puts in the hands; plain "nades" holds the
+// smoke, which is the one whose silhouette shows the pose best.
+@(private = "file")
+preview_hand :: proc(view: string) -> game.Hand {
+	switch view {
+	case "nades-he":
+		return {kind = .Grenade, index = i8(game.Grenade_Kind.He)}
+	case "nades-flash":
+		return {kind = .Grenade, index = i8(game.Grenade_Kind.Flash)}
+	case "nades-molotov":
+		return {kind = .Grenade, index = i8(game.Grenade_Kind.Molotov)}
+	case "nades-c4":
+		return {kind = .Bomb}
+	}
+	return {kind = .Grenade, index = i8(game.Grenade_Kind.Smoke)}
 }
 
 // Forces a settled hover on one half of a split select, so both states of the
@@ -164,4 +196,7 @@ hud_preview: struct {
 	seeded:          bool,
 	bomb_planted_at: f64,
 	hover:           Hud_Preview_Hover,
+	// The range has no bomb of its own; local_carries_bomb reads this so the
+	// belt's C4 row and the bomb in the hands photograph.
+	carry_bomb:      bool,
 }

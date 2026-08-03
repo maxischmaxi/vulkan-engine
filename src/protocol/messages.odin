@@ -134,23 +134,41 @@ read_debug_flags :: proc(r: ^Reader) -> (m: Debug_Flags, ok: bool) {
 
 // The buy menu's choice: what the next spawn carries, applied immediately
 // during the countdown. Validation is the server's job; the wire only moves
-// three bytes.
+// three bytes -- the two weapon slots and one flags byte, which is what keeps
+// gear free to grow without the message doing so.
 Loadout_Msg :: struct {
-	primary:   i8, // WEAPONS index, -1 = none
-	secondary: i8,
-	armor:     bool,
+	primary:    i8, // WEAPONS index, -1 = none
+	secondary:  i8,
+	armor:      bool,
+	helmet:     bool,
+	defuse_kit: bool,
+	// One count per grenade kind. A byte each rather than packed bits: the
+	// message is sent once per purchase, so its size is irrelevant next to
+	// being able to raise a carry limit without touching the wire.
+	grenades:   [game.GRENADE_COUNT]u8,
 }
 
 write_loadout :: proc(w: ^Writer, m: Loadout_Msg) {
 	write_u8(w, transmute(u8)m.primary)
 	write_u8(w, transmute(u8)m.secondary)
-	write_u8(w, m.armor ? 1 : 0)
+	flags: u8
+	if m.armor do flags |= 1 << 0
+	if m.helmet do flags |= 1 << 1
+	if m.defuse_kit do flags |= 1 << 2
+	write_u8(w, flags)
+	for count in m.grenades do write_u8(w, count)
 }
 
 read_loadout :: proc(r: ^Reader) -> (m: Loadout_Msg, ok: bool) {
 	m.primary = transmute(i8)read_u8(r)
 	m.secondary = transmute(i8)read_u8(r)
-	m.armor = read_u8(r) != 0
+	flags := read_u8(r)
+	m.armor = flags & (1 << 0) != 0
+	m.helmet = flags & (1 << 1) != 0
+	m.defuse_kit = flags & (1 << 2) != 0
+	// Whatever arrives here is unvalidated: validate_loadout caps the counts
+	// against the specs before any of it reaches a pawn.
+	for i in 0 ..< game.GRENADE_COUNT do m.grenades[i] = read_u8(r)
 	return m, !r.error
 }
 

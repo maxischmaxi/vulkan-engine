@@ -24,12 +24,35 @@ Descriptors :: struct {
 	frame_sets:      [MAX_FRAMES_IN_FLIGHT]vk.DescriptorSet,
 	material_set:    vk.DescriptorSet,
 	hud_set:         vk.DescriptorSet,
+	// Plain nearest sampling of the depth buffer -- no comparison mode, unlike
+	// the shadow sampler: the smoke wants the raw value to compare distances
+	// against, not a hardware depth test.
+	depth_sampler:   vk.Sampler,
 }
 
 descriptors: Descriptors
 
 // Layouts only describe shapes, so they can exist before any of the resources
 // they will eventually point at. Pipelines need them, sets need the resources.
+create_depth_sampler :: proc() {
+	if descriptors.depth_sampler != 0 do return
+	// CLAMP_TO_EDGE and NEAREST: a ray that samples a texel outside the target
+	// must read the border depth rather than wrap to the far side of the
+	// screen, and interpolating between two depths that straddle a silhouette
+	// produces a value that is on neither surface.
+	sampler_ci := vk.SamplerCreateInfo {
+		sType        = .SAMPLER_CREATE_INFO,
+		magFilter    = .NEAREST,
+		minFilter    = .NEAREST,
+		mipmapMode   = .NEAREST,
+		addressModeU = .CLAMP_TO_EDGE,
+		addressModeV = .CLAMP_TO_EDGE,
+		addressModeW = .CLAMP_TO_EDGE,
+		borderColor  = .FLOAT_OPAQUE_WHITE,
+	}
+	vk_check(vk.CreateSampler(g.device, &sampler_ci, nil, &descriptors.depth_sampler))
+}
+
 create_descriptor_layouts :: proc() {
 	frame_bindings := []vk.DescriptorSetLayoutBinding {
 		{
@@ -66,6 +89,16 @@ create_descriptor_layouts :: proc() {
 			descriptorType = .STORAGE_BUFFER,
 			descriptorCount = 1,
 			stageFlags = {.VERTEX},
+		},
+		// The scene's depth, for the volumetric smoke to march its rays
+		// against. Written after the opaque pass has resolved, which is why
+		// the smoke draws in a rendering block of its own -- an attachment
+		// cannot be sampled while it is still bound.
+		{
+			binding = 5,
+			descriptorType = .COMBINED_IMAGE_SAMPLER,
+			descriptorCount = 1,
+			stageFlags = {.FRAGMENT},
 		},
 	}
 
@@ -135,7 +168,7 @@ create_descriptor_pool :: proc() {
 		// per-frame lights, tile masks and joint matrices, plus the one material table
 		{type = .STORAGE_BUFFER, descriptorCount = 3 * MAX_FRAMES_IN_FLIGHT + 1},
 		// per-frame shadow array, the three texture arrays, the glyph atlas
-		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = MAX_FRAMES_IN_FLIGHT + 4},
+		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = 2 * MAX_FRAMES_IN_FLIGHT + 4},
 	}
 
 	pool_ci := vk.DescriptorPoolCreateInfo {
@@ -212,6 +245,11 @@ write_frame_sets :: proc() {
 			buffer = character_renderer.joint_buffers[i],
 			range  = CHARACTER_JOINT_BYTES,
 		}
+		depth_info := vk.DescriptorImageInfo {
+			sampler     = descriptors.depth_sampler,
+			imageView   = depth_texture_view(),
+			imageLayout = .SHADER_READ_ONLY_OPTIMAL,
+		}
 
 		writes := []vk.WriteDescriptorSet {
 			{
@@ -253,6 +291,14 @@ write_frame_sets :: proc() {
 				descriptorCount = 1,
 				descriptorType = .STORAGE_BUFFER,
 				pBufferInfo = &joints_info,
+			},
+			{
+				sType = .WRITE_DESCRIPTOR_SET,
+				dstSet = descriptors.frame_sets[i],
+				dstBinding = 5,
+				descriptorCount = 1,
+				descriptorType = .COMBINED_IMAGE_SAMPLER,
+				pImageInfo = &depth_info,
 			},
 		}
 		vk.UpdateDescriptorSets(g.device, u32(len(writes)), raw_data(writes), 0, nil)
@@ -337,6 +383,8 @@ destroy_descriptors :: proc() {
 	vk.DestroyDescriptorPool(g.device, descriptors.pool, nil)
 	vk.DestroyDescriptorSetLayout(g.device, descriptors.hud_layout, nil)
 	vk.DestroyDescriptorSetLayout(g.device, descriptors.material_layout, nil)
+	vk.DestroySampler(g.device, descriptors.depth_sampler, nil)
+	descriptors.depth_sampler = 0
 	vk.DestroyDescriptorSetLayout(g.device, descriptors.frame_layout, nil)
 }
 

@@ -23,6 +23,7 @@ Buy_Page :: enum u8 {
 	SMG,
 	Rifles,
 	Gear,
+	Grenades,
 }
 
 Buy_Menu :: struct {
@@ -37,12 +38,19 @@ BUY_MENU_KEY :: glfw.KEY_B
 BUY_BACK_KEY :: glfw.KEY_0
 
 // Category order is the classic buy menu's: 1 pistols, 2 heavy, 3 smg,
-// 4 rifles, 5 gear.
+// 4 rifles, 5 gear, 6 grenades.
 @(private = "file")
-BUY_CATEGORIES := [5]struct {
+BUY_CATEGORIES := [6]struct {
 	label: string,
 	page:  Buy_Page,
-}{{"PISTOLS", .Pistols}, {"HEAVY", .Heavy}, {"SMG", .SMG}, {"RIFLES", .Rifles}, {"GEAR", .Gear}}
+} {
+	{"PISTOLS", .Pistols},
+	{"HEAVY", .Heavy},
+	{"SMG", .SMG},
+	{"RIFLES", .Rifles},
+	{"GEAR", .Gear},
+	{"GRENADES", .Grenades},
+}
 
 @(private = "file")
 ITEM_KEYS := [9]i32 {
@@ -57,10 +65,24 @@ ITEM_KEYS := [9]i32 {
 	glfw.KEY_9,
 }
 
-// One row of an item page: a weapon index, or -1 for the kevlar toggle.
+// What a gear row toggles. .None means the row is a weapon instead, which is
+// what keeps one row type serving both kinds of page.
+@(private = "file")
+Buy_Gear :: enum u8 {
+	None,
+	Kevlar,
+	Helmet,
+	Defuse_Kit,
+}
+
+// One row of an item page: a weapon index, a gear toggle, or a grenade. Only
+// one of the three is ever meaningful; weapon = -1 marks the other two.
 @(private = "file")
 Buy_Item :: struct {
-	weapon: int,
+	weapon:  int,
+	gear:    Buy_Gear,
+	grenade: game.Grenade_Kind,
+	is_nade: bool,
 }
 
 // A fresh session: the seed is what the player owns until they buy.
@@ -119,8 +141,40 @@ buy_page_items :: proc(page: Buy_Page) -> (items: [9]Buy_Item, count: int) {
 	if page == .Gear {
 		items[0] = {
 			weapon = -1,
-		} 	// kevlar
-		return items, 1
+			gear   = .Kevlar,
+		}
+		items[1] = {
+			weapon = -1,
+			gear   = .Helmet,
+		}
+		count = 2
+		// The kit only ever reaches a CT: offering it to a T would price gear
+		// validate_loadout is about to strip, and the row would lie about the
+		// cost. The range has no team and no bomb, so it shows the full shelf.
+		if practice_active() || scene.chosen_team == .CT {
+			items[count] = {
+				weapon = -1,
+				gear   = .Defuse_Kit,
+			}
+			count += 1
+		}
+		return items, count
+	}
+
+	if page == .Grenades {
+		for kind in game.Grenade_Kind {
+			// The range has no team, so it shows both arsenals; a match shows
+			// only what the server would accept.
+			if !practice_active() && !game.grenade_allowed(kind, scene.chosen_team) do continue
+			if count >= len(items) do break
+			items[count] = {
+				weapon  = -1,
+				is_nade = true,
+				grenade = kind,
+			}
+			count += 1
+		}
+		return items, count
 	}
 
 	category: game.Buy_Category
@@ -151,19 +205,96 @@ buy_page_items :: proc(page: Buy_Page) -> (items: [9]Buy_Item, count: int) {
 	return items, count
 }
 
-// What this row would cost right now: nothing for a rebuy or the armor
-// toggle-off, the sticker price otherwise. Mirrors game.buy_cost so the
-// client refuses exactly what the server would.
+// The loadout this row would produce. Gear toggles, a weapon replaces its
+// slot. Buying the helmet drags the vest in with it -- counter-strike sells
+// the pair as one entry, and refusing the click would only teach the player to
+// press two rows in a fixed order. Taking the vest off takes the helmet with
+// it, because validate_loadout would strip it anyway.
+//
+// Every result is one validate_loadout would leave alone, which is what lets
+// the pricing below go straight through game.buy_cost.
+@(private = "file")
+buy_item_result :: proc(item: Buy_Item) -> game.Loadout {
+	l := buy_menu.pending
+
+	// Grenades add rather than toggle: they are the first item worth holding
+	// more than one of. A full belt is a no-op, so the row prices at zero and
+	// reads as unavailable rather than silently doing nothing.
+	if item.is_nade {
+		if can_carry_grenade(l, item.grenade) do l.grenades[item.grenade] += 1
+		return l
+	}
+
+	switch item.gear {
+	case .None:
+		if game.WEAPONS[item.weapon].slot == 0 {
+			l.primary = i8(item.weapon)
+		} else {
+			l.secondary = i8(item.weapon)
+		}
+	case .Kevlar:
+		l.armor = !l.armor
+		if !l.armor do l.helmet = false
+	case .Helmet:
+		l.helmet = !l.helmet
+		if l.helmet do l.armor = true
+	case .Defuse_Kit:
+		l.defuse_kit = !l.defuse_kit
+	}
+	return l
+}
+
+// What this row would cost right now: nothing for a rebuy or a toggle-off, the
+// sticker price otherwise. Runs the server's own function over the server's own
+// arguments, so the client refuses exactly what the server would rather than
+// mirroring the rule and drifting from it.
 @(private = "file")
 buy_item_cost :: proc(item: Buy_Item) -> int {
-	if item.weapon < 0 {
-		return buy_menu.pending.armor ? 0 : game.ECON_ARMOR_PRICE
+	return game.buy_cost(buy_menu.pending, buy_item_result(item))
+}
+
+// The team the buy menu prices against. The range has no team of its own, so
+// it borrows the one the scene last held; nothing there is charged anyway.
+@(private = "file")
+buy_team :: proc() -> game.Team {
+	return scene.chosen_team
+}
+
+@(private = "file")
+can_carry_grenade :: proc(l: game.Loadout, kind: game.Grenade_Kind) -> bool {
+	return game.can_carry_grenade(l, kind, buy_team())
+}
+
+@(private = "file")
+buy_gear_label :: proc(gear: Buy_Gear) -> string {
+	switch gear {
+	case .None:
+		return ""
+	case .Kevlar:
+		return "KEVLAR"
+	case .Helmet:
+		return "HELMET"
+	case .Defuse_Kit:
+		return "DEFUSE KIT"
 	}
-	if i8(item.weapon) == buy_menu.pending.primary ||
-	   i8(item.weapon) == buy_menu.pending.secondary {
-		return 0
+	return ""
+}
+
+// Whether the pending loadout already carries this row's gear -- what puts the
+// OWNED tag on it and what makes a second click a refund-free toggle-off.
+@(private = "file")
+buy_gear_owned :: proc(gear: Buy_Gear) -> bool {
+	switch gear {
+	case .None:
+		return false
+	case .Kevlar:
+		return buy_menu.pending.armor
+	case .Helmet:
+		return buy_menu.pending.helmet
+	case .Defuse_Kit:
+		return buy_menu.pending.defuse_kit
 	}
-	return game.WEAPONS[item.weapon].price
+	return false
 }
 
 // Money only binds in a comp freeze; warmup, TDM and the range stay free.
@@ -183,18 +314,24 @@ buy_item :: proc(item: Buy_Item) {
 
 	audio_emit({kind = .Buy, local = true})
 	before := buy_menu.pending
+	buy_menu.pending = buy_item_result(item)
 
-	if item.weapon < 0 {
-		buy_menu.pending.armor = !buy_menu.pending.armor
-		log.infof("Buy: kevlar {}", buy_menu.pending.armor ? "on" : "off")
+	if item.is_nade {
+		log.infof(
+			"Buy: {} x{} (${})",
+			game.GRENADES[item.grenade].name,
+			buy_menu.pending.grenades[item.grenade],
+			game.buy_cost(before, buy_menu.pending),
+		)
+	} else if item.gear == .None {
+		log.infof("Buy: {} ({})", game.WEAPONS[item.weapon].name, game.WEAPONS[item.weapon].price)
 	} else {
-		weapon := game.WEAPONS[item.weapon]
-		if weapon.slot == 0 {
-			buy_menu.pending.primary = i8(item.weapon)
-		} else {
-			buy_menu.pending.secondary = i8(item.weapon)
-		}
-		log.infof("Buy: {} ({})", weapon.name, weapon.price)
+		log.infof(
+			"Buy: {} {} (${})",
+			buy_gear_label(item.gear),
+			buy_gear_owned(item.gear) ? "on" : "off",
+			game.buy_cost(before, buy_menu.pending),
+		)
 	}
 
 	// Sent even from the range: the slot's loadout stays current for the day
@@ -414,10 +551,26 @@ draw_buy_menu :: proc(width, height: f32) {
 			label: string
 			price: string
 			equipped: bool
-			if item.weapon < 0 {
-				label = "KEVLAR"
-				price = buy_price_label(game.ECON_ARMOR_PRICE)
-				equipped = buy_menu.pending.armor
+			if item.is_nade {
+				spec := game.GRENADES[item.grenade]
+				held := buy_menu.pending.grenades[item.grenade]
+				// The count goes in the label rather than an OWNED tag: with a
+				// belt of four, how many you already have is the thing you are
+				// actually deciding on.
+				label =
+					held > 0 \
+					? fmt.tprintf("%s  x%d", strings.to_upper(spec.name, context.temp_allocator), held) \
+					: strings.to_upper(spec.name, context.temp_allocator)
+				price = buy_price_label(spec.price)
+				// A full belt, or a full slot: the row reads as unavailable
+				// rather than as a click that does nothing.
+				equipped = !can_carry_grenade(buy_menu.pending, item.grenade)
+			} else if item.gear != .None {
+				label = buy_gear_label(item.gear)
+				// The live cost, not the sticker: a helmet with no vest yet
+				// prices the pair, which is what the click actually buys.
+				price = buy_price_label(buy_item_cost(item))
+				equipped = buy_gear_owned(item.gear)
 			} else {
 				weapon := game.WEAPONS[item.weapon]
 				label = weapon.name
@@ -480,6 +633,8 @@ buy_page_title :: proc(page: Buy_Page) -> string {
 		return "RIFLES"
 	case .Gear:
 		return "GEAR"
+	case .Grenades:
+		return "GRENADES"
 	}
 	return ""
 }

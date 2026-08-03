@@ -75,6 +75,11 @@ Net_Client :: struct {
 	bomb_carrier:       int, // pawn id, -1 for none
 	bomb_defuser:       int,
 	bomb_progress:      f32, // 0..1, plant or defuse depending on state
+	// Blindness, straight off the private block. Counted down locally between
+	// snapshots so the fade is smooth at frame rate rather than stepping at
+	// the tick rate.
+	flash_left:         f32,
+	flash_total:        f32,
 	bomb_position:      [3]f32,
 	// diagnostics for the stats line
 	corrections:        int,
@@ -693,6 +698,7 @@ handle_snapshot :: proc(s: protocol.Snapshot) {
 	}
 	net_client.have_snapshot = true
 	net_client.last_snapshot_time = time.tick_now()
+	if cli.fow_log do log_fow_snapshot(s)
 
 	net_client.phase = s.phase
 	net_client.time_left = s.time_left
@@ -700,6 +706,8 @@ handle_snapshot :: proc(s: protocol.Snapshot) {
 	net_client.ct_score = int(s.ct_score)
 	if s.has_private {
 		net_client.money = int(s.private.money)
+		net_client.flash_left = f32(s.private.flash_left_cs) / 100
+		net_client.flash_total = f32(s.private.flash_total_cs) / 100
 	}
 
 	if net_client.bomb_state != s.bomb_state {
@@ -728,6 +736,39 @@ handle_snapshot :: proc(s: protocol.Snapshot) {
 	}
 
 	reconcile(&net_client.snapshots[slot])
+}
+
+// Fog of war's E2E trace. One line per snapshot naming the pawn ids it carries
+// and, separately, the sounds it brought -- an enemy the server decided this
+// client cannot see leaves the first list while still turning up in the second,
+// which is exactly the property the whole design rests on.
+@(private = "file")
+log_fow_snapshot :: proc(s: protocol.Snapshot) {
+	buf: [64]u8
+	n := 0
+	for id in 0 ..< game.MAX_PAWNS {
+		if id not_in s.present do continue
+		if n > 0 && n < len(buf) {
+			buf[n] = ','
+			n += 1
+		}
+		if id >= 10 && n < len(buf) {
+			buf[n] = '0' + u8(id / 10)
+			n += 1
+		}
+		if n < len(buf) {
+			buf[n] = '0' + u8(id % 10)
+			n += 1
+		}
+	}
+	log.infof(
+		"FOW: tick {} pawns [{}] count {} sounds {} proj {}",
+		s.server_tick,
+		string(buf[:n]),
+		card(s.present),
+		s.sound_count,
+		s.projectile_count,
+	)
 }
 
 @(private = "file")
@@ -792,17 +833,38 @@ net_send_loadout :: proc(l: game.Loadout) {
 		&net_client.conn,
 		.Loadout,
 		protocol.write_loadout,
-		protocol.Loadout_Msg{primary = l.primary, secondary = l.secondary, armor = l.armor},
+		loadout_msg(l),
 	) {
 		net_fail("PROTOCOL FAILURE")
 		return
 	}
 	log.infof(
-		"NET: loadout sent primary={} secondary={} armor={}",
+		"NET: loadout sent primary={} secondary={} armor={} helmet={} kit={} nades={}",
 		loadout_slot_name(l.primary),
 		loadout_slot_name(l.secondary),
 		l.armor,
+		l.helmet,
+		l.defuse_kit,
+		l.grenades,
 	)
+}
+
+// The wire shape of a loadout. The grenade counts cross from an enum-indexed
+// array to a plain one here, which is the only place the two representations
+// meet.
+@(private = "file")
+loadout_msg :: proc(l: game.Loadout) -> (m: protocol.Loadout_Msg) {
+	m = {
+		primary    = l.primary,
+		secondary  = l.secondary,
+		armor      = l.armor,
+		helmet     = l.helmet,
+		defuse_kit = l.defuse_kit,
+	}
+	for kind in game.Grenade_Kind {
+		m.grenades[int(kind)] = l.grenades[kind]
+	}
+	return
 }
 
 @(private = "file")
@@ -825,6 +887,25 @@ net_send_debug_flags :: proc() {
 }
 
 // The snapshot stored for a given server tick, if the ring still holds it.
+// --nade: buys a full belt of one kind, so intent.odin has something to throw.
+// The counts go in over the cap on purpose -- validate_loadout is what decides
+// how many actually stick, and seeing it do that is half the point of the flag.
+nade_buy_send :: proc() {
+	kind := -1
+	for spec, i in game.GRENADES {
+		if spec.name == cli.nade do kind = int(i)
+	}
+	if kind < 0 {
+		log.warnf("NET: --nade names no grenade: {:q}", cli.nade)
+		return
+	}
+
+	loadout := game.default_loadout(net_client.team)
+	loadout.grenades[game.Grenade_Kind(kind)] = u8(game.GRENADE_CARRY_TOTAL)
+	log.infof("NET: nade buy {} x{}", cli.nade, game.GRENADE_CARRY_TOTAL)
+	net_send_loadout(loadout)
+}
+
 // --auto-buy: the headless economy probe. Fires one full buy (weapon by
 // name, armor on top) at every freeze; the server log shows which of them
 // the price gate let through.
@@ -844,8 +925,18 @@ auto_buy_send :: proc() {
 	} else {
 		loadout.secondary = i8(index)
 	}
+	// Every piece of gear the team may hold, so the probe prices the helmet's
+	// surcharge and the kit as well as the weapon. The kit is CT-only: sending
+	// it as a T would have validate_loadout strip it before it is ever billed,
+	// and the log line would then name gear nobody paid for.
 	loadout.armor = true
-	log.infof("NET: auto-buy {} + kevlar", cli.auto_buy)
+	loadout.helmet = true
+	loadout.defuse_kit = net_client.team == .CT
+	log.infof(
+		"NET: auto-buy {} + kevlar + helmet{}",
+		cli.auto_buy,
+		loadout.defuse_kit ? " + kit" : "",
+	)
 	net_send_loadout(loadout)
 }
 

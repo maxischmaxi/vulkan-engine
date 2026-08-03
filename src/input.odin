@@ -26,6 +26,10 @@ Input :: struct {
 	// Level, not edge: sliders track the cursor while this is held. Only
 	// meaningful while the cursor is loose, like cursor_x/y.
 	mouse_down:         bool,
+	// Wheel notches since the last consume, up positive. Accumulated in the
+	// callback for the same reason the mouse delta is: several notches can land
+	// inside one frame, and polling would keep only the last.
+	scroll_steps:       int,
 	// Edge detection. Both maps are snapshots taken once per frame rather than
 	// sampled on demand: an earlier version updated prev_keys inside
 	// key_pressed, so the second caller asking about the same key in one frame
@@ -129,6 +133,22 @@ init_input :: proc() {
 		},
 	)
 
+	// The wheel: the weapon switch. Only meaningful while the cursor is
+	// grabbed -- a loose one means a menu owns the mouse, and the menus that
+	// want to scroll can read this themselves once they do.
+	glfw.SetScrollCallback(g.window, proc "c" (window: glfw.WindowHandle, x, y: f64) {
+		context = g.odin_context
+		if !input.cursor_grabbed do return
+		// A notch is 1.0; trackpads send fractions, so round away from zero to
+		// keep a slow swipe from being swallowed.
+		switch {
+		case y > 0:
+			input.scroll_steps += max(int(y), 1)
+		case y < 0:
+			input.scroll_steps += min(int(y), -1)
+		}
+	})
+
 	// Losing focus while grabbed leaves the compositor and the app disagreeing
 	// about who owns the pointer.
 	glfw.SetWindowFocusCallback(g.window, proc "c" (window: glfw.WindowHandle, focused: i32) {
@@ -193,6 +213,7 @@ grab_cursor :: proc(grab: bool) {
 	input.zoom_clicked = false
 	input.click = false
 	input.mouse_down = false
+	input.scroll_steps = 0
 }
 
 key_down :: proc(key: i32) -> bool {
@@ -225,6 +246,13 @@ consume_zoom_click :: proc() -> bool {
 	clicked := input.zoom_clicked
 	input.zoom_clicked = false
 	return clicked
+}
+
+// Wheel notches since the last call, up positive.
+consume_scroll :: proc() -> int {
+	steps := input.scroll_steps
+	input.scroll_steps = 0
+	return steps
 }
 
 // The menu counterpart of consume_fire_click: any left press, any grab state.

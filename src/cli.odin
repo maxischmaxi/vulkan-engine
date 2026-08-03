@@ -67,6 +67,20 @@ Cli :: struct {
 	// Log the camera's z pipeline every frame: raw interpolated feet, smoothed
 	// feet, final eye. The eye smoothing's E2E trace, read the same way.
 	view_log:      bool,
+	// Log which pawn ids each snapshot carries. Fog of war's E2E eye: an enemy
+	// the server decided you cannot see simply stops appearing in this list,
+	// which is testable from a log and needs neither a screen nor a keyboard.
+	fow_log:       bool,
+	// Log the belt and what is in the hands, whenever either changes. The scroll
+	// wheel and the number keys are exactly what a headless test cannot press,
+	// so this is the ear on the other half of that: it shows the server's
+	// counts arriving and the hand agreeing with them.
+	hand_log:      bool,
+	// Buy this grenade and keep throwing it: "he", "flash", "smoke",
+	// "molotov". The throw path's E2E hook, the way --auto-buy is the
+	// economy's -- a grenade is a mouse button, and mouse buttons are exactly
+	// what a headless test cannot press.
+	nade:          string,
 }
 
 cli: Cli
@@ -93,6 +107,9 @@ CLI_USAGE :: `Options:
   --no-depth-prepass  shade the world without the depth-only first pass
   --audio-log   log every audio event, for headless testing without speakers
   --view-log    log the camera height pipeline every frame
+  --fow-log     log which pawn ids each snapshot carries (fog of war)
+  --hand-log    log the grenade belt and what is in the hands, on every change
+  --nade=KIND   buy and repeatedly throw a grenade: he, flash, smoke, molotov
   --help        print this`
 
 parse_cli :: proc() {
@@ -167,6 +184,15 @@ parse_cli :: proc() {
 
 		case arg == "--view-log":
 			cli.view_log = true
+
+		case arg == "--fow-log":
+			cli.fow_log = true
+
+		case arg == "--hand-log":
+			cli.hand_log = true
+
+		case strings.has_prefix(arg, "--nade="):
+			cli.nade = arg[len("--nade="):]
 
 		case arg == "--no-steam":
 			when STEAM_REQUIRED {

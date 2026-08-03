@@ -4,6 +4,7 @@ import "core:log"
 import "core:math/linalg"
 import "core:mem"
 import "game"
+import "protocol"
 import vk "vendor:vulkan"
 
 // Draws the meshes mesh.odin loaded: the props standing on the map and the
@@ -18,7 +19,9 @@ import vk "vendor:vulkan"
 // The weapon in the player's hands, plus one in every other player's hands.
 // World and view instances share the buffer, world first -- the same split
 // prop_render.odin makes, for the same reason: each draw is then a range.
-MAX_VIEW_MODEL_INSTANCES :: 8 + game.MAX_PAWNS
+// The viewmodel, every remote player's weapon, and every grenade in the air --
+// they share one per-frame instance buffer.
+MAX_VIEW_MODEL_INSTANCES :: 8 + game.MAX_PAWNS + protocol.MAX_SNAPSHOT_PROJECTILES
 
 // std430-compatible and the layout the instance attributes describe.
 Model_Instance :: struct {
@@ -127,7 +130,11 @@ create_model_renderer :: proc() {
 
 	model_renderer.view_batches = make([dynamic]Model_Batch, 0, MAX_VIEW_MODEL_INSTANCES)
 	model_renderer.view_instances = make([dynamic]Model_Instance, 0, MAX_VIEW_MODEL_INSTANCES)
-	model_renderer.world_batches = make([dynamic]Model_Batch, 0, game.MAX_PAWNS)
+	model_renderer.world_batches = make(
+		[dynamic]Model_Batch,
+		0,
+		game.MAX_PAWNS + protocol.MAX_SNAPSHOT_PROJECTILES,
+	)
 }
 
 create_model_pipeline :: proc() {

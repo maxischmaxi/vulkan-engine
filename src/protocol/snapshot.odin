@@ -55,9 +55,20 @@ Snapshot_Entity :: struct {
 // What only the owning client may know about itself. Velocity is what
 // reconciliation replays from; the ammo numbers drive the HUD. Always sent in
 // full -- velocity churns every tick anyway.
+// What the owning client is actually wearing this tick, as opposed to what its
+// buy menu has pending. The HUD reads these; a mid-round buy that the server
+// stored for the next spawn must not light them up early.
+Private_Gear :: enum u8 {
+	Helmet,
+	Defuse_Kit,
+}
+
+Private_Gear_Flags :: bit_set[Private_Gear;u8]
+
 Private_State :: struct {
 	velocity:       [3]f32,
 	armor:          u8,
+	gear:           Private_Gear_Flags,
 	ammo_mag:       u8,
 	ammo_reserve:   u8,
 	cooldown_ticks: u8,
@@ -71,7 +82,79 @@ Private_State :: struct {
 	spray_seed:     u32,
 	// Competitive money; TDM sends 0. u16 covers the $16000 cap comfortably.
 	money:          u16,
+	// Being blinded is nobody else's business, so it rides in the private
+	// block: how much white is left, and what it started at. Sent as
+	// centiseconds; a flash is seconds long and nothing is decided by the
+	// hundredth.
+	flash_left_cs:  u16,
+	flash_total_cs: u16,
+	// What is left on the belt, and what the server has in this pawn's hands
+	// (a game.Hand as a select code). Both are the owner's business only, and
+	// without them the client cannot draw a belt it has been throwing from --
+	// the loadout it bought stops being the truth at the first throw.
+	grenades:       [game.GRENADE_COUNT]u8,
+	hand:           i8,
 }
+
+// What a client heard this tick. Filtered by earshot rather than by sight --
+// that split is the whole reason this block exists. With fog of war a pawn
+// nobody can see is absent from the entity array, and the client used to
+// derive remote footsteps and gunfire from exactly that array, so an unseen
+// enemy would also have been an inaudible one.
+//
+// Transient by nature, so they are never delta-encoded: a lost datagram costs
+// one footstep, and repairing it a tick later would only play it in the wrong
+// place.
+Sound_Kind :: enum u8 {
+	Footstep,
+	Gunshot,
+}
+
+Sound_Event :: struct {
+	kind:     Sound_Kind,
+	weapon:   u8, // gunshot only -- the bank picks the sample from it
+	position: [3]f32, // quantized on the wire; audio panning only
+}
+
+// Well past what a full server produces: ten players running produce a step
+// every ~19 ticks each, and even five on full auto add under one gunshot a
+// tick. Overflow drops the tail, which is one unheard footstep.
+MAX_SOUND_EVENTS :: 12
+
+// Grenades in the air. Their own block rather than an entry in the entity
+// array: Present_Mask indexes pawn ids, and a projectile is not a pawn.
+//
+// Always sent in full, like the bomb block and for the same reason -- there
+// are rarely more than a handful, they change every tick while they fly, and
+// delta machinery would cost more than the bytes it saved.
+//
+// Position is quantized to the centimetre. A grenade is 9 cm across and moves
+// 30 cm in a tick; the rounding is far below what an eye following an arc can
+// resolve, and nothing is decided by where a projectile *renders* -- the
+// server owns the detonation.
+Snapshot_Projectile :: struct {
+	id:       u8, // slot index, stable for the projectile's life
+	kind:     u8, // game.Grenade_Kind
+	team_ct:  bool,
+	position: [3]f32,
+}
+
+MAX_SNAPSHOT_PROJECTILES :: 16
+
+// Smoke clouds and patches of fire. Sent to everyone unfiltered: a smoke is
+// meant to be seen, and one you cannot see would still be one you walk into.
+//
+// The radius travels rather than being re-derived from an age the client would
+// have to keep: it is one byte in decimetres, and it means the client's cloud
+// is exactly the server's, including while it blooms.
+Snapshot_Zone :: struct {
+	id:       u8,
+	kind:     u8, // game.Zone_Kind
+	radius:   f32, // decimetres on the wire
+	position: [3]f32, // quantized, like the projectiles
+}
+
+MAX_SNAPSHOT_ZONES :: 8
 
 Snapshot :: struct {
 	server_tick:     u32,
@@ -91,8 +174,23 @@ Snapshot :: struct {
 	bomb_position:   [3]f32, // meaningful only when bomb_has_position(state)
 	present:         Present_Mask,
 	entities:        [game.MAX_PAWNS]Snapshot_Entity, // indexed by pawn id
+	sound_count:     u8,
+	sounds:          [MAX_SOUND_EVENTS]Sound_Event,
+	projectile_count: u8,
+	projectiles:     [MAX_SNAPSHOT_PROJECTILES]Snapshot_Projectile,
+	zone_count:      u8,
+	zones:           [MAX_SNAPSHOT_ZONES]Snapshot_Zone,
 	has_private:     bool,
 	private:         Private_State,
+}
+
+// Appends one event, dropping it when the block is full. Returns whether it
+// fit, so a caller that cares can log the loss rather than wonder.
+snapshot_add_sound :: proc(s: ^Snapshot, e: Sound_Event) -> bool {
+	if s.sound_count >= MAX_SOUND_EVENTS do return false
+	s.sounds[s.sound_count] = e
+	s.sound_count += 1
+	return true
 }
 
 @(private = "file")
@@ -159,6 +257,46 @@ write_snapshot :: proc(w: ^Writer, s: Snapshot, base: ^Snapshot) {
 		if .Weapon in mask do write_u8(w, e.weapon)
 	}
 
+	// Sounds sit outside the delta machinery: every one is new, so a baseline
+	// would have nothing to say about it.
+	count := min(s.sound_count, MAX_SOUND_EVENTS)
+	write_u8(w, count)
+	for i in 0 ..< int(count) {
+		e := s.sounds[i]
+		write_u8(w, u8(e.kind))
+		write_u8(w, e.weapon)
+		write_u16(w, transmute(u16)quantize_coarse_pos(e.position.x))
+		write_u16(w, transmute(u16)quantize_coarse_pos(e.position.y))
+		write_u16(w, transmute(u16)quantize_coarse_pos(e.position.z))
+	}
+
+	pcount := min(s.projectile_count, MAX_SNAPSHOT_PROJECTILES)
+	write_u8(w, pcount)
+	for i in 0 ..< int(pcount) {
+		p := s.projectiles[i]
+		write_u8(w, p.id)
+		// Kind and side share a byte: four kinds and two teams have room to
+		// spare, and the block is sent in full every tick.
+		write_u8(w, p.kind | (p.team_ct ? 0x80 : 0))
+		write_u16(w, transmute(u16)quantize_coarse_pos(p.position.x))
+		write_u16(w, transmute(u16)quantize_coarse_pos(p.position.y))
+		write_u16(w, transmute(u16)quantize_coarse_pos(p.position.z))
+	}
+
+	zcount := min(s.zone_count, MAX_SNAPSHOT_ZONES)
+	write_u8(w, zcount)
+	for i in 0 ..< int(zcount) {
+		z := s.zones[i]
+		write_u8(w, z.id)
+		write_u8(w, z.kind)
+		// Decimetres: a cloud is metres across and nothing is decided by the
+		// centimetre, so one byte covers 25 m with room to spare.
+		write_u8(w, u8(clamp(z.radius * 10, 0, 255)))
+		write_u16(w, transmute(u16)quantize_coarse_pos(z.position.x))
+		write_u16(w, transmute(u16)quantize_coarse_pos(z.position.y))
+		write_u16(w, transmute(u16)quantize_coarse_pos(z.position.z))
+	}
+
 	write_u8(w, s.has_private ? 1 : 0)
 	if s.has_private {
 		p := s.private
@@ -166,6 +304,7 @@ write_snapshot :: proc(w: ^Writer, s: Snapshot, base: ^Snapshot) {
 		write_f32(w, p.velocity.y)
 		write_f32(w, p.velocity.z)
 		write_u8(w, p.armor)
+		write_u8(w, transmute(u8)p.gear)
 		write_u8(w, p.ammo_mag)
 		write_u8(w, p.ammo_reserve)
 		write_u8(w, p.cooldown_ticks)
@@ -175,6 +314,10 @@ write_snapshot :: proc(w: ^Writer, s: Snapshot, base: ^Snapshot) {
 		write_u8(w, p.spray_progress)
 		write_u32(w, p.spray_seed)
 		write_u16(w, p.money)
+		write_u16(w, p.flash_left_cs)
+		write_u16(w, p.flash_total_cs)
+		for held in p.grenades do write_u8(w, held)
+		write_u8(w, transmute(u8)p.hand)
 	}
 }
 
@@ -218,6 +361,41 @@ read_snapshot :: proc(r: ^Reader, base: ^Snapshot) -> (s: Snapshot, ok: bool) {
 		if .Weapon in mask do e.weapon = read_u8(r)
 	}
 
+	// A corrupt count must not walk the reader off the end; the reader flags
+	// its own overruns, but clamping keeps the loop bounded either way.
+	s.sound_count = min(read_u8(r), MAX_SOUND_EVENTS)
+	for i in 0 ..< int(s.sound_count) {
+		e := &s.sounds[i]
+		e.kind = Sound_Kind(read_u8(r))
+		e.weapon = read_u8(r)
+		e.position.x = dequantize_coarse_pos(transmute(i16)read_u16(r))
+		e.position.y = dequantize_coarse_pos(transmute(i16)read_u16(r))
+		e.position.z = dequantize_coarse_pos(transmute(i16)read_u16(r))
+	}
+
+	s.projectile_count = min(read_u8(r), MAX_SNAPSHOT_PROJECTILES)
+	for i in 0 ..< int(s.projectile_count) {
+		p := &s.projectiles[i]
+		p.id = read_u8(r)
+		packed := read_u8(r)
+		p.kind = packed & 0x7F
+		p.team_ct = packed & 0x80 != 0
+		p.position.x = dequantize_coarse_pos(transmute(i16)read_u16(r))
+		p.position.y = dequantize_coarse_pos(transmute(i16)read_u16(r))
+		p.position.z = dequantize_coarse_pos(transmute(i16)read_u16(r))
+	}
+
+	s.zone_count = min(read_u8(r), MAX_SNAPSHOT_ZONES)
+	for i in 0 ..< int(s.zone_count) {
+		z := &s.zones[i]
+		z.id = read_u8(r)
+		z.kind = read_u8(r)
+		z.radius = f32(read_u8(r)) / 10
+		z.position.x = dequantize_coarse_pos(transmute(i16)read_u16(r))
+		z.position.y = dequantize_coarse_pos(transmute(i16)read_u16(r))
+		z.position.z = dequantize_coarse_pos(transmute(i16)read_u16(r))
+	}
+
 	s.has_private = read_u8(r) != 0
 	if s.has_private {
 		p := &s.private
@@ -225,6 +403,7 @@ read_snapshot :: proc(r: ^Reader, base: ^Snapshot) -> (s: Snapshot, ok: bool) {
 		p.velocity.y = read_f32(r)
 		p.velocity.z = read_f32(r)
 		p.armor = read_u8(r)
+		p.gear = transmute(Private_Gear_Flags)read_u8(r)
 		p.ammo_mag = read_u8(r)
 		p.ammo_reserve = read_u8(r)
 		p.cooldown_ticks = read_u8(r)
@@ -234,6 +413,10 @@ read_snapshot :: proc(r: ^Reader, base: ^Snapshot) -> (s: Snapshot, ok: bool) {
 		p.spray_progress = read_u8(r)
 		p.spray_seed = read_u32(r)
 		p.money = read_u16(r)
+		p.flash_left_cs = read_u16(r)
+		p.flash_total_cs = read_u16(r)
+		for i in 0 ..< game.GRENADE_COUNT do p.grenades[i] = read_u8(r)
+		p.hand = transmute(i8)read_u8(r)
 	}
 	return s, !r.error
 }

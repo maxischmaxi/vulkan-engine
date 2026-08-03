@@ -147,3 +147,21 @@ quantize_pitch :: proc(pitch: f32) -> u16 {
 dequantize_pitch :: proc(q: u16) -> f32 {
 	return f32(q) * (180.0 / 65535.0) - 90
 }
+
+// Positions nothing is decided by: one centimetre over +-327 m, which is
+// several times the map. Used for sound panning and for grenades in flight,
+// both of which are cosmetic -- the server owns where a shot lands and where a
+// grenade goes off.
+//
+// Player positions do NOT travel this way. They are compared bit for bit
+// against the delta baseline, and a centimetre of rounding there would move
+// where bullets land.
+COARSE_POS_SCALE :: f32(100)
+
+quantize_coarse_pos :: proc(v: f32) -> i16 {
+	return i16(clamp(v * COARSE_POS_SCALE, -32768, 32767))
+}
+
+dequantize_coarse_pos :: proc(q: i16) -> f32 {
+	return f32(q) / COARSE_POS_SCALE
+}

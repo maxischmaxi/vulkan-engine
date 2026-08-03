@@ -42,6 +42,10 @@ Blend_Mode :: enum {
 	Opaque, // zero value
 	Alpha,
 	Additive, // src + dst, the overdraw heatmap's accumulation
+	// Colour already multiplied by its own alpha, which is what front-to-back
+	// volume compositing produces: the shader has done the weighting, so the
+	// blend must not do it a second time.
+	Premultiplied,
 }
 
 Pipeline_Desc :: struct {
@@ -239,6 +243,15 @@ build_pipeline :: proc(desc: Pipeline_Desc) -> Pipeline {
 		color_blend_attachment.dstAlphaBlendFactor = .ONE_MINUS_SRC_ALPHA
 		color_blend_attachment.alphaBlendOp = .ADD
 	}
+	if desc.blend == .Premultiplied {
+		color_blend_attachment.blendEnable = true
+		color_blend_attachment.srcColorBlendFactor = .ONE
+		color_blend_attachment.dstColorBlendFactor = .ONE_MINUS_SRC_ALPHA
+		color_blend_attachment.colorBlendOp = .ADD
+		color_blend_attachment.srcAlphaBlendFactor = .ONE
+		color_blend_attachment.dstAlphaBlendFactor = .ONE_MINUS_SRC_ALPHA
+		color_blend_attachment.alphaBlendOp = .ADD
+	}
 	if desc.blend == .Additive {
 		color_blend_attachment.blendEnable = true
 		color_blend_attachment.srcColorBlendFactor = .ONE
@@ -320,6 +333,7 @@ build_pipeline :: proc(desc: Pipeline_Desc) -> Pipeline {
 		),
 	)
 
+	live_pipelines += 1
 	log.infof("Pipeline: {}", desc.name)
 	return result
 }
@@ -374,7 +388,34 @@ pipeline_cache_path :: proc() -> string {
 	return fmt.tprintf("%s/dust2/pipeline.cache", dir)
 }
 
+// Pipelines outstanding right now. destroy_all_pipelines names every one by
+// hand, and a new pipeline added to create_all_pipelines but forgotten there
+// leaks silently -- once per settings change, and once more at exit, where the
+// validation layer finally reports it as a pile of handles with no hint as to
+// which renderer they belong to.
+//
+// Counting them turns that into a warning at the moment the list goes out of
+// date, naming the count, while the change that caused it is still on screen.
+@(private = "file")
+live_pipelines: int
+
 destroy_pipeline :: proc(p: Pipeline) {
+	// Destroying a zero handle is legal and several call sites rely on it, so
+	// only real ones count.
+	if p.pipeline != 0 do live_pipelines -= 1
 	vk.DestroyPipeline(g.device, p.pipeline, nil)
 	vk.DestroyPipelineLayout(g.device, p.layout, nil)
+}
+
+// Called after destroy_all_pipelines. Anything left is a pipeline that exists
+// and that nothing will ever free.
+check_pipelines_released :: proc() {
+	if live_pipelines == 0 do return
+	log.warnf(
+		"{} pipeline(s) created but never destroyed -- destroy_all_pipelines is missing an entry",
+		live_pipelines,
+	)
+	// Reset, so a second rebuild reports its own delta rather than repeating
+	// this one on top of it.
+	live_pipelines = 0
 }

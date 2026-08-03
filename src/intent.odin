@@ -1,5 +1,6 @@
 package main
 
+import "core:math"
 import "game"
 import "vendor:glfw"
 
@@ -13,12 +14,15 @@ import "vendor:glfw"
 // 64 Hz accumulator), and an edge read inside the tick loop simply evaporates
 // on a tickless frame. The reload that needed two presses was exactly this.
 Intent :: struct {
-	jump_pressed:  bool, // each latched until the first tick consumes it
-	fire_pressed:  bool,
-	reload:        bool,
-	slot_change:   bool,
-	slot:          i8,
-	toggle_noclip: bool,
+	jump_pressed:   bool, // each latched until the first tick consumes it
+	fire_pressed:   bool,
+	reload:         bool,
+	// What the player asked to hold, as a hand.odin select code. The flag
+	// beside it rather than a sentinel: 0 is a legal code (the primary slot),
+	// so a zeroed Intent cannot be allowed to read as a request for it.
+	select_change:  bool,
+	select:         i8,
+	toggle_noclip:  bool,
 }
 
 intent: Intent
@@ -36,10 +40,22 @@ gather_player_intent :: proc() {
 	// The scope toggles here, at frame rate: waiting for a tick would add a
 	// perceptible stutter to the lens.
 	if consume_zoom_click() do weapon_toggle_zoom()
+
+	// Holstering happens here too, and at frame rate for the same reason: the
+	// hands move now and the wire is told afterwards (hand_view.odin). Both the
+	// keys and the wheel come out as one select code, so the tick below has one
+	// thing to send whichever way it was asked for.
 	for key, slot in SLOT_KEYS {
-		if key_pressed(key) {
-			intent.slot_change = true
-			intent.slot = i8(slot)
+		if !key_pressed(key) do continue
+		if code := hand_key(slot); code >= 0 {
+			intent.select_change = true
+			intent.select = code
+		}
+	}
+	if steps := consume_scroll(); steps != 0 {
+		if code := hand_scroll(steps); code >= 0 {
+			intent.select_change = true
+			intent.select = code
 		}
 	}
 }
@@ -51,6 +67,13 @@ build_local_input :: proc() -> game.Pawn_Input {
 	input_.yaw = camera.yaw
 	input_.pitch = camera.pitch
 	input_.weapon_slot = -1
+
+	// Before the cursor gate below: the probe stands in for mouse buttons that
+	// are never pressed, and a headless run has no grabbed cursor to gate on.
+	if cli.nade != "" {
+		nade_override_input(&input_)
+		return input_
+	}
 
 	// A loose cursor means a menu owns the keyboard -- the pause overlay, the
 	// settings. The pawn stands still instead of ghost-walking through it.
@@ -84,7 +107,18 @@ build_local_input :: proc() -> game.Pawn_Input {
 		input_.buttons += {.Fire}
 	}
 	// Scoped in walks slower, and only the wire can make the server agree.
-	if weapon_state.zoom_active {
+	//
+	// With a grenade in hand the same bit means the short throw instead. The
+	// throw modes are the two mouse buttons (game/throw.odin), and the right
+	// one only ever reached the wire as "currently scoped" -- which is why the
+	// short and medium throws were unreachable with an actual mouse. There is
+	// no scope to be in while holding a grenade, so the bit is free to mean
+	// the button.
+	if hand_busy() {
+		if may_fire && glfw.GetMouseButton(g.window, glfw.MOUSE_BUTTON_RIGHT) == glfw.PRESS {
+			input_.buttons += {.Zoom}
+		}
+	} else if weapon_state.zoom_active {
 		input_.buttons += {.Zoom}
 	}
 
@@ -103,9 +137,47 @@ build_local_input :: proc() -> game.Pawn_Input {
 		intent.reload = false
 		if may_fire do input_.buttons += {.Reload}
 	}
-	if intent.slot_change {
-		intent.slot_change = false
-		input_.weapon_slot = intent.slot
+	if intent.select_change {
+		intent.select_change = false
+		input_.weapon_slot = intent.select
 	}
 	return input_
+}
+
+// --nade: select the grenade slot and pull the trigger on a slow cycle. The
+// throw is two mouse buttons and a number key, none of which a headless test
+// can press, so the flag writes them into the command instead.
+@(private = "file")
+nade_override_input :: proc(input_: ^game.Pawn_Input) {
+	if cli.nade == "" do return
+	if !net_client.joined || !player.alive do return
+
+	// Well clear of THROW_COOLDOWN, so each cycle is one throw and the log
+	// reads as one line per grenade rather than a burst.
+	period := f32(2.5)
+	phase := f32(game.clock.tick_count) * game.TICK_DT
+	slice := phase - math.floor(phase / period) * period
+
+	// Early in the cycle: rebuy, then put one in hand. The rebuy repeats
+	// rather than firing once on a phase change, because a buy that arrives
+	// before the join completes is dropped by the server and a probe that
+	// depends on winning that race is a flaky test.
+	if slice < game.TICK_DT * 2 {
+		nade_buy_send()
+		input_.weapon_slot = game.GRENADE_SLOT
+		return
+	}
+	if slice <= 0.3 || slice >= 0.3 + game.TICK_DT * 2 do return
+
+	// Alternating throw modes, counted rather than derived from the clock: a
+	// grenade with a carry limit of one gives a life a single throw, and
+	// keying the mode off the wall clock would make which mode that is a coin
+	// flip. The first is always short.
+	//
+	// Short lands at the thrower's own feet, which is what lets a headless run
+	// prove an effect at all -- self-damage needs no second player to walk
+	// into the blast.
+	@(static) throws: int
+	input_.buttons += throws % 2 == 0 ? {.Zoom} : {.Fire}
+	throws += 1
 }

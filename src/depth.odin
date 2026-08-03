@@ -101,13 +101,19 @@ scene_scaled :: proc() -> bool {
 create_render_targets :: proc() {
 	extent := scene_extent()
 
+	// SAMPLED as well as attachment: the volumetric smoke marches rays against
+	// the scene's own depth, so something has to be able to read it. Without
+	// MSAA that is this image directly; with it, the resolve target below.
+	depth_usage: vk.ImageUsageFlags = {.DEPTH_STENCIL_ATTACHMENT}
+	if !msaa_enabled() do depth_usage += {.SAMPLED}
+
 	g.depth_image, g.depth_memory = create_image(
 		extent.width,
 		extent.height,
 		1,
 		g.depth_format,
 		.OPTIMAL,
-		{.DEPTH_STENCIL_ATTACHMENT},
+		depth_usage,
 		{.DEVICE_LOCAL},
 		1,
 		g.msaa_samples,
@@ -128,6 +134,38 @@ create_render_targets :: proc() {
 		},
 	}
 	vk_check(vk.CreateImageView(g.device, &depth_view_ci, nil, &g.depth_view))
+
+	// Under MSAA the depth attachment is multisampled and cannot be sampled as
+	// an ordinary texture, so the pass resolves it into this one on the way
+	// out. SAMPLE_ZERO rather than an average: a depth buffer has no meaningful
+	// mean, and one sample per pixel is all a ray needs to know where to stop.
+	if msaa_enabled() {
+		g.depth_resolve_image, g.depth_resolve_memory = create_image(
+			extent.width,
+			extent.height,
+			1,
+			g.depth_format,
+			.OPTIMAL,
+			{.DEPTH_STENCIL_ATTACHMENT, .SAMPLED},
+			{.DEVICE_LOCAL},
+			1,
+		)
+
+		resolve_view_ci := vk.ImageViewCreateInfo {
+			sType = .IMAGE_VIEW_CREATE_INFO,
+			image = g.depth_resolve_image,
+			viewType = .D2,
+			format = g.depth_format,
+			subresourceRange = {
+				aspectMask = {.DEPTH},
+				baseMipLevel = 0,
+				levelCount = 1,
+				baseArrayLayer = 0,
+				layerCount = 1,
+			},
+		}
+		vk_check(vk.CreateImageView(g.device, &resolve_view_ci, nil, &g.depth_resolve_view))
+	}
 
 	// At less than full scale the scene needs somewhere of its own to land
 	// before being stretched onto the swapchain image.
@@ -200,6 +238,13 @@ destroy_render_targets :: proc() {
 	vk.FreeMemory(g.device, g.depth_memory, nil)
 	g.depth_view, g.depth_image, g.depth_memory = {}, {}, {}
 
+	if g.depth_resolve_image != 0 {
+		vk.DestroyImageView(g.device, g.depth_resolve_view, nil)
+		vk.DestroyImage(g.device, g.depth_resolve_image, nil)
+		vk.FreeMemory(g.device, g.depth_resolve_memory, nil)
+		g.depth_resolve_view, g.depth_resolve_image, g.depth_resolve_memory = {}, {}, {}
+	}
+
 	if g.scene_image != 0 {
 		vk.DestroyImageView(g.device, g.scene_view, nil)
 		vk.DestroyImage(g.device, g.scene_image, nil)
@@ -231,6 +276,16 @@ transition_depth_for_rendering :: proc(cmd: vk.CommandBuffer) {
 		1,
 		depth_aspect_mask(g.depth_format),
 	)
+}
+
+// The image the smoke pass samples: the resolve target under MSAA, the depth
+// attachment itself without it.
+depth_texture_view :: proc() -> vk.ImageView {
+	return msaa_enabled() ? g.depth_resolve_view : g.depth_view
+}
+
+depth_texture_image :: proc() -> vk.Image {
+	return msaa_enabled() ? g.depth_resolve_image : g.depth_image
 }
 
 transition_color_for_rendering :: proc(cmd: vk.CommandBuffer) {

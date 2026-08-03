@@ -19,6 +19,9 @@ Three sets come out of this:
                 as PropPalette.
   CharPalette   two grey swatches for the player mannequin. The team colour is
                 a material tint, not a swatch -- see build_char_palette.
+  Nade*/BombC4  one set per grenade and the C4, straight from the explosives
+                pack's own PBR maps. The only pack here that ships UVs, so it
+                is the only one that does not go through a palette.
 
 Run through `just models`; convert_models.py assumes the atlas layout below.
 """
@@ -205,6 +208,115 @@ def build_char_palette():
     )
 
 
+# The explosives pack, the one archive here with real UVs and PBR maps. One
+# texture set per model that the game actually holds; the rest of the pack is on
+# disk as geometry and points at the palette's plain swatch until somebody needs
+# it (see build_pack_models in convert_models.py).
+#
+# `tiles` splits a set into a 2x2 atlas when a model's materials each ship their
+# own maps -- the molotov is bottle, wick and liquid, and three layers for one
+# bottle is not a trade worth making. Keep the tile order in sync with
+# EXPLOSIVE_TILES in convert_models.py.
+EXPLOSIVE_SETS = {
+    "NadeFrag": {"source": "FragGrenade"},
+    "NadeFlash": {"source": "Flashbang"},
+    "NadeSmoke": {"source": "Smoke_Grenade"},
+    "BombC4": {"source": "C4"},
+    "NadeMolotov": {
+        "tiles": {
+            "Bottle": (0, 0),
+            # The pack ships this one with the r missing off Base_Color.
+            "Fabric": (1, 0),
+            "Liquid": (0, 1),
+        }
+    },
+}
+
+
+def explosive_map(stem, kind):
+    """One of a pack model's maps, or None. The pack is not consistent about
+    its own names -- Fabric's albedo is 'Base_Colo' -- so every candidate the
+    archive actually contains is tried."""
+    names = {
+        "color": ("Base_Color", "Base_Colo"),
+        "normal": ("Normal_DirectX", "Normal"),
+        "rough": ("Roughness",),
+    }[kind]
+    for suffix in names:
+        path = ASSETS / "explosives" / f"{stem}_{suffix}.png"
+        if path.exists():
+            return path
+    return None
+
+
+def directx_to_gl(img):
+    """DirectX normal maps run green down the surface, OpenGL runs it up, and
+    the engine's array is NormalGL. Without the flip every lit bump on these
+    models reads as a dent -- subtle enough to spend an afternoon blaming the
+    shader for."""
+    r, g, b = img.convert("RGB").split()
+    return Image.merge("RGB", (r, g.point(lambda v: 255 - v), b))
+
+
+def explosive_maps(stem, size):
+    """Colour, normal and roughness for one pack model, at `size`. Missing maps
+    fall back the way the retro pack's do: flat normal, mid roughness."""
+    color_path = explosive_map(stem, "color")
+    if color_path is None:
+        print(f"  warn: no albedo for {stem}, tile stays grey")
+        return None
+    color = fit(load(color_path), size).convert("RGB")
+
+    normal_path = explosive_map(stem, "normal")
+    normal = (
+        directx_to_gl(fit(load(normal_path), size))
+        if normal_path
+        else flat_normal(size)
+    )
+
+    rough_path = explosive_map(stem, "rough")
+    rough = (
+        fit(load(rough_path), size).convert("L") if rough_path else constant(size, 190)
+    )
+    return color, normal, rough
+
+
+def build_explosives():
+    if not (ASSETS / "explosives").exists():
+        sys.exit("assets/explosives missing -- run tools/extract_models.sh first")
+
+    for set_name, spec in EXPLOSIVE_SETS.items():
+        if "tiles" in spec:
+            color = Image.new("RGB", (LAYER, LAYER), (128, 128, 128))
+            normal = flat_normal(LAYER)
+            rough = constant(LAYER, 190)
+            for stem, (tx, ty) in spec["tiles"].items():
+                maps = explosive_maps(stem, ATLAS)
+                if maps is None:
+                    continue
+                at = (tx * ATLAS, ty * ATLAS)
+                color.paste(maps[0], at)
+                normal.paste(maps[1], at)
+                rough.paste(maps[2], at)
+        else:
+            maps = explosive_maps(spec["source"], LAYER)
+            if maps is None:
+                continue
+            color, normal, rough = maps
+
+        write(
+            set_name,
+            {
+                "Color": color,
+                "NormalGL": normal,
+                "Roughness": rough,
+                # The pack ships no occlusion maps; the material's own shading
+                # carries it, the way the retro sets do.
+                "AmbientOcclusion": constant(LAYER, 255),
+            },
+        )
+
+
 def main():
     if not ASSETS.exists():
         sys.exit("assets/ missing -- run tools/extract_models.sh first")
@@ -214,6 +326,7 @@ def main():
     build_modular_palette()
     build_gun_palette()
     build_char_palette()
+    build_explosives()
 
 
 if __name__ == "__main__":

@@ -65,3 +65,39 @@ test_buy_cost :: proc(t: ^testing.T) {
 	pistol.secondary = WEAPON_DEAGLE
 	testing.expect_value(t, buy_cost(base, pistol), WEAPONS[WEAPON_DEAGLE].price)
 }
+
+@(test)
+test_buy_cost_gear :: proc(t: ^testing.T) {
+	base := default_loadout(.CT)
+
+	// the pair from nothing, counter-strike's 1000
+	pair := base
+	pair.armor = true
+	pair.helmet = true
+	testing.expect_value(t, buy_cost(base, pair), ECON_ARMOR_PRICE + ECON_HELMET_PRICE)
+	testing.expect_value(t, ECON_ARMOR_PRICE + ECON_HELMET_PRICE, 1000)
+
+	// the helmet alone, once the vest is already on: the surcharge only
+	vested := base
+	vested.armor = true
+	testing.expect_value(t, buy_cost(vested, pair), ECON_HELMET_PRICE)
+
+	// gear is bought once, and taking it off refunds nothing
+	testing.expect_value(t, buy_cost(pair, pair), 0)
+	testing.expect_value(t, buy_cost(pair, base), 0)
+
+	// the kit prices independently of the vest
+	kit := base
+	kit.defuse_kit = true
+	testing.expect_value(t, buy_cost(base, kit), ECON_DEFUSE_KIT_PRICE)
+
+	// a full CT buy adds up to the sum of its parts
+	full := pair
+	full.defuse_kit = true
+	full.primary = WEAPON_M4
+	testing.expect_value(
+		t,
+		buy_cost(base, full),
+		WEAPONS[WEAPON_M4].price + ECON_ARMOR_PRICE + ECON_HELMET_PRICE + ECON_DEFUSE_KIT_PRICE,
+	)
+}

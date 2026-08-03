@@ -34,6 +34,15 @@ TEXTURE_SETS := []string {
 	"GunPalette",
 	"ModularPalette",
 	"CharPalette",
+	// The explosives pack: the one set of models with real UVs, so these are
+	// real textures rather than palettes. One layer each for the four grenades
+	// and the bomb -- they are held a hand's width from the camera, which is
+	// the one place a 256-pixel swatch would not survive.
+	"NadeFrag",
+	"NadeFlash",
+	"NadeSmoke",
+	"NadeMolotov",
+	"BombC4",
 }
 
 TEXTURE_DIR :: "textures"

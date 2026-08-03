@@ -63,3 +63,29 @@ test_hit_group_armor_coverage :: proc(t: ^testing.T) {
 	testing.expect(t, !hit_group_bypasses_armor(.Stomach))
 	testing.expect(t, !hit_group_bypasses_armor(.None))
 }
+
+// The helmet's whole effect: the one zone it changes, and the four it does not.
+@(test)
+test_helmet_covers_only_the_head :: proc(t: ^testing.T) {
+	testing.expect(t, hit_group_bypasses_armor(.Head, helmet = false))
+	testing.expect(t, !hit_group_bypasses_armor(.Head, helmet = true))
+
+	covered := [?]Hit_Group{.Chest, .Stomach, .None}
+	for group in covered {
+		testing.expectf(
+			t,
+			!hit_group_bypasses_armor(group, helmet = false),
+			"{} needs no helmet to be covered",
+			group,
+		)
+	}
+	uncovered := [?]Hit_Group{.Legs, .Feet}
+	for group in uncovered {
+		testing.expectf(
+			t,
+			hit_group_bypasses_armor(group, helmet = true),
+			"{} stays uncovered even with a helmet",
+			group,
+		)
+	}
+}

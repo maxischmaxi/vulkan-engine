@@ -12,6 +12,10 @@ ECON_PLANT_BONUS :: 300 // the planter, the moment the bomb is down
 ECON_PLANT_TEAM :: 800 // every T at round end when they planted but lost
 ECON_DEFUSE_BONUS :: 300 // the defuser, on the defuse win
 ECON_ARMOR_PRICE :: 650
+// The surcharge on top of the vest, not a standalone price: counter-strike
+// sells the pair at 1000, and validate_loadout refuses a helmet without one.
+ECON_HELMET_PRICE :: 350
+ECON_DEFUSE_KIT_PRICE :: 400
 
 // Consecutive losses climb this ladder; a win resets the streak (a deliberate
 // simplification of CS2's decay-by-one).
@@ -38,7 +42,13 @@ kill_reward :: proc(weapon_index: int) -> int {
 }
 
 // What moving from one loadout to another costs. Rebuying what is already in
-// the slot is free, dropping a slot refunds nothing, armor is bought once.
+// the slot is free, dropping a slot refunds nothing, and gear is bought once --
+// so taking the vest off and putting it back on in the same freeze is free,
+// exactly like re-picking the weapon already in the slot.
+//
+// Call this with a validated `after`: the helmet-needs-a-vest and CT-only-kit
+// rules live in validate_loadout, and pricing an unvalidated loadout would
+// charge for gear the server is about to strip.
 buy_cost :: proc(before, after: Loadout) -> int {
 	cost := 0
 	if after.primary != before.primary && after.primary >= 0 {
@@ -49,6 +59,20 @@ buy_cost :: proc(before, after: Loadout) -> int {
 	}
 	if after.armor && !before.armor {
 		cost += ECON_ARMOR_PRICE
+	}
+	if after.helmet && !before.helmet {
+		cost += ECON_HELMET_PRICE
+	}
+	if after.defuse_kit && !before.defuse_kit {
+		cost += ECON_DEFUSE_KIT_PRICE
+	}
+	// Only the ones added: grenades are the first item that can be held more
+	// than once, so this counts a difference rather than testing a flag.
+	// Throwing one and rebuying it in the next freeze is a fresh purchase,
+	// which is the counter-strike behaviour and falls out of the same rule.
+	for kind in Grenade_Kind {
+		added := int(after.grenades[kind]) - int(before.grenades[kind])
+		if added > 0 do cost += added * GRENADES[kind].price
 	}
 	return cost
 }

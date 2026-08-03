@@ -34,12 +34,18 @@ Game_Mode :: struct {
 	on_pawn_removed: proc(pawn_id: int),
 }
 
+// The deathmatch clock. Ten minutes is a session someone can settle into;
+// -tdm-fast cuts it to what an E2E run can sit through, the same affordance
+// -comp-fast gives the round machine.
+TDM_MATCH_S :: f32(600)
+TDM_FAST_MATCH_S :: f32(60)
+
 TDM_MODE := Game_Mode {
 	id             = .TDM,
 	name           = "team deathmatch",
 	team_size      = game.TEAM_SIZE,
 	countdown_s    = 3,
-	match_len_s    = 60,
+	match_len_s    = TDM_MATCH_S,
 	post_s         = 5,
 	respawn_s      = 3,
 	respawn_phases = {.Live},

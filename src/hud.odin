@@ -33,11 +33,20 @@ HUD_LOW_HEALTH :: 25
 // speedometer sits directly above them and the two must not overlap.
 HUD_SLOT_HEIGHT :: HUD_TEXT_SMALL + 2 * 8
 
+// The bottom-right block's total height in reference pixels: weapon name over
+// magazine and reserve. The grenade belt stacks above it through this one
+// number, so the two cannot drift into each other -- the same job
+// HUD_HEALTH_BLOCK does for money on the other side.
+HUD_AMMO_BLOCK :: HUD_TEXT_BIG + UI_LABEL + 8
+HUD_AMMO_GAP :: f32(14)
+
 Hud :: struct {
 	visible:          bool,
 	// The weapon-slot underline eases toward the active slot instead of
-	// jumping.
+	// jumping, and fades away entirely while the hands hold something that is
+	// not on the strip.
 	slot_ux, slot_uw: f32,
+	slot_fade:        f32,
 	// Value-change motion: short timers armed on the frame a number moves.
 	prev_health:      int,
 	health_flash:     f32,
@@ -105,6 +114,10 @@ build_hud :: proc() {
 	// Under the HUD and outside the F12 gate, like the crosshair it replaces.
 	if weapon_state.zoom_active do draw_scope(width, height)
 
+	// Over everything gameplay draws, including the scope, and outside the F12
+	// gate: being flashed is a game state, not an overlay you can switch off.
+	defer draw_flash(width, height)
+
 	if hud.visible {
 		// The first quarter second after entering play, the top group slides
 		// down and the bottom group slides up into place.
@@ -124,9 +137,14 @@ build_hud :: proc() {
 		draw_killfeed(width - margin, killfeed_top)
 		draw_health(margin, height - margin + bot_dy)
 		draw_ammo(width - margin, height - margin + bot_dy)
+		draw_nade_belt(
+			width - margin,
+			height - margin + bot_dy - (HUD_AMMO_BLOCK + HUD_AMMO_GAP) * scale,
+		)
 		draw_slots(width * 0.5, height - margin + bot_dy)
 		draw_speed(width * 0.5, height - margin - HUD_SLOT_HEIGHT * scale + bot_dy)
 		draw_weapon_prompt(width * 0.5, height * 0.5)
+		draw_plant_hint()
 
 		if competitive_active() {
 			draw_round_hud(width, height)
@@ -355,17 +373,46 @@ draw_health :: proc(x, bottom: f32) {
 	hud_rect(x, bar_y, bar_w, bar_h, ui_fade(UI_STROKE, 0.8))
 	hud_rect(x, bar_y, bar_w * clamp(f32(health) / 100, 0, 1), bar_h, ui_fade(color, bar_alpha))
 
-	if player.armor <= 0 do return
+	// The kit rides along even with no vest on: it is the one piece of gear
+	// that changes what you can do rather than what you can survive.
+	kit := player.loadout.defuse_kit
+	if player.armor <= 0 && !kit do return
 
 	ax := x + 96 * scale
-	ui_heading(ax, label_y, "ARMOR", label_size, UI_TEXT_FAINT)
-	hud_text_shadow(
-		ax,
-		num_y + num_size - UI_BODY * scale,
-		fmt.tprintf("{}", player.armor),
-		UI_BODY * scale,
-		UI_TEXT_DIM,
-	)
+	gear_size := UI_BODY * scale
+	gear_y := num_y + num_size - gear_size
+
+	// Laid out left to right off the measured width of what came before: the
+	// helmet makes the armour label half again as wide, and a fixed step would
+	// run the kit straight through it.
+	kx := ax
+	if player.armor > 0 {
+		// The helmet is a suffix on the vest rather than a second block: it
+		// only ever exists on top of one, and the head is what it tells you about.
+		label := player.loadout.helmet ? "ARMOR+HELM" : "ARMOR"
+		label_end := ui_heading(ax, label_y, label, label_size, UI_TEXT_FAINT)
+		hud_text_shadow(ax, gear_y, fmt.tprintf("{}", player.armor), gear_size, UI_TEXT_DIM)
+		kx = label_end + 18 * scale
+	}
+
+	if kit {
+		ui_heading(kx, label_y, "KIT", label_size, UI_TEXT_FAINT)
+		hud_text_shadow(kx, gear_y, "YES", gear_size, UI_GOOD)
+	}
+}
+
+// The white a flash leaves. Opacity comes from game.flash_opacity so the curve
+// is the same one the rules are written against; the server owns the timer and
+// sends it in the private block, because how blind you are is nobody else's
+// business.
+@(private = "file")
+draw_flash :: proc(width, height: f32) {
+	opacity := game.flash_opacity(net_client.flash_left, net_client.flash_total)
+	if opacity <= 0.001 do return
+
+	// Not pure white: a hard 1.0 over the whole screen reads as a broken frame
+	// rather than as being blinded.
+	hud_rect(0, 0, width, height, {0.97, 0.97, 0.95, opacity})
 }
 
 // Bottom right: magazine over reserve, with the weapon named above them. A melee
@@ -375,6 +422,12 @@ draw_ammo :: proc(right, bottom: f32) {
 	scale := hud_scale()
 	weapon := current_weapon()
 
+	// Hands on a grenade or the bomb: this weapon is stowed, not held. The belt
+	// above carries the active item, so the block only has to stop claiming to
+	// be it -- dimmed rather than hidden, because what comes back into the
+	// hands after the throw is still worth knowing.
+	stowed := hand_busy() ? f32(0.4) : 1
+
 	name_size := hud_font_size(UI_LABEL * scale)
 	name_y := bottom - HUD_TEXT_BIG * scale - name_size - 8 * scale
 	hud_text_shadow(
@@ -382,7 +435,7 @@ draw_ammo :: proc(right, bottom: f32) {
 		name_y,
 		strings.to_upper(weapon.name, context.temp_allocator),
 		name_size,
-		HUD_DIM,
+		ui_fade(HUD_DIM, stowed),
 		.Right,
 		tracking = name_size * 0.12,
 	)
@@ -390,7 +443,14 @@ draw_ammo :: proc(right, bottom: f32) {
 	value_y := bottom - HUD_TEXT_BIG * scale
 
 	if weapon.melee {
-		hud_text_shadow(right, value_y, "MELEE", HUD_TEXT_BIG * scale, HUD_DIM, .Right)
+		hud_text_shadow(
+			right,
+			value_y,
+			"MELEE",
+			HUD_TEXT_BIG * scale,
+			ui_fade(HUD_DIM, stowed),
+			.Right,
+		)
 		return
 	}
 
@@ -408,7 +468,7 @@ draw_ammo :: proc(right, bottom: f32) {
 		value_y + (HUD_TEXT_BIG - UI_BODY) * scale,
 		reserve,
 		UI_BODY * scale,
-		reserve_color,
+		ui_fade(reserve_color, stowed),
 		.Right,
 	)
 
@@ -429,7 +489,7 @@ draw_ammo :: proc(right, bottom: f32) {
 		value_y,
 		fmt.tprintf("{}", ammo.mag),
 		HUD_TEXT_BIG * scale * (1 + 0.08 * hud.mag_pop / 0.15),
-		mag_color,
+		ui_fade(mag_color, stowed),
 		.Right,
 	)
 }
@@ -466,10 +526,15 @@ draw_slots :: proc(center, bottom: f32) {
 	x := center - total * 0.5
 	y := bottom - height
 
+	// Hands on a grenade or the bomb: the strip still lists what is owned, but
+	// nothing on it is being held, so nothing on it lights up. An underline
+	// pointing at a rifle that is over your shoulder is worse than none.
+	stowed := hand_busy()
+
 	target_x, target_w: f32
 	for slot in 0 ..< game.WEAPON_SLOTS {
 		index := game.loadout_weapon_in_slot(player.loadout, slot)
-		active := index == weapon_state.index
+		active := index == weapon_state.index && !stowed
 
 		// flat row, no pill: the sliding underline below carries the state
 		text_color := HUD_FAINT
@@ -489,13 +554,27 @@ draw_slots :: proc(center, bottom: f32) {
 		x += widths[slot] + gap
 	}
 
-	// the underline slides between slots rather than jumping
+	// the underline slides between slots rather than jumping, and fades out
+	// entirely while the hands are elsewhere
 	if hud.slot_uw <= 0 {
 		hud.slot_ux, hud.slot_uw = target_x, target_w
 	}
-	hud.slot_ux = ui_approach(hud.slot_ux, target_x, ui.dt, 22)
-	hud.slot_uw = ui_approach(hud.slot_uw, target_w, ui.dt, 22)
-	hud_rect(hud.slot_ux + 4 * scale, bottom - 2 * scale, hud.slot_uw - 8 * scale, 2 * scale, HUD_WHITE)
+	hud.slot_fade = ui_approach(hud.slot_fade, stowed ? 0 : 1, ui.dt, 14)
+	// Frozen while stowed: it must not slide back to slot 0 under the fade and
+	// then slide out again when the weapon comes back.
+	if !stowed {
+		hud.slot_ux = ui_approach(hud.slot_ux, target_x, ui.dt, 22)
+		hud.slot_uw = ui_approach(hud.slot_uw, target_w, ui.dt, 22)
+	}
+	if hud.slot_fade > 0.01 {
+		hud_rect(
+			hud.slot_ux + 4 * scale,
+			bottom - 2 * scale,
+			hud.slot_uw - 8 * scale,
+			2 * scale,
+			ui_fade(HUD_WHITE, hud.slot_fade),
+		)
+	}
 }
 
 // Bottom centre, above the slots: how fast the player is actually travelling.

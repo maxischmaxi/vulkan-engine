@@ -106,7 +106,7 @@ bomb_tick_carry :: proc() {
 bomb_hands_busy :: proc(pawn_id: int, cmd: game.Pawn_Input) -> bool {
 	if .Use not_in cmd.buttons do return false
 	if match.phase == .Live {
-		return bomb.state == .Carried && bomb.carrier == pawn_id && bomb_plant_engaged(pawn_id)
+		return bomb_carried_by(pawn_id) && bomb_plant_engaged(pawn_id)
 	}
 	if match.phase == .Bomb {
 		return bomb.state == .Planted && bomb_defuse_engaged(pawn_id)
@@ -114,11 +114,19 @@ bomb_hands_busy :: proc(pawn_id: int, cmd: game.Pawn_Input) -> bool {
 	return false
 }
 
+// Whether this pawn is the one currently carrying the bomb. The hands read it
+// to decide whether the bomb may be selected at all, so it lives beside the
+// carrier rather than being spelled out at each call site.
+bomb_carried_by :: proc(pawn_id: int) -> bool {
+	return bomb.state == .Carried && bomb.carrier == pawn_id
+}
+
+// Both the fire strip and the progress stepper ask through here, so the rule
+// only exists once. What it means to be ready is game.bomb_plant_ready; this
+// only supplies the map.
 @(private = "file")
 bomb_plant_engaged :: proc(pawn_id: int) -> bool {
-	p := &sv.gs.pawns[pawn_id]
-	if !p.active || !p.alive || !p.body.on_ground do return false
-	return game.bomb_site_at(game.MAP_BOMBSITES, p.body.position) >= 0
+	return game.bomb_plant_ready(sv.gs.pawns[pawn_id], game.MAP_BOMBSITES)
 }
 
 @(private = "file")
@@ -166,6 +174,15 @@ bomb_tick_plant :: proc() {
 	set_phase(.Bomb, sv.tick + u32(comp_fuse_s() * game.TICK_RATE))
 }
 
+// How long the pawn currently on the wire needs. Read by the stepper and by
+// the snapshot's progress fraction, so the bar always spans the time this
+// defuser actually needs rather than a constant the kit made wrong.
+@(private = "file")
+bomb_defuse_time_for :: proc(pawn_id: int) -> f32 {
+	if pawn_id < 0 || pawn_id >= game.MAX_PAWNS do return game.BOMB_DEFUSE_TIME
+	return game.bomb_defuse_time(sv.gs.pawns[pawn_id].loadout.defuse_kit)
+}
+
 // Defusing: any alive CT human in range holding Use. Switching defusers or
 // letting go resets the wire.
 @(private = "file")
@@ -188,14 +205,23 @@ bomb_tick_defuse :: proc() {
 	if active < 0 do return
 
 	done: bool
-	bomb.defuse_progress, done = game.bomb_defuse_step(bomb.defuse_progress, true, game.TICK_DT)
+	bomb.defuse_progress, done = game.bomb_defuse_step(
+		bomb.defuse_progress,
+		true,
+		game.TICK_DT,
+		bomb_defuse_time_for(bomb.defuser),
+	)
 	if !done do return
 
 	bomb.state = .Defused
 	if slot := find_slot_by_pawn(bomb.defuser); slot != nil {
 		award(slot, game.ECON_DEFUSE_BONUS)
 	}
-	log.infof("Server: bomb defused by pawn {}", bomb.defuser)
+	log.infof(
+		"Server: bomb defused by pawn {} ({})",
+		bomb.defuser,
+		sv.gs.pawns[bomb.defuser].loadout.defuse_kit ? "with kit" : "no kit",
+	)
 	comp_round_end(.CT, .Bomb_Defused)
 }
 
@@ -257,7 +283,7 @@ fill_bomb_snapshot :: proc(snap: ^protocol.Snapshot) {
 		progress = bomb.plant_progress / game.BOMB_PLANT_TIME
 	}
 	if bomb.state == .Planted && bomb.defuser >= 0 {
-		progress = bomb.defuse_progress / game.BOMB_DEFUSE_TIME
+		progress = bomb.defuse_progress / bomb_defuse_time_for(bomb.defuser)
 	}
 	snap.bomb_progress = u8(clamp(progress * 255, 0, 255))
 }
